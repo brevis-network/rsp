@@ -73,6 +73,12 @@ async fn main() -> eyre::Result<()> {
     // Initialize the logger.
     tracing_subscriber::registry().with(fmt::layer()).with(EnvFilter::from_default_env()).init();
 
+    /*
+        let stdin = std::fs::read("reth-171-rsp-249b34e.bin").expect("failed to read stdin");
+        let stdin: SP1Stdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
+        panic!("gupeng - 1111");
+    */
+
     // Parse the command line arguments.
     let args = HostArgs::parse();
     let provider_config = args.provider.clone().into_provider().await?;
@@ -142,6 +148,7 @@ async fn main() -> eyre::Result<()> {
         }
     };
 
+    /*
     // Generate the proof.
     let client = ProverClient::from_env();
 
@@ -151,12 +158,17 @@ async fn main() -> eyre::Result<()> {
         ChainVariant::Optimism(_) => include_elf!("rsp-client-op"),
         ChainVariant::Linea(_) => include_elf!("rsp-client-linea"),
     });
+    */
 
     // Execute the block inside the zkVM.
     let mut stdin = SP1Stdin::new();
     let buffer = bincode::serialize(&client_input).unwrap();
     stdin.write_vec(buffer);
 
+    let stdin_serialized = bincode::serialize(&stdin).unwrap();
+    std::fs::write("reth.bin", &stdin_serialized).unwrap();
+
+    /*
     // Only execute the program.
     let (mut public_values, execution_report) = client.execute(&pk.elf, &stdin).run().unwrap();
 
@@ -193,6 +205,7 @@ async fn main() -> eyre::Result<()> {
                 .await?;
         }
     }
+    */
 
     Ok(())
 }
