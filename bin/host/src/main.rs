@@ -160,13 +160,18 @@ async fn main() -> eyre::Result<()> {
     });
     */
 
-    // Execute the block inside the zkVM.
-    let mut stdin = SP1Stdin::new();
-    let buffer = bincode::serialize(&client_input).unwrap();
-    stdin.write_vec(buffer);
+    /* brevis-vm stdin
+        let mut stdin = SP1Stdin::new();
+        let buffer = bincode::serialize(&client_input).unwrap();
+        stdin.write_vec(buffer);
 
-    let stdin_serialized = bincode::serialize(&stdin).unwrap();
-    std::fs::write("reth.bin", &stdin_serialized).unwrap();
+        let buffer = bincode::serialize(&stdin).unwrap();
+        std::fs::write("reth.bin", &buffer).unwrap();
+    */
+
+    // sp1 stdin
+    let buffer = bincode::serialize(&client_input).unwrap();
+    std::fs::write("reth.bin", &buffer).unwrap();
 
     /*
     // Only execute the program.
