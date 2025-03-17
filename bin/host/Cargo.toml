@@ -53,3 +53,4 @@ sp1-build.workspace = true
 [features]
 default = []
 cuda = ["sp1-sdk/cuda"]
+bigint-rug = ["sp1-sdk/bigint-rug", "sp1-core-executor/bigint-rug"]
