@@ -20,6 +20,8 @@ use serde::de::DeserializeOwned;
 use sp1_sdk::{
     EnvProver, ExecutionReport, SP1ProvingKey, SP1PublicValues, SP1Stdin, SP1VerifyingKey,
 };
+use std::fs::File;
+use std::io::Write;
 use tokio::{task, time::sleep};
 use tracing::{info, info_span, warn};
 
@@ -79,6 +81,9 @@ pub trait BlockExecutor {
         // Execute the block inside the zkVM.
         let mut stdin = SP1Stdin::new();
         let buffer = bincode::serialize(&client_input).unwrap();
+
+        let mut file = File::create("client_input_17106222.bin").expect("Failed to create file");
+        file.write_all(&buffer).expect("Failed to write to file");
 
         stdin.write_vec(buffer);
 
