@@ -82,7 +82,10 @@ pub trait BlockExecutor {
         let mut stdin = SP1Stdin::new();
         let buffer = bincode::serialize(&client_input).unwrap();
 
-        let mut file = File::create("client_input_17106222.bin").expect("Failed to create file");
+        let mut file_path = PathBuf::from("pico_stdin");
+        file_path.push(format!("{}.bin", client_input.current_block.number));
+
+        let mut file = File::create(file_path).expect("Failed to create file");
         file.write_all(&buffer).expect("Failed to write to file");
 
         stdin.write_vec(buffer);

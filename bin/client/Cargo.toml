@@ -19,11 +19,21 @@ tracing = { version = "0.1", features = ["max_level_off", "release_max_level_off
 
 [patch.crates-io]
 # Precompile patches
+
+# sp1 origin precompile patches
 sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", tag = "patch-sha2-0.10.8-sp1-4.0.0", package = "sha2" }
 bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-sp1-4.0.0", package = "substrate-bn" }
 sha3 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", tag = "patch-sha3-0.10.8-sp1-4.0.0" }
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-4.1.0" }
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-4.1.0" }
+# kzg-rs is maintained by sp1 
+
+# pico-like rsp precompile patches
+#sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", tag = "patch-sha2-0.10.8-sp1-4.0.0", package = "sha2" }
+#bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-sp1-4.0.0", package = "substrate-bn" }
+#tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-4.0.0" }
+#sha3 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", tag = "patch-sha3-0.10.8-sp1-4.0.0" }
+#ecdsa-core = { git = "https://github.com/sp1-patches/signatures", package = "ecdsa", tag = "patch-16.9-sp1-4.1.0" }
 
 alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "04fa394" }
 alloy-op-evm = { git = "https://github.com/alloy-rs/evm", rev = "04fa394" }
