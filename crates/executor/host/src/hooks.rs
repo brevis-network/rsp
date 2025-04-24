@@ -33,13 +33,15 @@ pub trait ExecutionHooks: Send {
         proving_duration: Duration,
     ) -> impl Future<Output = eyre::Result<()>> {
         async move {
+            println!("\n===== Proving Completed =====");
             println!("on_proving_end triggered!");
             println!("block_number = {}", block_number);
-            println!("proof_bytes length = {}", proof_bytes.len());
+            println!("proof_bytes length = {} bytes", proof_bytes.len());
             println!("verifier_id = {:?}", vk.bytes32());
-            println!("proving_cycles = {:?}", execution_report.total_instruction_count());
-            println!("gas = {:?}", execution_report.gas);
-            println!("proving_duration = {:?}", (proving_duration.as_secs_f32() * 1000.0) as u64);
+            println!("proving_cycles = {:?} cycles", execution_report.total_instruction_count());
+            println!("sp1 gas = {:?} gas", execution_report.gas);
+            println!("proving_duration = {:?} ms", (proving_duration.as_secs_f32() * 1000.0) as u64);
+            println!("==============================\n");
             Ok(())
         }
     }
