@@ -17,21 +17,21 @@ use revm::{
     inspector::NoOpInspector,
     interpreter::{
         interpreter_types::{Jumps, LoopControl},
-        InstructionResult, Interpreter, InterpreterResult, InterpreterTypes,
+        InputsImpl, InstructionResult, Interpreter, InterpreterResult, InterpreterTypes,
     },
-    precompile::{u64_to_address, PrecompileErrors},
+    precompile::u64_to_address,
     Context, Inspector, MainBuilder, MainContext,
 };
-use revm_primitives::{Address, Bytes};
+use revm_primitives::{hardfork::SpecId, Address};
 use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
 
 #[derive(Clone)]
-pub struct CustomPrecompiles<CTX> {
-    pub precompiles: EthPrecompiles<CTX>,
+pub struct CustomPrecompiles {
+    pub precompiles: EthPrecompiles,
     addresses_to_names: HashMap<Address, String>,
 }
 
-impl<CTX> Debug for CustomPrecompiles<CTX> {
+impl Debug for CustomPrecompiles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CustomPrecompiles")
             .field("addresses_to_names", &self.addresses_to_names)
@@ -39,7 +39,7 @@ impl<CTX> Debug for CustomPrecompiles<CTX> {
     }
 }
 
-impl<CTX: ContextTr> Default for CustomPrecompiles<CTX> {
+impl Default for CustomPrecompiles {
     fn default() -> Self {
         Self {
             precompiles: EthPrecompiles::default(),
@@ -60,26 +60,29 @@ impl<CTX: ContextTr> Default for CustomPrecompiles<CTX> {
     }
 }
 
-impl<CTX: ContextTr> PrecompileProvider for CustomPrecompiles<CTX> {
-    type Context = CTX;
+impl<CTX: ContextTr> PrecompileProvider<CTX> for CustomPrecompiles {
     type Output = InterpreterResult;
 
-    fn set_spec(&mut self, spec: <<Self::Context as ContextTr>::Cfg as Cfg>::Spec) {
-        self.precompiles.set_spec(spec);
+    fn set_spec(&mut self, spec: <CTX::Cfg as Cfg>::Spec) -> bool {
+        <EthPrecompiles as PrecompileProvider<CTX>>::set_spec(&mut self.precompiles, spec)
     }
 
     fn run(
         &mut self,
-        context: &mut Self::Context,
+        context: &mut CTX,
         address: &Address,
-        bytes: &Bytes,
+        inputs: &InputsImpl,
+        is_static: bool,
         gas_limit: u64,
-    ) -> Result<Option<Self::Output>, PrecompileErrors> {
+    ) -> Result<Option<Self::Output>, String> {
         if self.precompiles.contains(address) {
+            #[cfg(target_os = "zkvm")]
             let name = self.addresses_to_names.get(address).cloned().unwrap_or(address.to_string());
 
+            #[cfg(target_os = "zkvm")]
             println!("cycle-tracker-report-start: precompile-{name}");
-            let result = self.precompiles.run(context, address, bytes, gas_limit);
+            let result = self.precompiles.run(context, address, inputs, is_static, gas_limit);
+            #[cfg(target_os = "zkvm")]
             println!("cycle-tracker-report-end: precompile-{name}");
 
             result
@@ -88,7 +91,7 @@ impl<CTX: ContextTr> PrecompileProvider for CustomPrecompiles<CTX> {
         }
     }
 
-    fn warm_addresses(&self) -> Box<impl Iterator<Item = Address> + '_> {
+    fn warm_addresses(&self) -> Box<impl Iterator<Item = Address>> {
         self.precompiles.warm_addresses()
     }
 
@@ -114,9 +117,9 @@ impl<F> CustomEvmFactory<F> {
     }
 }
 
-impl EvmFactory<EvmEnv> for CustomEvmFactory<EthEvmFactory> {
+impl EvmFactory for CustomEvmFactory<EthEvmFactory> {
     type Evm<DB: Database, I: revm::Inspector<Self::Context<DB>>> =
-        EthEvm<DB, I, CustomPrecompiles<Self::Context<DB>>>;
+        EthEvm<DB, I, CustomPrecompiles>;
 
     type Context<DB: Database> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
 
@@ -125,6 +128,8 @@ impl EvmFactory<EvmEnv> for CustomEvmFactory<EthEvmFactory> {
     type Error<DBError: std::error::Error + Send + Sync + 'static> = EVMError<DBError>;
 
     type HaltReason = HaltReason;
+
+    type Spec = SpecId;
 
     fn create_evm<DB: Database>(
         &self,
@@ -175,6 +180,7 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for OpCodeTrackingInspect
 
         self.current = OpCode::name_by_op(interp.bytecode.opcode()).to_lowercase();
 
+        #[cfg(target_os = "zkvm")]
         println!("cycle-tracker-report-start: opcode-{}", self.current);
     }
 
@@ -183,6 +189,7 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for OpCodeTrackingInspect
         let _ = interp;
         let _ = context;
 
+        #[cfg(target_os = "zkvm")]
         println!("cycle-tracker-report-end: opcode-{}", self.current);
     }
 }

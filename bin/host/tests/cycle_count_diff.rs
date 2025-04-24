@@ -1,22 +1,22 @@
-use std::{env, fs::File, io::Write};
+use std::{env, fs::File, io::Write, sync::Arc};
 
 use alloy_chains::Chain;
 use alloy_consensus::Block;
 use alloy_network::Ethereum;
 use alloy_provider::RootProvider;
 use madato::{mk_table, types::TableRow};
-use reth_primitives::NodePrimitives;
+use reth_primitives_traits::NodePrimitives;
 use rsp_client_executor::executor::{
     ACCRUE_LOG_BLOOM, BLOCK_EXECUTION, COMPUTE_STATE_ROOT, DESERIALZE_INPUTS, INIT_WITNESS_DB,
     RECOVER_SENDERS, VALIDATE_EXECUTION,
 };
 use rsp_host_executor::{
     build_executor, create_eth_block_execution_strategy_factory, BlockExecutor, Config,
-    ExecutionHooks,
+    EthExecutorComponents, ExecutionHooks,
 };
 use rsp_primitives::genesis::Genesis;
 use serde::{Deserialize, Serialize};
-use sp1_sdk::{include_elf, ExecutionReport};
+use sp1_sdk::{include_elf, EnvProver, ExecutionReport};
 use thousands::Separable;
 use url::Url;
 
@@ -33,7 +33,7 @@ async fn test_in_zkvm() {
         rpc_url: None,
         cache_dir: None,
         custom_beneficiary: None,
-        prove: false,
+        prove_mode: None,
         opcode_tracking: false,
     };
 
@@ -43,11 +43,13 @@ async fn test_in_zkvm() {
         create_eth_block_execution_strategy_factory(&config.genesis, config.custom_beneficiary);
 
     let provider = RootProvider::<Ethereum>::new_http(rpc_url);
+    let client = Arc::new(EnvProver::new());
 
-    let executor = build_executor(
+    let executor = build_executor::<EthExecutorComponents<_>, _>(
         elf,
         Some(provider),
         block_execution_strategy_factory,
+        client,
         Hook::new(is_base_branch),
         config,
     )
@@ -130,7 +132,7 @@ impl ExecutionHooks for Hook {
                 let mut output_file = File::options().create(true).append(true).open(path)?;
 
                 let diff_percentage =
-                    |initial: f64, current: f64| (initial - current) / initial * 100_f64;
+                    |initial: f64, current: f64| (initial - current) / initial * -100_f64;
 
                 let row = |label: &str, initial: u64, current: u64| {
                     let mut r = TableRow::new();
@@ -139,6 +141,10 @@ impl ExecutionHooks for Hook {
                     r.insert(format!("Block {}", executed_block.number), label.to_string());
                     r.insert("Base Branch".to_string(), initial.separate_with_commas());
                     r.insert("Current PR".to_string(), current.separate_with_commas());
+                    r.insert(
+                        "Diff".to_string(),
+                        (current as i64 - initial as i64).separate_with_commas(),
+                    );
                     r.insert("Diff (%)".to_string(), diff);
                     r
                 };

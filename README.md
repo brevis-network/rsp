@@ -8,7 +8,7 @@ A minimal implementation of generating zero-knowledge proofs of EVM block execut
 
 ## Getting Started
 
-To use RSP, you must first have [Rust](https://www.rust-lang.org/tools/install) installed and [SP1](https://docs.succinct.xyz/docs/getting-started/install) installed to build the client programs. Then follow the instructions below.
+To use RSP, you must first have [Rust](https://www.rust-lang.org/tools/install) installed and [SP1](https://docs.succinct.xyz/docs/sp1/getting-started/install) installed to build the client programs. Then follow the instructions below.
 
 ### Installing the CLI
 
@@ -65,6 +65,8 @@ When running RSP, you should see logs similar to:
 ```
 
 The host CLI executes the block while fetching additional data necessary for offline execution. The same execution and verification logic is then run inside the zkVM. No actual proof is generated from this command, but it will print out a detailed execution report and statistics on the # of cycles to a CSV file (can be specified by the `--report-path` argument).
+
+Additional information about precompiles can be added to the CSV file when specifying the `--precompile-tracking` argument, and about opcodes with the `--opcode-tracking` argument.
 
 You can also run the CLI directly by running the following command:
 
@@ -169,7 +171,7 @@ This will continuously:
 
 ### Building the client programs manually
 
-By default, the `build.rs` in the `bin/host` crate will rebuild the client programs every time they are modified. To manually build the client programs, you can run these commands (ake sure you have the [SP1 toolchain](https://docs.succinct.xyz/getting-started/install.html) installed):
+By default, the `build.rs` in the `bin/host` crate will rebuild the client programs every time they are modified. To manually build the client programs, you can run these commands (ake sure you have the [SP1 toolchain](https://docs.succinct.xyz/docs/sp1/getting-started/install) installed):
 
 ```console
 cd ./bin/client-eth

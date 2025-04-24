@@ -4,8 +4,9 @@ use alloy_consensus::{Block, BlockHeader, Header};
 use alloy_primitives::map::HashMap;
 use itertools::Itertools;
 use reth_errors::ProviderError;
-use reth_primitives::{EthPrimitives, NodePrimitives};
-use reth_trie::TrieAccount;
+use reth_ethereum_primitives::EthPrimitives;
+use reth_primitives_traits::NodePrimitives;
+use reth_trie::{TrieAccount, EMPTY_ROOT_HASH};
 use revm::{
     state::{AccountInfo, Bytecode},
     DatabaseRef,
@@ -63,11 +64,11 @@ impl<P: NodePrimitives> ClientExecutorInput<P> {
 
     /// Creates a [`WitnessDb`].
     pub fn witness_db(&self) -> Result<TrieDB<'_>, ClientError> {
-        <Self as WitnessInput<P>>::witness_db(self)
+        <Self as WitnessInput>::witness_db(self)
     }
 }
 
-impl<P: NodePrimitives> WitnessInput<P> for ClientExecutorInput<P> {
+impl<P: NodePrimitives> WitnessInput for ClientExecutorInput<P> {
     #[inline(always)]
     fn state(&self) -> &EthereumState {
         &self.parent_state
@@ -164,7 +165,7 @@ impl DatabaseRef for TrieDB<'_> {
 }
 
 /// A trait for constructing [`WitnessDb`].
-pub trait WitnessInput<P: NodePrimitives> {
+pub trait WitnessInput {
     /// Gets a reference to the state from which account info and storage slots are loaded.
     fn state(&self) -> &EthereumState;
 
@@ -197,6 +198,15 @@ pub trait WitnessInput<P: NodePrimitives> {
 
         if self.state_anchor() != state.state_root() {
             return Err(ClientError::MismatchedStateRoot);
+        }
+
+        for (hashed_address, storage_trie) in state.storage_tries.iter() {
+            let account =
+                state.state_trie.get_rlp::<TrieAccount>(hashed_address.as_slice()).unwrap();
+            let storage_root = account.map_or(EMPTY_ROOT_HASH, |a| a.storage_root);
+            if storage_root != storage_trie.hash() {
+                return Err(ClientError::MismatchedStorageRoot);
+            }
         }
 
         let bytecodes_by_hash =

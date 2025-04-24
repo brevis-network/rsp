@@ -2,6 +2,7 @@ use alloy_chains::Chain;
 use clap::Parser;
 use rsp_host_executor::Config;
 use rsp_primitives::genesis::Genesis;
+use sp1_sdk::SP1ProofMode;
 use url::Url;
 
 /// The arguments for the cli.
@@ -38,6 +39,10 @@ pub struct Args {
     /// PagerDuty integration key.
     #[clap(long, env)]
     pub pager_duty_integration_key: Option<String>,
+
+    /// Moongate server endpoint.
+    #[clap(long, env)]
+    pub moongate_endpoint: Option<String>,
 }
 
 impl Args {
@@ -48,7 +53,7 @@ impl Args {
             rpc_url: Some(self.http_rpc_url.clone()),
             cache_dir: None,
             custom_beneficiary: None,
-            prove: !self.execute_only,
+            prove_mode: (!self.execute_only).then_some(SP1ProofMode::Compressed),
             opcode_tracking: false,
         };
 

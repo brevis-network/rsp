@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 /// Client program input data types.
 pub mod io;
 #[macro_use]
