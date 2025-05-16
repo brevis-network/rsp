@@ -2404,6 +2404,7 @@ name = "eth-proofs"
 version = "0.1.0"
 dependencies = [
  "alloy-chains",
+ "alloy-network",
  "alloy-provider",
  "alloy-rpc-client",
  "alloy-transport",

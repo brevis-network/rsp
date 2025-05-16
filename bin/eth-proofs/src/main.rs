@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use alloy_provider::{Provider, ProviderBuilder, WsConnect};
+use alloy_network::Ethereum;
 use clap::Parser;
 use cli::Args;
 use eth_proofs::EthProofsClient;
@@ -10,8 +11,8 @@ use rsp_host_executor::{
     EthExecutorComponents, FullExecutor,
 };
 use rsp_provider::create_provider;
-use sp1_sdk::{include_elf, ProverClient};
-use tracing::{error, info};
+use sp1_sdk::ProverClient;
+use tracing::{debug, error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod cli;
@@ -42,7 +43,7 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     let config = args.as_config().await?;
 
-    let elf = include_elf!("rsp-client").to_vec();
+    let elf = include_bytes!("../elf/rsp-client-elf").to_vec();
     let block_execution_strategy_factory =
         create_eth_block_execution_strategy_factory(&config.genesis, None);
 
@@ -55,7 +56,7 @@ async fn main() -> eyre::Result<()> {
 
     let ws = WsConnect::new(args.ws_rpc_url);
     let ws_provider = ProviderBuilder::new().on_ws(ws).await?;
-    let http_provider = create_provider(args.http_rpc_url);
+    let http_provider = create_provider::<Ethereum>(args.http_rpc_url);
 
     // Subscribe to block headers.
     let subscription = ws_provider.subscribe_blocks().await?;
@@ -67,32 +68,33 @@ async fn main() -> eyre::Result<()> {
         builder = builder.with_moongate_endpoint(endpoint)
     }
 
-    let client = Arc::new(builder.build());
+    // let client = Arc::new(builder.build());
 
-    let executor = FullExecutor::<EthExecutorComponents<_, _>, _>::try_new(
-        http_provider.clone(),
-        elf,
-        block_execution_strategy_factory,
-        client,
-        eth_proofs_client,
-        config,
-    )
-    .await?;
+    // let executor = FullExecutor::<EthExecutorComponents<_, _>, _>::try_new(
+    //     http_provider.clone(),
+    //     elf,
+    //     block_execution_strategy_factory,
+    //     client,
+    //     eth_proofs_client,
+    //     config,
+    // )
+    // .await?;
 
     info!("Latest block number: {}", http_provider.get_block_number().await?);
 
     while let Some(header) = stream.next().await {
         // Wait for the block to be avaliable in the HTTP provider
-        executor.wait_for_block(header.number).await?;
+        // executor.wait_for_block(header.number).await?;
 
-        if let Err(err) = executor.execute(header.number).await {
-            let error_message = format!("Error handling block {}: {err}", header.number);
-            error!(error_message);
+        // if let Err(err) = executor.execute(header.number).await {
+        //     let error_message = format!("Error handling block {}: {err}", header.number);
+        //     error!(error_message);
 
-            if let Some(alerting_client) = &alerting_client {
-                alerting_client.send_alert(error_message).await;
-            }
-        }
+        //     if let Some(alerting_client) = &alerting_client {
+        //         alerting_client.send_alert(error_message).await;
+        //     }
+        // }
+        debug!("Received Block number: {}", header.number);
     }
 
     Ok(())
