@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use alloy_provider::{Provider, ProviderBuilder, WsConnect};
 use alloy_network::Ethereum;
+use alloy_provider::{Provider, ProviderBuilder, RootProvider, WsConnect};
 use clap::Parser;
 use cli::Args;
 use eth_proofs::EthProofsClient;
@@ -12,6 +12,7 @@ use rsp_host_executor::{
 };
 use rsp_provider::create_provider;
 use sp1_sdk::ProverClient;
+use tokio::time::sleep;
 use tracing::{debug, error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -44,15 +45,6 @@ async fn main() -> eyre::Result<()> {
     let config = args.as_config().await?;
 
     let elf = include_bytes!("../elf/rsp-client-elf").to_vec();
-    let block_execution_strategy_factory =
-        create_eth_block_execution_strategy_factory(&config.genesis, None);
-
-    let eth_proofs_client = EthProofsClient::new(
-        args.eth_proofs_cluster_id,
-        args.eth_proofs_endpoint,
-        args.eth_proofs_api_token,
-    );
-    let alerting_client = args.pager_duty_integration_key.map(AlertingClient::new);
 
     let ws = WsConnect::new(args.ws_rpc_url);
     let ws_provider = ProviderBuilder::new().on_ws(ws).await?;
@@ -85,17 +77,22 @@ async fn main() -> eyre::Result<()> {
     while let Some(header) = stream.next().await {
         // Wait for the block to be avaliable in the HTTP provider
         // executor.wait_for_block(header.number).await?;
+        wait_for_block::<Ethereum>(http_provider.clone(), header.number).await?;
 
-        // if let Err(err) = executor.execute(header.number).await {
-        //     let error_message = format!("Error handling block {}: {err}", header.number);
-        //     error!(error_message);
-
-        //     if let Some(alerting_client) = &alerting_client {
-        //         alerting_client.send_alert(error_message).await;
-        //     }
-        // }
         debug!("Received Block number: {}", header.number);
+
+        // TODO: send the input buffer and elf to the pico proprocessor gPRC server.
+        break;
     }
 
+    Ok(())
+}
+
+async fn wait_for_block<N>(provider: RootProvider, block_number: u64) -> eyre::Result<()> {
+    let block_number = block_number.into();
+
+    while provider.get_block_by_number(block_number).await?.is_none() {
+        sleep(Duration::from_millis(100)).await;
+    }
     Ok(())
 }
