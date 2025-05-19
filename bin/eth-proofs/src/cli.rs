@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use alloy_chains::Chain;
 use clap::Parser;
 use rsp_host_executor::Config;
@@ -43,6 +45,12 @@ pub struct Args {
     /// Moongate server endpoint.
     #[clap(long, env)]
     pub moongate_endpoint: Option<String>,
+
+    /// Optional path to the directory containing cached client input. A new cache file will be
+    /// created from RPC data if it doesn't already exist.    #[clap(long, env)]
+    #[clap(long)]
+    pub cache_dir: Option<PathBuf>,
+
 }
 
 impl Args {
@@ -51,7 +59,7 @@ impl Args {
             chain: Chain::mainnet(),
             genesis: Genesis::Mainnet,
             rpc_url: Some(self.http_rpc_url.clone()),
-            cache_dir: None,
+            cache_dir: self.cache_dir.clone(),
             custom_beneficiary: None,
             prove_mode: (!self.execute_only).then_some(SP1ProofMode::Compressed),
             skip_client_execution: true,

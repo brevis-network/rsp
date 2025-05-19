@@ -65,7 +65,7 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         } else {
             warn!("skip_client_execution is false, client execution need to be performed");
         }
-
+        
         info!("Starting proof generation");
 
         let proving_start = Instant::now();
@@ -186,12 +186,16 @@ where
         self.hooks.on_execution_start(block_number).await?;
 
         let client_input_from_cache = self.config.cache_dir.as_ref().and_then(|cache_dir| {
+            info!("try to load input from cache: {:}", cache_dir.display());
             match try_load_input_from_cache::<C::Primitives>(
                 cache_dir,
                 self.config.chain.id(),
                 block_number,
             ) {
-                Ok(client_input) => client_input,
+                Ok(client_input) => {
+                    info!("Loaded input from cache");
+                    client_input
+                }
                 Err(e) => {
                     warn!("Failed to load input from cache: {}", e);
                     None
@@ -206,6 +210,7 @@ where
                 client_input_from_cache
             }
             None => {
+                info!("client_input is None, Loading client input from RPC");
                 let rpc_db = RpcDb::new(self.provider.clone(), block_number - 1);
 
                 // Execute the host.
