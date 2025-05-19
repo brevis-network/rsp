@@ -57,9 +57,7 @@ async fn main() -> eyre::Result<()> {
     let executor = Arc::new(
         FullExecutor::<EthExecutorComponents<_>, _>::try_new(
             http_provider.clone(),
-            elf,
             block_execution_strategy_factory,
-            prover_client,
             PersistToPostgres::new(db_pool.clone()),
             config,
         )

@@ -61,10 +61,8 @@ async fn main() -> eyre::Result<()> {
         let provider = config.rpc_url.as_ref().map(|url| create_provider(url.clone()));
 
         let executor = build_executor::<OpExecutorComponents<_>, _>(
-            elf,
             provider,
             block_execution_strategy_factory,
-            prover_client,
             persist_execution_report,
             config,
         )
@@ -78,10 +76,8 @@ async fn main() -> eyre::Result<()> {
         let provider = config.rpc_url.as_ref().map(|url| create_provider(url.clone()));
 
         let executor = build_executor::<EthExecutorComponents<_>, _>(
-            elf,
             provider,
             block_execution_strategy_factory,
-            prover_client,
             persist_execution_report,
             config,
         )

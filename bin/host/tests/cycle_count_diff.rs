@@ -47,10 +47,8 @@ async fn test_in_zkvm() {
     let client = Arc::new(EnvProver::new());
 
     let executor = build_executor::<EthExecutorComponents<_>, _>(
-        elf,
         Some(provider),
         block_execution_strategy_factory,
-        client,
         Hook::new(is_base_branch),
         config,
     )
