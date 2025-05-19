@@ -109,7 +109,6 @@ pub trait BlockExecutor<C: ExecutorComponents> {
             } else {
                 info!("Waiting for proof generation...");
             }
-            info!("Proof successfully generated!");
         }
         Ok(())
     }
