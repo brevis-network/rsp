@@ -8,6 +8,7 @@ use std::{
 use crate::{
     pico_prover_client::PicoProverClient, GetProveResultRequest, ProvingRequest, ProvingType,
 };
+use tonic::codec::CompressionEncoding;
 use alloy_provider::Provider;
 use either::Either;
 use eyre::bail;
@@ -72,7 +73,12 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         hooks.on_proving_start(client_input.current_block.number).await?;
 
         // TODO:START REMOTE PROVING
-        let mut client = PicoProverClient::connect("http://[::1]:50052").await?;
+        let mut client = PicoProverClient::connect("http://[::1]:50052").
+            await?
+            .max_encoding_message_size(600 * 1024 * 1024)
+            .max_decoding_message_size(600 * 1024 * 1024)
+            .accept_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Zstd);
         client
             .request_prover(ProvingRequest {
                 block_number: client_input.current_block.number,
