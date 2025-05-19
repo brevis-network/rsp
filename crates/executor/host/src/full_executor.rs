@@ -75,6 +75,7 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         let mut client = PicoProverClient::connect("http://[::1]:50052").await?;
         client
             .request_prover(ProvingRequest {
+                block_number: client_input.current_block.number,
                 input_buffer: Some(buffer),
                 proving_type: ProvingType::Gpu as i32,
             })

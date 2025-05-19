@@ -11,14 +11,13 @@ service PicoProver {
 }
 
 message ProvingRequest {
-    optional bytes input_buffer = 1;
-    ProvingType proving_type = 2;
+    uint64 block_number = 1;
+    optional bytes input_buffer = 2;
+    ProvingType proving_type = 3;
 }
 
 message ProvingResponse {
     ErrMsg err = 1;
-    string proof_with_publics = 2; 
-    ProofType proof_type = 3; 
 }
 
 message GetProveResultRequest {
