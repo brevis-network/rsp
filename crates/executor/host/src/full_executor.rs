@@ -5,22 +5,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{
+    pico_prover_client::PicoProverClient, GetProveResultRequest, ProvingRequest, ProvingType,
+};
 use alloy_provider::Provider;
 use either::Either;
 use eyre::bail;
 use reth_primitives_traits::NodePrimitives;
-use rsp_client_executor::io::{ClientExecutorInput, CommittedHeader};
+use rsp_client_executor::io::ClientExecutorInput;
 use rsp_rpc_db::RpcDb;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
 use tokio::{task, time::sleep};
+use tonic::{Request, Response, Status};
 use tracing::{info, info_span, warn};
 
-use crate::{
-    Config, ExecutionHooks, ExecutorComponents,
-    HostError, HostExecutor,
-};
+use crate::{Config, ExecutionHooks, ExecutorComponents, HostExecutor};
 
 pub type EitherExecutor<C, P> = Either<FullExecutor<C, P>, CachedExecutor<C>>;
 
@@ -35,15 +36,11 @@ where
     P: Provider<C::Network> + Clone,
 {
     if let Some(provider) = provider {
-        return Ok(Either::Left(
-            FullExecutor::try_new(provider, evm_config, hooks, config).await?,
-        ));
+        return Ok(Either::Left(FullExecutor::try_new(provider, evm_config, hooks, config).await?));
     }
 
     if let Some(cache_dir) = &config.cache_dir {
-        return Ok(Either::Right(
-            CachedExecutor::try_new(hooks, cache_dir.clone(), config).await?,
-        ));
+        return Ok(Either::Right(CachedExecutor::try_new(hooks, cache_dir.clone(), config).await?));
     }
 
     bail!("Either a RPC URL or a cache dir must be provided")
@@ -61,77 +58,58 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         client_input: ClientExecutorInput<C::Primitives>,
         hooks: &C::Hooks,
     ) -> eyre::Result<()> {
-        // Generate the proof.
-        // Execute the block inside the zkVM.
-        let mut stdin = SP1Stdin::new();
         let buffer = bincode::serialize(&client_input).unwrap();
-
-        stdin.write_vec(buffer);
-
-        let stdin = Arc::new(stdin);
-
+        // ethproof skip_client_execution is true,ignore the false scenario just for testing
         if self.config().skip_client_execution {
             info!("Client execution skipped");
         } else {
-            // Only execute the program.
-            // let execute_result = execute_client(
-            //     client_input.current_block.number,
-            //     self.client(),
-            //     self.pk(),
-            //     stdin.clone(),
-            // )
-            // .await?;
-            // let (mut public_values, execution_report) = execute_result?;
-
-            // // Read the block header.
-            // let header = public_values.read::<CommittedHeader>().header;
-            // let executed_block_hash = header.hash_slow();
-            // let input_block_hash = client_input.current_block.header.hash_slow();
-
-            // if input_block_hash != executed_block_hash {
-            //     return Err(HostError::HeaderMismatch(executed_block_hash, input_block_hash))?
-            // }
-
-            // info!(?executed_block_hash, "Execution successful");
-
-            // hooks
-            //     .on_execution_end::<C::Primitives>(&client_input.current_block, &execution_report)
-            //     .await?;
+            warn!("skip_client_execution is false, client execution need to be performed");
         }
 
-        if let Some(prove_mode) = self.config().prove_mode {
-            info!("Starting proof generation");
+        info!("Starting proof generation");
 
-            let proving_start = Instant::now();
-            hooks.on_proving_start(client_input.current_block.number).await?;
+        let proving_start = Instant::now();
+        hooks.on_proving_start(client_input.current_block.number).await?;
 
-            // TODO:START REMOTE PROVING
-        
+        // TODO:START REMOTE PROVING
+        let mut client = PicoProverClient::connect("http://[::1]:50052").await?;
+        client
+            .request_prover(ProvingRequest {
+                input_buffer: Some(buffer),
+                proving_type: ProvingType::Gpu as i32,
+            })
+            .await?;
 
-            // let (proof, cycle_count) = task::spawn_blocking(move || {
-            //     client
-            //         .prove_with_cycles(pk.as_ref(), &stdin, prove_mode)
-            //         .map_err(|err| eyre::eyre!("{err}"))
-            // })
-            // .await
-            // .map_err(|err| eyre::eyre!("{err}"))??;
+        // start to loop result at interval of 2s
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            let result = client
+                .get_prove_result(GetProveResultRequest {
+                    block_number: client_input.current_block.number,
+                })
+                .await?;
+            let response = result.get_ref();
+            if response.proof_with_publics.len() > 0 {
+                info!("Proof successfully generated!");
+                let prove_end = proving_start.elapsed();
 
-            // let proving_duration = proving_start.elapsed();
-            // let proof_bytes = bincode::serialize(&proof.proof).unwrap();
-
-            // hooks
-            //     .on_proving_end(
-            //         client_input.current_block.number,
-            //         &proof_bytes,
-            //         self.vk().as_ref(),
-            //         cycle_count,
-            //         proving_duration,
-            //     )
-            //     .await?;
-
-            // info!("Proof successfully generated!");
+                // report the result to the ethproofs
+                hooks
+                    .on_proving_end(
+                        client_input.current_block.number,
+                        &response.proof_with_publics,
+                        &response.verifier_id,
+                        Some(response.proving_cycles),
+                        prove_end,
+                    )
+                    .await?;
+                break;
+            } else {
+                info!("Waiting for proof generation...");
+            }
+            info!("Proof successfully generated!");
         }
-
         Ok(())
     }
 }
@@ -178,7 +156,6 @@ where
         hooks: C::Hooks,
         config: Config,
     ) -> eyre::Result<Self> {
-
         Ok(Self {
             provider,
             host_executor: HostExecutor::new(
@@ -259,6 +236,7 @@ where
                 client_input
             }
         };
+        info!(?client_input, "Client input loaded");
 
         self.process_client(client_input, &self.hooks).await?;
 
@@ -298,8 +276,7 @@ where
         cache_dir: PathBuf,
         config: Config,
     ) -> eyre::Result<Self> {
-
-        Ok(Self {cache_dir, hooks , config })
+        Ok(Self { cache_dir, hooks, config })
     }
 }
 
@@ -317,7 +294,7 @@ where
 
         self.process_client(client_input, &self.hooks).await
     }
-    
+
     fn config(&self) -> &Config {
         &self.config
     }

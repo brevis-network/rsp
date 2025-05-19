@@ -74,3 +74,5 @@ impl Config {
         }
     }
 }
+
+tonic::include_proto!("prover_server");

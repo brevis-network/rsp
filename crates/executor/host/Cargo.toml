@@ -61,6 +61,19 @@ alloy-rpc-types.workspace = true
 # op
 op-alloy-network.workspace = true
 
+# tonic
+prost = "0.13"
+prost-types = "0.13"
+tonic = { version = "0.13", features = ["zstd"] }
+tonic-build = { version = "0.13", features = ["prost"] }
+
+# tokio
+tokio-stream = "0.1"
+tokio-util = "0.7.15"
+
+[build-dependencies]
+tonic-build = "0.13"
+
 [dev-dependencies]
 alloy-primitives.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }

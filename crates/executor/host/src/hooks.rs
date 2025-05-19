@@ -28,7 +28,7 @@ pub trait ExecutionHooks: Send {
         &self,
         _block_number: u64,
         _proof_bytes: &[u8],
-        _vk: &SP1VerifyingKey,
+        _vk: &str,
         _cycle_count: Option<u64>,
         _proving_duration: Duration,
     ) -> impl Future<Output = eyre::Result<()>> {
