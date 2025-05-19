@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use alloy_network::Ethereum;
 use alloy_provider::{Provider, ProviderBuilder, RootProvider, WsConnect};
@@ -7,12 +7,9 @@ use cli::Args;
 use eth_proofs::EthProofsClient;
 use futures::{future::ready, StreamExt};
 use rsp_host_executor::{
-    alerting::AlertingClient, create_eth_block_execution_strategy_factory, BlockExecutor,
-    EthExecutorComponents, FullExecutor,
+    alerting::AlertingClient, create_eth_block_execution_strategy_factory, BlockExecutor, EthExecutorComponents, FullExecutor
 };
 use rsp_provider::create_provider;
-use sp1_sdk::ProverClient;
-use tokio::time::sleep;
 use tracing::{debug, error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -45,6 +42,20 @@ async fn main() -> eyre::Result<()> {
     let config = args.as_config().await?;
 
     let elf = include_bytes!("../elf/rsp-client-elf").to_vec();
+    let block_execution_strategy_factory =
+        create_eth_block_execution_strategy_factory(&config.genesis, None);
+    // let host_executor = HostExecutor::new(
+    //     block_execution_strategy_factory,
+    //     Arc::new(EthExecutorComponents::try_into_chain_spec(&config.genesis)?),
+    // );
+
+    let eth_proofs_client = EthProofsClient::new(
+        args.eth_proofs_cluster_id,
+        args.eth_proofs_endpoint,
+        args.eth_proofs_api_token,
+    );
+
+    let alerting_client = args.pager_duty_integration_key.map(AlertingClient::new);
 
     let ws = WsConnect::new(args.ws_rpc_url);
     let ws_provider = ProviderBuilder::new().on_ws(ws).await?;
@@ -55,44 +66,30 @@ async fn main() -> eyre::Result<()> {
     let mut stream =
         subscription.into_stream().filter(|h| ready(h.number % args.block_interval == 0));
 
-    let mut builder = ProverClient::builder().cuda();
-    if let Some(endpoint) = &args.moongate_endpoint {
-        builder = builder.with_moongate_endpoint(endpoint)
-    }
-
-    // let client = Arc::new(builder.build());
-
-    // let executor = FullExecutor::<EthExecutorComponents<_, _>, _>::try_new(
-    //     http_provider.clone(),
-    //     elf,
-    //     block_execution_strategy_factory,
-    //     client,
-    //     eth_proofs_client,
-    //     config,
-    // )
-    // .await?;
+    let executor = FullExecutor::<EthExecutorComponents<_,sp1_sdk::CudaProver>, RootProvider>::try_new(
+        http_provider.clone(),
+        block_execution_strategy_factory,
+        eth_proofs_client,
+        config,
+    )
+    .await?;
 
     info!("Latest block number: {}", http_provider.get_block_number().await?);
 
     while let Some(header) = stream.next().await {
         // Wait for the block to be avaliable in the HTTP provider
-        // executor.wait_for_block(header.number).await?;
-        wait_for_block::<Ethereum>(http_provider.clone(), header.number).await?;
+        executor.wait_for_block(header.number).await?;
 
+        if let Err(err) = executor.execute(header.number).await {
+            let error_message = format!("Error handling block {}: {err}", header.number);
+            error!(error_message);
+
+            if let Some(alerting_client) = &alerting_client {
+                alerting_client.send_alert(error_message).await;
+            }
+        }
         debug!("Received Block number: {}", header.number);
-
-        // TODO: send the input buffer and elf to the pico proprocessor gPRC server.
-        break;
     }
 
-    Ok(())
-}
-
-async fn wait_for_block<N>(provider: RootProvider, block_number: u64) -> eyre::Result<()> {
-    let block_number = block_number.into();
-
-    while provider.get_block_by_number(block_number).await?.is_none() {
-        sleep(Duration::from_millis(100)).await;
-    }
     Ok(())
 }
