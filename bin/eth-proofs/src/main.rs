@@ -8,7 +8,7 @@ use rsp_host_executor::{
     alerting::AlertingClient, create_eth_block_execution_strategy_factory, BlockExecutor, EthExecutorComponents, FullExecutor
 };
 use rsp_provider::create_provider;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod cli;
@@ -71,13 +71,15 @@ async fn main() -> eyre::Result<()> {
 
     // test block 22515566
     if let Err(err) = executor.execute(22515566).await {
-            let error_message = format!("Error handling block {}: {err}", 22515566);
-            error!(error_message);
+        let error_message = format!("Error handling block {}: {err}", 22515566);
+        error!(error_message);
 
-            if let Some(alerting_client) = &alerting_client {
-                alerting_client.send_alert(error_message).await;
-            }
+        if let Some(alerting_client) = &alerting_client {
+            alerting_client.send_alert(error_message).await;
+        }
     }
+    // sleep 5s 
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     // while let Some(header) = stream.next().await {
     //     // Wait for the block to be avaliable in the HTTP provider

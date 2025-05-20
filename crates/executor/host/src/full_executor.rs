@@ -98,7 +98,6 @@ pub trait BlockExecutor<C: ExecutorComponents> {
                 .await?;
             let response = result.get_ref();
             if response.proof_with_publics.len() > 0 {
-                info!("Proof successfully generated!");
                 let prove_end = proving_start.elapsed();
 
                 // report the result to the ethproofs
@@ -111,6 +110,7 @@ pub trait BlockExecutor<C: ExecutorComponents> {
                         prove_end,
                     )
                     .await?;
+                info!("Proof successfully generated!");
                 break;
             } else {
                 info!("Waiting for proof generation...");

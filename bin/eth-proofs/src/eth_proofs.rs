@@ -6,7 +6,7 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use rsp_host_executor::ExecutionHooks;
 use sp1_sdk::{HashableKey, SP1VerifyingKey};
-use tracing::error;
+use tracing::{debug, error, field::debug, info};
 
 #[derive(Debug, Clone)]
 pub struct EthProofsClient {
@@ -96,6 +96,8 @@ impl EthProofsClient {
             "cluster_id": self.cluster_id,
         });
 
+        debug!("proved json report: {}", json);
+
         let this = self.clone();
 
         // Spawn another task to avoid retries to impact block execution
@@ -116,6 +118,8 @@ impl EthProofsClient {
             if let Err(err) = response {
                 error!("Failed to report proof proving: {}", err)
             }
+            info!(" Submit proof to the API Successfully");
+
         });
     }
 }
@@ -149,7 +153,6 @@ impl ExecutionHooks for EthProofsClient {
             vk,
         )
         .await;
-
         Ok(())
     }
 }
