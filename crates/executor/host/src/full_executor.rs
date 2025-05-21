@@ -17,7 +17,11 @@ use rsp_rpc_db::RpcDb;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
-use tokio::{sync::mpsc::Sender, task, time::sleep};
+use tokio::{
+    sync::mpsc::{Sender, UnboundedSender},
+    task,
+    time::sleep,
+};
 use tonic::{codec::CompressionEncoding, transport::Channel};
 use tracing::{info, info_span, warn};
 
@@ -51,52 +55,43 @@ pub trait BlockExecutor<C: ExecutorComponents> {
     async fn execute(
         &self,
         block_number: u64,
-        sender: Option<&Sender<(u64, Instant)>>,
+        sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
     ) -> eyre::Result<()>;
 
     fn config(&self) -> &Config;
+}
 
-    #[allow(async_fn_in_trait)]
-    async fn process_client(
-        &self,
-        client_input: ClientExecutorInput<C::Primitives>,
-        hooks: &C::Hooks,
-    ) -> eyre::Result<()> {
-        let buffer = bincode::serialize(&client_input).unwrap();
-        // ethproof skip_client_execution is true,ignore the false scenario just for testing
-        if self.config().skip_client_execution {
-            info!("Client execution skipped");
-        } else {
-            warn!("skip_client_execution is false, client execution need to be performed");
-        }
+pub async fn process_client<C: ExecutorComponents>(
+    hooks: &C::Hooks,
+    block_number: u64,
+    buffer: Vec<u8>,
+) -> eyre::Result<()> {
+    info!("Starting proof generation");
 
-        info!("Starting proof generation");
+    hooks.on_proving_start(block_number).await?;
 
-        hooks.on_proving_start(client_input.current_block.number).await?;
-
-        // TODO:START REMOTE PROVING
-        let mut client = PicoProverClient::connect("http://[::1]:50052")
-            .await?
-            .max_encoding_message_size(600 * 1024 * 1024)
-            .max_decoding_message_size(600 * 1024 * 1024)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Zstd);
-        client
-            .request_prover(ProvingRequest {
-                block_number: client_input.current_block.number,
-                input_buffer: Some(buffer),
-                proving_type: ProvingType::Gpu as i32,
-            })
-            .await?;
-        Ok(())
-    }
+    // TODO:START REMOTE PROVING
+    let mut client = PicoProverClient::connect("http://[::1]:50052")
+        .await?
+        .max_encoding_message_size(600 * 1024 * 1024)
+        .max_decoding_message_size(600 * 1024 * 1024)
+        .accept_compressed(CompressionEncoding::Zstd)
+        .send_compressed(CompressionEncoding::Zstd);
+    client
+        .request_prover(ProvingRequest {
+            block_number,
+            input_buffer: Some(buffer),
+            proving_type: ProvingType::Gpu as i32,
+        })
+        .await?;
+    Ok(())
 }
 
 pub async fn fetch_proving_status<C: ExecutorComponents>(
     block_number: u64,
     start_time: Instant,
     hooks: &C::Hooks,
-    grpc_client: &mut PicoProverClient<Channel>
+    grpc_client: &mut PicoProverClient<Channel>,
 ) -> eyre::Result<()> {
     // start to loop result at interval of 2s
     let mut interval = tokio::time::interval(Duration::from_secs(2));
@@ -135,7 +130,7 @@ where
     async fn execute(
         &self,
         block_number: u64,
-        sender: Option<&Sender<(u64, Instant)>>,
+        sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
     ) -> eyre::Result<()> {
         match self {
             Either::Left(ref executor) => executor.execute(block_number, sender).await,
@@ -202,7 +197,7 @@ where
     async fn execute(
         &self,
         block_number: u64,
-        sender: Option<&Sender<(u64, Instant)>>,
+        sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
     ) -> eyre::Result<()> {
         self.hooks.on_execution_start(block_number).await?;
 
@@ -264,10 +259,10 @@ where
         };
         info!(?client_input, "Client input loaded");
 
-        self.process_client(client_input, &self.hooks).await?;
+        // Notification to the sender the prover started
         if let Some(sender) = sender {
-            let start_time = Instant::now();
-            sender.send((block_number, start_time)).await?;
+            let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
+            sender.send((block_number, buffer))?;
         }
         Ok(())
     }
@@ -316,7 +311,7 @@ where
     async fn execute(
         &self,
         block_number: u64,
-        sender: Option<&Sender<(u64, Instant)>>,
+        sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
     ) -> eyre::Result<()> {
         let client_input = try_load_input_from_cache::<C::Primitives>(
             &self.cache_dir,
@@ -324,8 +319,8 @@ where
             block_number,
         )?
         .ok_or(eyre::eyre!("No cached input found"))?;
-
-        self.process_client(client_input, &self.hooks).await
+        let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
+        process_client::<C>(&self.hooks, block_number, buffer).await
     }
 
     fn config(&self) -> &Config {

@@ -3,9 +3,9 @@ use alloy_provider::{Provider, ProviderBuilder, RootProvider, WsConnect};
 use clap::Parser;
 use cli::Args;
 use eth_proofs::EthProofsClient;
-use futures::{channel::mpsc::unbounded, future::ready, StreamExt};
+use futures::{future::ready, StreamExt};
 use rsp_host_executor::{
-    alerting::AlertingClient, create_eth_block_execution_strategy_factory, fetch_proving_status,
+    process_client, create_eth_block_execution_strategy_factory, fetch_proving_status,
     pico_prover_client::PicoProverClient, BlockExecutor, EthExecutorComponents, FullExecutor,
 };
 use rsp_provider::create_provider;
@@ -77,7 +77,7 @@ async fn main() -> eyre::Result<()> {
     // // sleep 5s
     // tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(20);
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
     let hooks = eth_proofs_client.clone();
     tokio::task::spawn(async move {
@@ -88,7 +88,10 @@ async fn main() -> eyre::Result<()> {
             .max_decoding_message_size(600 * 1024 * 1024)
             .accept_compressed(CompressionEncoding::Zstd)
             .send_compressed(CompressionEncoding::Zstd);
-        while let Some((block_num, start_time)) = receiver.recv().await {
+
+        while let Some((block_num, client_input)) = receiver.recv().await {
+            let start_time = std::time::Instant::now();
+            process_client::<EthExecutorComponents<_, sp1_sdk::CudaProver>>(&hooks, block_num, client_input).await.unwrap();
             let res = fetch_proving_status::<EthExecutorComponents<_, sp1_sdk::CudaProver>>(
                 block_num, start_time, &hooks, &mut client,
             )
