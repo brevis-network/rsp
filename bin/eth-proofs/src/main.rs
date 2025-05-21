@@ -90,8 +90,10 @@ async fn main() -> eyre::Result<()> {
             .send_compressed(CompressionEncoding::Zstd);
 
         while let Some((block_num, client_input)) = receiver.recv().await {
+            info!("receiver client input, block_number: {}, input size: {}", block_num, client_input.len());
             let start_time = std::time::Instant::now();
             process_client::<EthExecutorComponents<_, sp1_sdk::CudaProver>>(&hooks, block_num, client_input).await.unwrap();
+            // loop until the current block proof is ready
             let res = fetch_proving_status::<EthExecutorComponents<_, sp1_sdk::CudaProver>>(
                 block_num, start_time, &hooks, &mut client,
             )

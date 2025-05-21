@@ -77,6 +77,7 @@ pub async fn process_client<C: ExecutorComponents>(
         .max_decoding_message_size(600 * 1024 * 1024)
         .accept_compressed(CompressionEncoding::Zstd)
         .send_compressed(CompressionEncoding::Zstd);
+
     client
         .request_prover(ProvingRequest {
             block_number,
@@ -84,6 +85,8 @@ pub async fn process_client<C: ExecutorComponents>(
             proving_type: ProvingType::Gpu as i32,
         })
         .await?;
+    info!("gRPC client post to prover, blk number: {}", block_number);
+
     Ok(())
 }
 
@@ -262,6 +265,8 @@ where
         // Notification to the sender the prover started
         if let Some(sender) = sender {
             let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
+            info!("Sending client input to the sender, block_number: {}, input size: {}", block_number, buffer.len());
+
             sender.send((block_number, buffer))?;
         }
         Ok(())
