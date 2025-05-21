@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
 use alloy_consensus::{BlockHeader, Header, TxReceipt};
 use alloy_evm::EthEvmFactory;
@@ -76,6 +76,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         P: Provider<N> + Clone,
         N: Network,
     {
+        let fetch_start = Instant::now();
         // Fetch the current block and the previous block from the provider.
         tracing::info!("fetching the current block and the previous block");
         let current_block = provider
@@ -267,7 +268,8 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             opcode_tracking,
         };
         tracing::info!("successfully generated client input");
-
+        let fetch_duration = fetch_start.elapsed();
+        tracing::info!("fetch client input cost: {:?}", fetch_duration);
         Ok(client_input)
     }
 }
