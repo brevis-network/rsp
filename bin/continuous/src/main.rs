@@ -133,7 +133,7 @@ where
     executor.wait_for_block(number).await?;
 
     loop {
-        match executor.execute(number).await {
+        match executor.execute(number, None).await {
             Ok(_) => {
                 return Ok(());
             }

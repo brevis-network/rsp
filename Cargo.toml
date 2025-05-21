@@ -77,6 +77,23 @@ reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = 
 reth-optimism-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.3.10", default-features = false }
 reth-optimism-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.3.10", default-features = false }
 
+# reth-primitives-traits = { path = "/Users/jie/Documents/src/reth/crates/primitives-traits", default-features = false }
+# reth-consensus = { path = "/Users/jie/Documents/src/reth/crates/consensus/consensus", default-features = false }
+# reth-evm = { path = "/Users/jie/Documents/src/reth/crates/evm", default-features = false }
+# reth-evm-ethereum = { path = "/Users/jie/Documents/src/reth/crates/ethereum/evm",  default-features = false }
+# reth-optimism-evm = { path = "/Users/jie/Documents/src/reth/crates/optimism/evm",  default-features = false }
+# reth-optimism-primitives = { path = "/Users/jie/Documents/src/reth/crates/optimism/primitives",  default-features = false }
+# reth-storage-errors = { path = "/Users/jie/Documents/src/reth/crates/storage/errors",  default-features = false }
+# reth-trie = { path = "/Users/jie/Documents/src/reth/crates/trie/trie",  default-features = false }
+# reth-chainspec = { path = "/Users/jie/Documents/src/reth/crates/chainspec",  default-features = false }
+# reth-optimism-chainspec = { path = "/Users/jie/Documents/src/reth/crates/optimism/chainspec",  default-features = false }
+# reth-execution-types = { path = "/Users/jie/Documents/src/reth/crates/evm/execution-types",  default-features = false }
+# reth-errors = { path = "/Users/jie/Documents/src/reth/crates/errors",  default-features = false }
+# reth-ethereum-consensus = { path = "/Users/jie/Documents/src/reth/crates/ethereum/consensus",  default-features = false }
+# reth-ethereum-primitives = { path = "/Users/jie/Documents/src/reth/crates/ethereum/primitives",  default-features = false, features = ["serde"] }
+# reth-optimism-consensus = { path = "/Users/jie/Documents/src/reth/crates/optimism/consensus",  default-features = false }
+# reth-optimism-forks = { path = "/Users/jie/Documents/src/reth/crates/optimism/hardforks",  default-features = false }
+
 # revm
 revm = { version = "22.0.1", features = [
     "serde",

@@ -23,7 +23,7 @@ mod executor_components;
 pub use executor_components::{EthExecutorComponents, ExecutorComponents, OpExecutorComponents};
 
 mod full_executor;
-pub use full_executor::{build_executor, BlockExecutor, EitherExecutor, FullExecutor};
+pub use full_executor::{build_executor, BlockExecutor, EitherExecutor, FullExecutor, fetch_proving_status};
 
 mod hooks;
 pub use hooks::ExecutionHooks;

@@ -55,7 +55,7 @@ async fn test_in_zkvm() {
     .await
     .unwrap();
 
-    executor.execute(20600000).await.unwrap();
+    executor.execute(20600000, None).await.unwrap();
 }
 
 enum Hook {

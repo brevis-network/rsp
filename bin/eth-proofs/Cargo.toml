@@ -37,6 +37,8 @@ alloy-transport.workspace = true
 alloy-transport-ws.workspace = true
 alloy-network.workspace = true
 
+tonic = { version = "0.13", features = ["zstd"] }
+
 
 [build-dependencies]
 sp1-build.workspace = true

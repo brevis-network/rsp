@@ -8,7 +8,6 @@ use std::{
 use crate::{
     pico_prover_client::PicoProverClient, GetProveResultRequest, ProvingRequest, ProvingType,
 };
-use tonic::codec::CompressionEncoding;
 use alloy_provider::Provider;
 use either::Either;
 use eyre::bail;
@@ -18,8 +17,8 @@ use rsp_rpc_db::RpcDb;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
-use tokio::{task, time::sleep};
-use tonic::{Request, Response, Status};
+use tokio::{sync::mpsc::Sender, task, time::sleep};
+use tonic::{codec::CompressionEncoding, transport::Channel};
 use tracing::{info, info_span, warn};
 
 use crate::{Config, ExecutionHooks, ExecutorComponents, HostExecutor};
@@ -49,7 +48,11 @@ where
 
 pub trait BlockExecutor<C: ExecutorComponents> {
     #[allow(async_fn_in_trait)]
-    async fn execute(&self, block_number: u64) -> eyre::Result<()>;
+    async fn execute(
+        &self,
+        block_number: u64,
+        sender: Option<&Sender<(u64, Instant)>>,
+    ) -> eyre::Result<()>;
 
     fn config(&self) -> &Config;
 
@@ -66,15 +69,14 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         } else {
             warn!("skip_client_execution is false, client execution need to be performed");
         }
-        
+
         info!("Starting proof generation");
 
-        let proving_start = Instant::now();
         hooks.on_proving_start(client_input.current_block.number).await?;
 
         // TODO:START REMOTE PROVING
-        let mut client = PicoProverClient::connect("http://[::1]:50052").
-            await?
+        let mut client = PicoProverClient::connect("http://[::1]:50052")
+            .await?
             .max_encoding_message_size(600 * 1024 * 1024)
             .max_decoding_message_size(600 * 1024 * 1024)
             .accept_compressed(CompressionEncoding::Zstd)
@@ -86,38 +88,43 @@ pub trait BlockExecutor<C: ExecutorComponents> {
                 proving_type: ProvingType::Gpu as i32,
             })
             .await?;
-
-        // start to loop result at interval of 2s
-        let mut interval = tokio::time::interval(Duration::from_secs(2));
-        loop {
-            interval.tick().await;
-            let result = client
-                .get_prove_result(GetProveResultRequest {
-                    block_number: client_input.current_block.number,
-                })
-                .await?;
-            let response = result.get_ref();
-            if response.proof_with_publics.len() > 0 {
-                let prove_end = proving_start.elapsed();
-
-                // report the result to the ethproofs
-                hooks
-                    .on_proving_end(
-                        client_input.current_block.number,
-                        &response.proof_with_publics,
-                        &response.verifier_id,
-                        Some(response.proving_cycles),
-                        prove_end,
-                    )
-                    .await?;
-                info!("Proof successfully generated!");
-                break;
-            } else {
-                info!("Waiting for proof generation...");
-            }
-        }
         Ok(())
     }
+}
+
+pub async fn fetch_proving_status<C: ExecutorComponents>(
+    block_number: u64,
+    start_time: Instant,
+    hooks: &C::Hooks,
+    grpc_client: &mut PicoProverClient<Channel>
+) -> eyre::Result<()> {
+    // start to loop result at interval of 2s
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+
+    loop {
+        interval.tick().await;
+        let result = grpc_client.get_prove_result(GetProveResultRequest { block_number }).await?;
+        let response = result.get_ref();
+        if response.proof_with_publics.len() > 0 {
+            let prove_end = start_time.elapsed();
+
+            // report the result to the ethproofs
+            hooks
+                .on_proving_end(
+                    block_number,
+                    &response.proof_with_publics,
+                    &response.verifier_id,
+                    Some(response.proving_cycles),
+                    prove_end,
+                )
+                .await?;
+            info!("Proof successfully generated!");
+            break;
+        } else {
+            info!("Waiting for proof generation...");
+        }
+    }
+    Ok(())
 }
 
 impl<C, P> BlockExecutor<C> for EitherExecutor<C, P>
@@ -125,10 +132,14 @@ where
     C: ExecutorComponents,
     P: Provider<C::Network> + Clone,
 {
-    async fn execute(&self, block_number: u64) -> eyre::Result<()> {
+    async fn execute(
+        &self,
+        block_number: u64,
+        sender: Option<&Sender<(u64, Instant)>>,
+    ) -> eyre::Result<()> {
         match self {
-            Either::Left(ref executor) => executor.execute(block_number).await,
-            Either::Right(ref executor) => executor.execute(block_number).await,
+            Either::Left(ref executor) => executor.execute(block_number, sender).await,
+            Either::Right(ref executor) => executor.execute(block_number, sender).await,
         }
     }
 
@@ -188,7 +199,11 @@ where
     C: ExecutorComponents,
     P: Provider<C::Network> + Clone,
 {
-    async fn execute(&self, block_number: u64) -> eyre::Result<()> {
+    async fn execute(
+        &self,
+        block_number: u64,
+        sender: Option<&Sender<(u64, Instant)>>,
+    ) -> eyre::Result<()> {
         self.hooks.on_execution_start(block_number).await?;
 
         let client_input_from_cache = self.config.cache_dir.as_ref().and_then(|cache_dir| {
@@ -250,7 +265,10 @@ where
         info!(?client_input, "Client input loaded");
 
         self.process_client(client_input, &self.hooks).await?;
-
+        if let Some(sender) = sender {
+            let start_time = Instant::now();
+            sender.send((block_number, start_time)).await?;
+        }
         Ok(())
     }
 
@@ -295,7 +313,11 @@ impl<C> BlockExecutor<C> for CachedExecutor<C>
 where
     C: ExecutorComponents,
 {
-    async fn execute(&self, block_number: u64) -> eyre::Result<()> {
+    async fn execute(
+        &self,
+        block_number: u64,
+        sender: Option<&Sender<(u64, Instant)>>,
+    ) -> eyre::Result<()> {
         let client_input = try_load_input_from_cache::<C::Primitives>(
             &self.cache_dir,
             self.config.chain.id(),
