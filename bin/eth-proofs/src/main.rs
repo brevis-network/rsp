@@ -77,7 +77,7 @@ async fn main() -> eyre::Result<()> {
     // // sleep 5s
     // tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u8>)>();
 
     let hooks = eth_proofs_client.clone();
     tokio::task::spawn(async move {
