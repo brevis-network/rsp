@@ -60,6 +60,7 @@ enum ErrCode {
     ERROR_CODE_UNDEFINED = 0;
     INVALID_AUTH = 1;
     INTERNAL = 2;
+    PROVE_FAILED = 3;
 }
 
 

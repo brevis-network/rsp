@@ -54,6 +54,10 @@ pub struct Args {
     /// execute a specific block number to test e2e
     #[clap(long)]
     pub test_e2e: bool,
+
+    /// The gRPC endopoint to execute proving.
+    #[clap(long, env)]
+    pub witness_getaway_endpoint: String,
 }
 
 impl Args {

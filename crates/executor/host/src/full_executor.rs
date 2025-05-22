@@ -65,13 +65,14 @@ pub async fn process_client<C: ExecutorComponents>(
     hooks: &C::Hooks,
     block_number: u64,
     buffer: Vec<u8>,
+    grpc_endpoint: String,
 ) -> eyre::Result<()> {
     info!("Starting proof generation");
 
     hooks.on_proving_start(block_number).await?;
 
     // TODO:START REMOTE PROVING
-    let mut client = PicoProverClient::connect("http://[::1]:50052")
+    let mut client = PicoProverClient::connect(grpc_endpoint)
         .await?
         .max_encoding_message_size(600 * 1024 * 1024)
         .max_decoding_message_size(600 * 1024 * 1024)
@@ -340,7 +341,7 @@ where
         )?
         .ok_or(eyre::eyre!("No cached input found"))?;
         let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
-        process_client::<C>(&self.hooks, block_number, buffer).await
+        process_client::<C>(&self.hooks, block_number, buffer, "".to_string()).await
     }
 
     fn config(&self) -> &Config {

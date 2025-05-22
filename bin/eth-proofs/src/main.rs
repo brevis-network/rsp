@@ -85,7 +85,7 @@ async fn main() -> eyre::Result<()> {
     } else {
         let hooks = eth_proofs_client.clone();
         tokio::task::spawn(async move {
-            let mut client = PicoProverClient::connect("http://[::1]:50052")
+            let mut client = PicoProverClient::connect(args.witness_getaway_endpoint.clone())
                 .await
                 .unwrap()
                 .max_encoding_message_size(600 * 1024 * 1024)
@@ -104,6 +104,7 @@ async fn main() -> eyre::Result<()> {
                     &hooks,
                     block_num,
                     client_input,
+                    args.witness_getaway_endpoint.clone(),
                 )
                 .await
                 .unwrap();
