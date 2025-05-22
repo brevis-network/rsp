@@ -104,8 +104,6 @@ async fn main() -> eyre::Result<()> {
         }
     });
 
-    debug!("[coordinator] emulator init end");
-
     while let Some(header) = stream.next().await {
         // Wait for the block to be avaliable in the HTTP provider
         executor.wait_for_block(header.number).await?;

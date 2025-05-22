@@ -18,12 +18,12 @@ use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
 use tokio::{
-    sync::mpsc::{Sender, UnboundedSender},
+    sync::mpsc::UnboundedSender,
     task,
     time::sleep,
 };
 use tonic::{codec::CompressionEncoding, transport::Channel};
-use tracing::{info, info_span, warn};
+use tracing::{info, info_span, warn, error};
 
 use crate::{Config, ExecutionHooks, ExecutorComponents, HostExecutor};
 
@@ -103,21 +103,32 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
         interval.tick().await;
         let result = grpc_client.get_prove_result(GetProveResultRequest { block_number }).await?;
         let response = result.get_ref();
-        if response.proof_with_publics.len() > 0 {
-            let prove_end = start_time.elapsed();
 
-            // report the result to the ethproofs
-            hooks
-                .on_proving_end(
-                    block_number,
-                    &response.proof_with_publics,
-                    &response.verifier_id,
-                    Some(response.proving_cycles),
-                    prove_end,
-                )
-                .await?;
-            info!("Proof {:?} successfully generated!, proving time: {:?}", block_number, prove_end.clone());
-            break;
+        if let Some(prover_err) = response.clone().err {
+            let error_message = format!("Prove failed: {:?}", prover_err);
+            error!(error_message);
+            return Err(eyre::eyre!(error_message));
+        }
+        
+        if let Some(proof_info) = response.clone().proof_info {
+            if proof_info.proof_with_publics.len() > 0 {
+                let prove_end = start_time.elapsed();
+
+                // report the result to the ethproofs
+                hooks
+                    .on_proving_end(
+                        block_number,
+                        &proof_info.proof_with_publics,
+                        &proof_info.verifier_id,
+                        Some(proof_info.proving_cycles),
+                        prove_end,
+                    )
+                    .await?;
+                info!("Proof {:?} successfully generated!, proving time: {:?}", block_number, prove_end.clone());
+                break;
+            } else {
+                info!("Waiting for proof {:?} generation...", block_number);
+            }
         } else {
             info!("Waiting for proof {:?} generation...", block_number);
         }

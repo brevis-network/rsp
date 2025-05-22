@@ -5,8 +5,7 @@ use eyre::eyre;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use rsp_host_executor::ExecutionHooks;
-use sp1_sdk::{HashableKey, SP1VerifyingKey};
-use tracing::{debug, error, field::debug, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone)]
 pub struct EthProofsClient {

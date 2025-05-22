@@ -10,7 +10,6 @@ use rsp_host_executor::{
     EthExecutorComponents, ExecutorComponents, FullExecutor,
 };
 use rsp_provider::create_provider;
-use sp1_sdk::{include_elf, EnvProver};
 use tokio::{sync::Semaphore, task};
 use tracing::{error, info, instrument, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -42,7 +41,6 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     let config = Config::mainnet();
 
-    let elf = include_elf!("rsp-client").to_vec();
     let block_execution_strategy_factory =
         create_eth_block_execution_strategy_factory(&config.genesis, None);
 
@@ -52,7 +50,6 @@ async fn main() -> eyre::Result<()> {
     let http_provider = create_provider(args.http_rpc_url);
     let alerting_client =
         args.pager_duty_integration_key.map(|key| Arc::new(AlertingClient::new(key)));
-    let prover_client = Arc::new(EnvProver::new());
 
     let executor = Arc::new(
         FullExecutor::<EthExecutorComponents<_>, _>::try_new(

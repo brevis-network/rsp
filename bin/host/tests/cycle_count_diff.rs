@@ -1,4 +1,4 @@
-use std::{env, fs::File, io::Write, sync::Arc};
+use std::{env, fs::File, io::Write};
 
 use alloy_chains::Chain;
 use alloy_consensus::Block;
@@ -16,7 +16,7 @@ use rsp_host_executor::{
 };
 use rsp_primitives::genesis::Genesis;
 use serde::{Deserialize, Serialize};
-use sp1_sdk::{include_elf, EnvProver, ExecutionReport};
+use sp1_sdk::ExecutionReport;
 use thousands::Separable;
 use url::Url;
 
@@ -39,12 +39,10 @@ async fn test_in_zkvm() {
     };
 
     let rpc_url = Url::parse(env::var("RPC_1").unwrap().as_str()).expect("invalid rpc url");
-    let elf = include_elf!("rsp-client").to_vec();
     let block_execution_strategy_factory =
         create_eth_block_execution_strategy_factory(&config.genesis, config.custom_beneficiary);
 
     let provider = RootProvider::<Ethereum>::new_http(rpc_url);
-    let client = Arc::new(EnvProver::new());
 
     let executor = build_executor::<EthExecutorComponents<_>, _>(
         Some(provider),

@@ -25,6 +25,11 @@ message GetProveResultRequest {
 }
 
 message GetProveResultResponse {
+    ErrMsg err = 1;
+    ProofInfo proof_info = 2;
+}
+
+message ProofInfo {
     bytes proof_with_publics = 1; // bincode bytes of combined MetaProof when the proof type is COMBINE
     uint64 block_number = 2;
     uint64 proving_cycles = 3;
