@@ -51,6 +51,9 @@ pub struct Args {
     #[clap(long)]
     pub cache_dir: Option<PathBuf>,
 
+    /// execute a specific block number to test e2e
+    #[clap(long)]
+    pub test_e2e: bool,
 }
 
 impl Args {
