@@ -202,6 +202,8 @@ where
         block_number: u64,
         sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
     ) -> eyre::Result<()> {
+        let fetch_data_start = Instant::now();
+
         self.hooks.on_execution_start(block_number).await?;
 
         let client_input_from_cache = self.config.cache_dir.as_ref().and_then(|cache_dir| {
@@ -261,7 +263,9 @@ where
             }
         };
         info!(?client_input, "Client input loaded");
-
+        let fetch_data_duration = fetch_data_start.elapsed();
+        info!("Fetch data took: {:?}", fetch_data_duration);
+        
         // Notification to the sender the prover started
         if let Some(sender) = sender {
             let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
