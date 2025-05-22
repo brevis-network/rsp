@@ -116,10 +116,10 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
                     prove_end,
                 )
                 .await?;
-            info!("Proof successfully generated!");
+            info!("Proof {:?} successfully generated!, proving time: {:?}", block_number, prove_end.clone());
             break;
         } else {
-            info!("Waiting for proof generation...");
+            info!("Waiting for proof {:?} generation...", block_number);
         }
     }
     Ok(())
