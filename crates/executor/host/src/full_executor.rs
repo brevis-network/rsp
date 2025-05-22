@@ -274,13 +274,13 @@ where
                 client_input
             }
         };
-        info!(?client_input, "Client input loaded");
+        let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
+        info!("client input loaded, size: {}", buffer.len());
         let fetch_data_duration = fetch_data_start.elapsed();
         info!("Fetch data took: {:?}", fetch_data_duration);
         
         // Notification to the sender the prover started
         if let Some(sender) = sender {
-            let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
             info!("Sending client input to the sender, block_number: {}, input size: {}", block_number, buffer.len());
 
             sender.send((block_number, buffer))?;
