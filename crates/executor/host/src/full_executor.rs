@@ -1,5 +1,7 @@
 use std::{
     fmt::{Debug, Formatter},
+    fs::File,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -73,6 +75,11 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         // Execute the block inside the zkVM.
         let mut stdin = SP1Stdin::new();
         let buffer = bincode::serialize(&client_input).unwrap();
+        let mut file_path = PathBuf::from("pico_stdin");
+        file_path.push(format!("{}.bin", client_input.current_block.number));
+
+        let mut file = File::create(file_path).expect("Failed to create file");
+        file.write_all(&buffer).expect("Failed to write to file");
 
         stdin.write_vec(buffer);
 
@@ -82,6 +89,8 @@ pub trait BlockExecutor<C: ExecutorComponents> {
             info!("Client execution skipped");
         } else {
             // Only execute the program.
+            let start = Instant::now();
+
             let execute_result = execute_client(
                 client_input.current_block.number,
                 self.client(),
@@ -89,7 +98,12 @@ pub trait BlockExecutor<C: ExecutorComponents> {
                 stdin.clone(),
             )
             .await?;
+
+            let elapsed = start.elapsed().as_secs_f64();
             let (mut public_values, execution_report) = execute_result?;
+            let cycles = execution_report.total_instruction_count();
+            let hz = cycles as f64 / elapsed;
+            let mhz = hz / 1_000_000.0;
 
             // Read the block header.
             let header = public_values.read::<CommittedHeader>().header;
@@ -97,7 +111,7 @@ pub trait BlockExecutor<C: ExecutorComponents> {
             let input_block_hash = client_input.current_block.header.hash_slow();
 
             if input_block_hash != executed_block_hash {
-                return Err(HostError::HeaderMismatch(executed_block_hash, input_block_hash))?
+                return Err(HostError::HeaderMismatch(executed_block_hash, input_block_hash))?;
             }
 
             info!(?executed_block_hash, "Execution successful");
@@ -105,6 +119,14 @@ pub trait BlockExecutor<C: ExecutorComponents> {
             hooks
                 .on_execution_end::<C::Primitives>(&client_input.current_block, &execution_report)
                 .await?;
+
+            tracing::info!(
+                "block_number {}: {:.3} MHz ({} instructions in {:.3} s)",
+                header.number,
+                mhz,
+                cycles,
+                elapsed
+            );
         }
 
         if let Some(prove_mode) = self.config().prove_mode {

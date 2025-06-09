@@ -1,0 +1,107 @@
+[2m2025-06-01T07:04:11.709609Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m waiting for proving server to be ready
+[2m2025-06-01T07:04:11.713231Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m Response { url: "http://localhost:3000/twirp/api.ProverService/Ready", status: 200, headers: {"content-type": "application/protobuf", "content-length": "0", "date": "Sun, 01 Jun 2025 07:04:11 GMT"} }
+[2m2025-06-01T07:04:11.713254Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m proving server is not ready, retrying...
+[2m2025-06-01T07:04:13.215708Z[0m [32m INFO[0m vk verification: true
+[2m2025-06-01T07:04:13.715038Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m Response { url: "http://localhost:3000/twirp/api.ProverService/Ready", status: 200, headers: {"content-type": "application/protobuf", "content-length": "0", "date": "Sun, 01 Jun 2025 07:04:13 GMT"} }
+[2m2025-06-01T07:04:13.715088Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m proving server is not ready, retrying...
+[2m2025-06-01T07:04:15.716767Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m Response { url: "http://localhost:3000/twirp/api.ProverService/Ready", status: 200, headers: {"content-type": "application/protobuf", "content-length": "2", "date": "Sun, 01 Jun 2025 07:04:15 GMT"} }
+[2m2025-06-01T07:04:15.716820Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m proving server is ready
+[2m2025-06-01T07:04:17.732578Z[0m [32m INFO[0m [1msetup[0m: close [3mtime.busy[0m[2m=[0m1.94s [3mtime.idle[0m[2m=[0m7.61µs
+[2m2025-06-01T07:04:18.135146Z[0m [32m INFO[0m [2msp1_cuda[0m[2m:[0m Response { url: "http://localhost:3000/twirp/api.ProverService/Setup", status: 200, headers: {"content-type": "application/protobuf", "content-length": "323070674", "date": "Sun, 01 Jun 2025 07:04:15 GMT"} }
+[2m2025-06-01T07:04:19.291947Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴deserialize inputs
+[2m2025-06-01T07:04:20.653174Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴32,512,722 cycles
+[2m2025-06-01T07:04:20.654720Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴initialize witness db
+[2m2025-06-01T07:04:22.782373Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴32,444,246 cycles
+[2m2025-06-01T07:04:22.782526Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴recover senders
+[2m2025-06-01T07:04:30.233630Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴5,579,749 cycles
+[2m2025-06-01T07:04:30.233774Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴validate header
+[2m2025-06-01T07:04:30.233962Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴3,133 cycles
+[2m2025-06-01T07:04:30.234023Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴block execution
+[2m2025-06-01T07:04:30.959628Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:31.045431Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴51,236 cycles
+[2m2025-06-01T07:04:31.270006Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:31.343977Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴51,559 cycles
+[2m2025-06-01T07:04:31.417397Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-identity
+[2m2025-06-01T07:04:31.417473Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴1,531 cycles
+[2m2025-06-01T07:04:31.418039Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-identity
+[2m2025-06-01T07:04:31.418108Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴1,531 cycles
+[2m2025-06-01T07:04:31.418823Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-identity
+[2m2025-06-01T07:04:31.418890Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴1,531 cycles
+[2m2025-06-01T07:04:31.419538Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-identity
+[2m2025-06-01T07:04:31.419613Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴1,531 cycles
+[2m2025-06-01T07:04:31.424310Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:31.492043Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴48,304 cycles
+[2m2025-06-01T07:04:32.149361Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:32.226824Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴50,464 cycles
+[2m2025-06-01T07:04:32.417612Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:32.499020Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴48,773 cycles
+[2m2025-06-01T07:04:32.603638Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:32.682466Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴49,016 cycles
+[2m2025-06-01T07:04:32.754690Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:32.829962Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴48,314 cycles
+[2m2025-06-01T07:04:32.921411Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:32.997547Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴49,310 cycles
+[2m2025-06-01T07:04:33.050338Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:33.121367Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴50,050 cycles
+[2m2025-06-01T07:04:33.461920Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:33.548369Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴50,948 cycles
+[2m2025-06-01T07:04:33.767153Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ ┌╴precompile-ecrecover
+[2m2025-06-01T07:04:33.846129Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m │ └╴51,413 cycles
+[2m2025-06-01T07:04:33.993622Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴67,714,772 cycles
+[2m2025-06-01T07:04:33.993696Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴validate block post-execution
+[2m2025-06-01T07:04:34.134615Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴2,680,823 cycles
+[2m2025-06-01T07:04:34.134686Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴accrue logs bloom
+[2m2025-06-01T07:04:34.208274Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴1,299,666 cycles
+[2m2025-06-01T07:04:34.208346Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m ┌╴compute state root
+[2m2025-06-01T07:04:35.393518Z[0m [32m INFO[0m [1mexecute_client[0m[1m{[0m[3mnumber[0m[2m=[0m17106222[1m}[0m[2m:[0m [2msp1_core_executor::syscalls::write[0m[2m:[0m └╴15,958,696 cycles
+[2m2025-06-01T07:04:35.506249Z[0m [32m INFO[0m [2mrsp_host_executor::full_executor[0m[2m:[0m Execution successful [3mexecuted_block_hash[0m[2m=[0m0xe2947483136770b2eac272e558d2c3737d34794233c710c5f7f6ec77fc59940c
+
+Execution report:
+gas: 231271477
+opcode counts (159744519 total instructions):
+    37871016 add
+    24095360 sw
+    23991654 lw
+    11409721 lbu
+     7078078 bne
+     6637046 or
+     6617617 sll
+     6284423 and
+     6145526 sb
+     5268533 beq
+     4351166 sltu
+     4102448 jalr
+     3629777 lb
+     2826307 bltu
+     2283400 xor
+     1672818 auipc
+     1663892 srl
+     1142817 sub
+      756365 mul
+      676378 jal
+      522489 mulhu
+      420612 bgeu
+      128995 ecall
+       59182 sh
+       34968 blt
+       29577 bge
+       28493 sra
+        9984 slt
+        3625 lh
+        1413 lhu
+         839 divu
+syscall counts (128995 total syscall instructions):
+    59392 secp256k1_double
+    38997 keccak_permute
+    29553 secp256k1_add
+      349 hint_len
+      349 hint_read
+      232 enter_unconstrained
+       82 write
+       12 sha_compress
+       12 sha_extend
+        8 commit
+        8 commit_deferred_proofs
+        1 halt
+
+[2m2025-06-01T07:04:35.506486Z[0m [32m INFO[0m [2mrsp_host_executor::full_executor[0m[2m:[0m block_number 17106222: 9.818 MHz (159744519 instructions in 16.270 s)

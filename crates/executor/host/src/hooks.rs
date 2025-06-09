@@ -2,7 +2,7 @@ use std::{future::Future, time::Duration};
 
 use alloy_consensus::Block;
 use reth_primitives_traits::NodePrimitives;
-use sp1_sdk::{ExecutionReport, SP1VerifyingKey};
+use sp1_sdk::{ExecutionReport, HashableKey, SP1VerifyingKey};
 
 pub trait ExecutionHooks: Send {
     fn on_execution_start(
@@ -26,13 +26,27 @@ pub trait ExecutionHooks: Send {
 
     fn on_proving_end(
         &self,
-        _block_number: u64,
-        _proof_bytes: &[u8],
-        _vk: &SP1VerifyingKey,
-        _cycle_count: Option<u64>,
-        _proving_duration: Duration,
+        block_number: u64,
+        proof_bytes: &[u8],
+        vk: &SP1VerifyingKey,
+        cycles_count: Option<u64>,
+        proving_duration: Duration,
     ) -> impl Future<Output = eyre::Result<()>> {
-        async { Ok(()) }
+        async move {
+            println!("\n===== Proving Completed =====");
+            println!("on_proving_end triggered!");
+            println!("block_number = {}", block_number);
+            println!("proof_bytes length = {} bytes", proof_bytes.len());
+            println!("verifier_id = {:?}", vk.bytes32());
+            println!("proving_cycles = {:?} cycles", cycles_count);
+            // println!("sp1 gas = {:?} gas", execution_report.gas);
+            println!(
+                "proving_duration = {:?} ms",
+                (proving_duration.as_secs_f32() * 1000.0) as u64
+            );
+            println!("==============================\n");
+            Ok(())
+        }
     }
 }
 
