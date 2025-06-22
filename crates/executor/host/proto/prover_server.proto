@@ -1,6 +1,8 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "google/protobuf/duration.proto";
+
 
 package prover_server;
 
@@ -35,6 +37,7 @@ message ProofInfo {
     uint64 proving_cycles = 3;
     string verifier_id = 4; // vk hash digest 
     ProofType proof_type = 5;
+    google.protobuf.Duration proving_duration = 6;
 }
 
 // Refer to https://docs.brevis.network/writing-apps/advanced/proverchain

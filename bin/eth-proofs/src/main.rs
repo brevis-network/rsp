@@ -99,7 +99,6 @@ async fn main() -> eyre::Result<()> {
                     block_num,
                     client_input.len()
                 );
-                let start_time = std::time::Instant::now();
                 process_client::<EthExecutorComponents<_, sp1_sdk::CudaProver>>(
                     &hooks,
                     block_num,
@@ -111,7 +110,6 @@ async fn main() -> eyre::Result<()> {
                 // loop until the current block proof is ready
                 let res = fetch_proving_status::<EthExecutorComponents<_, sp1_sdk::CudaProver>>(
                     block_num,
-                    start_time,
                     &hooks,
                     &mut client,
                 )

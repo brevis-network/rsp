@@ -93,7 +93,6 @@ pub async fn process_client<C: ExecutorComponents>(
 
 pub async fn fetch_proving_status<C: ExecutorComponents>(
     block_number: u64,
-    start_time: Instant,
     hooks: &C::Hooks,
     grpc_client: &mut PicoProverClient<Channel>,
 ) -> eyre::Result<()> {
@@ -113,7 +112,12 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
         
         if let Some(proof_info) = response.clone().proof_info {
             if proof_info.proof_with_publics.len() > 0 {
-                let prove_end = start_time.elapsed();
+                let prove_end = proof_info
+                    .proving_duration
+                    .as_ref()
+                    .map(|d| Duration::new(d.seconds as u64, d.nanos as u32))
+                    .unwrap_or_default();
+
 
                 // report the result to the ethproofs
                 hooks
