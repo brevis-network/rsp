@@ -17,7 +17,7 @@ pub struct EthProofsClient {
 
 impl EthProofsClient {
     pub fn new(cluster_id: u64, endpoint: String, api_token: String) -> Self {
-        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(10);
         let client = ClientBuilder::new(reqwest::Client::new())
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
