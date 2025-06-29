@@ -17,13 +17,9 @@ use rsp_rpc_db::RpcDb;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
-use tokio::{
-    sync::mpsc::UnboundedSender,
-    task,
-    time::sleep,
-};
+use tokio::{sync::mpsc::UnboundedSender, task, time::sleep};
 use tonic::{codec::CompressionEncoding, transport::Channel};
-use tracing::{info, info_span, warn, error};
+use tracing::{error, info, info_span, warn};
 
 use crate::{Config, ExecutionHooks, ExecutorComponents, HostExecutor};
 
@@ -109,7 +105,7 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
             error!(error_message);
             return Err(eyre::eyre!(error_message));
         }
-        
+
         if let Some(proof_info) = response.clone().proof_info {
             if proof_info.proof_with_publics.len() > 0 {
                 let prove_end = proof_info
@@ -117,7 +113,6 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
                     .as_ref()
                     .map(|d| Duration::new(d.seconds as u64, d.nanos as u32))
                     .unwrap_or_default();
-
 
                 // report the result to the ethproofs
                 hooks
@@ -129,7 +124,11 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
                         prove_end,
                     )
                     .await?;
-                info!("Proof {:?} successfully generated!, proving time: {:?}", block_number, prove_end.clone());
+                info!(
+                    "Proof {:?} successfully generated!, proving time: {:?}",
+                    block_number,
+                    prove_end.clone()
+                );
                 break;
             } else {
                 info!("Waiting for proof {:?} generation...", block_number);
@@ -282,10 +281,14 @@ where
         info!("client input loaded, size: {}", buffer.len());
         let fetch_data_duration = fetch_data_start.elapsed();
         info!("Fetch data took: {:?}", fetch_data_duration);
-        
+
         // Notification to the sender the prover started
         if let Some(sender) = sender {
-            info!("Sending client input to the sender, block_number: {}, input size: {}", block_number, buffer.len());
+            info!(
+                "Sending client input to the sender, block_number: {}, input size: {}",
+                block_number,
+                buffer.len()
+            );
 
             sender.send((block_number, buffer))?;
         }

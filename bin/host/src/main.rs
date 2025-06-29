@@ -49,7 +49,6 @@ async fn main() -> eyre::Result<()> {
         args.opcode_tracking,
     );
 
-
     if config.chain.is_optimism() {
         let block_execution_strategy_factory =
             create_op_block_execution_strategy_factory(&config.genesis);

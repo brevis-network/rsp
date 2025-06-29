@@ -118,7 +118,6 @@ impl EthProofsClient {
                 error!("Failed to report proof proving: {}", err)
             }
             info!(" Submit proof to the API Successfully");
-
         });
     }
 }
