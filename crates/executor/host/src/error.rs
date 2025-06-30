@@ -1,5 +1,5 @@
 use alloy_rpc_types::ConversionError;
-use alloy_transport::TransportError;
+use alloy_transport::{RpcError, TransportError, TransportErrorKind};
 use reth_errors::BlockExecutionError;
 use revm_primitives::B256;
 use rsp_mpt::FromProofError;
@@ -8,8 +8,8 @@ use rsp_mpt::FromProofError;
 pub enum Error {
     #[error("Failed to parse blocks into executor friendly format {}", .0)]
     ParseError(#[from] ConversionError),
-    #[error("Transport Error: {}", .0)]
-    Transport(#[from] TransportError),
+    // #[error("Transport Error: {}", .0)]
+    // Transport(#[from] TransportError),
     #[error("Failed to recover senders from RPC block data")]
     FailedToRecoverSenders,
     #[error("Failed to validate post execution state")]
@@ -26,4 +26,6 @@ pub enum Error {
     StateRootMismatch(B256, B256),
     #[error("Failed to read the genesis file: {}", .0)]
     FailedToReadGenesisFile(#[from] std::io::Error),
+    #[error("Provider RPC error: {0}")]
+    Provider(#[from] RpcError<TransportErrorKind>),
 }

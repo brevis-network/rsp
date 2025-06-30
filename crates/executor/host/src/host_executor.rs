@@ -1,9 +1,9 @@
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
-
 use alloy_consensus::{BlockHeader, Header, TxReceipt};
 use alloy_evm::EthEvmFactory;
 use alloy_primitives::{Bloom, Sealable};
 use alloy_provider::{Network, Provider};
+use alloy_rpc_types::EIP1186AccountProofResponse;
+use futures::{stream, StreamExt};
 use reth_chainspec::ChainSpec;
 use reth_evm::{
     execute::{BasicBlockExecutor, Executor},
@@ -23,6 +23,9 @@ use rsp_client_executor::{
 use rsp_mpt::EthereumState;
 use rsp_primitives::{account_proof::eip1186_proof_to_account_proof, genesis::Genesis};
 use rsp_rpc_db::RpcDb;
+use std::collections::HashSet;
+use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use tokio::try_join;
 
 use crate::HostError;
 
@@ -79,19 +82,24 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         let fetch_start = Instant::now();
         // Fetch the current block and the previous block from the provider.
         tracing::info!("fetching the current block and the previous block");
-        let current_block = provider
-            .get_block_by_number(block_number.into())
-            .full()
-            .await?
-            .ok_or(HostError::ExpectedBlock(block_number))
-            .map(C::Primitives::into_primitive_block)?;
-
-        let previous_block = provider
-            .get_block_by_number((block_number - 1).into())
-            .full()
-            .await?
-            .ok_or(HostError::ExpectedBlock(block_number))
-            .map(C::Primitives::into_primitive_block)?;
+        let (current_block, previous_block) = try_join!(
+            async {
+                provider
+                    .get_block_by_number(block_number.into())
+                    .full()
+                    .await?
+                    .ok_or(HostError::ExpectedBlock(block_number))
+                    .map(C::Primitives::into_primitive_block)
+            },
+            async {
+                provider
+                    .get_block_by_number((block_number - 1).into())
+                    .full()
+                    .await?
+                    .ok_or(HostError::ExpectedBlock(block_number - 1))
+                    .map(C::Primitives::into_primitive_block)
+            }
+        )?;
 
         // Setup the database for the block executor.
         tracing::info!("setting up the database for the block executor");
@@ -149,37 +157,72 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         tracing::info!("fetching storage proofs");
         let mut before_storage_proofs = Vec::new();
         let mut after_storage_proofs = Vec::new();
-
-        for (address, used_keys) in state_requests.iter() {
-            let modified_keys = executor_outcome
-                .state()
-                .state
-                .get(address)
-                .map(|account| {
-                    account.storage.keys().map(|key| B256::from(*key)).collect::<BTreeSet<_>>()
+        // TODO: unordered?
+        {
+            let proof_stream = stream::iter(state_requests.iter())
+                .map(|(address, used_keys)| {
+                    let modified_keys: Vec<B256> = executor_outcome
+                        .state()
+                        .state
+                        .get(address)
+                        .map(|acct| acct.storage.keys().map(|k| B256::from(*k)).collect::<Vec<_>>())
+                        .unwrap_or_default();
+        
+                    let used_hs: HashSet<B256> = used_keys.iter().map(|k| B256::from(*k)).collect();
+        
+                    let provider_cloned = provider.clone();
+                    let addr = *address;
+                    let bn = block_number;
+        
+                    async move {
+                        fetch_account_proofs(provider_cloned, addr, &used_hs, modified_keys, bn)
+                            .await
+                    }
                 })
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<Vec<_>>();
-
-            let keys = used_keys
-                .iter()
-                .map(|key| B256::from(*key))
-                .chain(modified_keys.clone().into_iter())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-
-            let storage_proof = provider
-                .get_proof(*address, keys.clone())
-                .block_id((block_number - 1).into())
-                .await?;
-            before_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
-
-            let storage_proof =
-                provider.get_proof(*address, modified_keys).block_id((block_number).into()).await?;
-            after_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
+                .buffer_unordered(32);
+        
+            futures::pin_mut!(proof_stream);
+        
+            while let Some(res) = proof_stream.next().await {
+                let (before, after_opt) = res?;
+                before_storage_proofs.push(before.clone());
+                match after_opt {
+                    Some(after) => after_storage_proofs.push(after),
+                    None => after_storage_proofs.push(before),
+                }
+            }
         }
+
+        // for (address, used_keys) in state_requests.iter() {
+        //     let modified_keys = executor_outcome
+        //         .state()
+        //         .state
+        //         .get(address)
+        //         .map(|account| {
+        //             account.storage.keys().map(|key| B256::from(*key)).collect::<BTreeSet<_>>()
+        //         })
+        //         .unwrap_or_default()
+        //         .into_iter()
+        //         .collect::<Vec<_>>();
+        // 
+        //     let keys = used_keys
+        //         .iter()
+        //         .map(|key| B256::from(*key))
+        //         .chain(modified_keys.clone().into_iter())
+        //         .collect::<BTreeSet<_>>()
+        //         .into_iter()
+        //         .collect::<Vec<_>>();
+        // 
+        //     let storage_proof = provider
+        //         .get_proof(*address, keys.clone())
+        //         .block_id((block_number - 1).into())
+        //         .await?;
+        //     before_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
+        // 
+        //     let storage_proof =
+        //         provider.get_proof(*address, modified_keys).block_id((block_number).into()).await?;
+        //     after_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
+        // }
 
         let state = EthereumState::from_transition_proofs(
             previous_block.header().state_root(),
@@ -272,4 +315,43 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         tracing::info!("fetch client input cost: {:?}", fetch_duration);
         Ok(client_input)
     }
+}
+
+type AccountProof = rsp_primitives::account_proof::AccountProof;
+
+async fn fetch_account_proofs<P, N>(
+    provider: P,
+    address: Address,
+    used_keys: &HashSet<B256>,
+    modified_keys: Vec<B256>,
+    block_number: u64,
+) -> Result<(AccountProof, Option<AccountProof>), HostError>
+where
+    P: Provider<N> + Clone + Send + Sync,
+    N: Network,
+{
+    // --------- 1. BEFORE  (height-1) ---------
+    let before_keys: Vec<_> = used_keys
+        .iter()
+        .cloned()
+        .chain(modified_keys.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let before_fut = provider.get_proof(address, before_keys).block_id((block_number - 1).into());
+
+    // --------- 2. AFTER  (height) -------------
+    if modified_keys.is_empty() {
+        let before = before_fut.await.map_err(|e| HostError::Provider(e))?;
+        return Ok((eip1186_proof_to_account_proof(before), None));
+    }
+
+    let after_fut =
+        provider.get_proof(address, modified_keys.clone()).block_id(block_number.into());
+
+    let (before, after): (EIP1186AccountProofResponse, EIP1186AccountProofResponse) =
+        try_join!(before_fut, after_fut).map_err(|e| HostError::Provider(e))?;
+
+    Ok((eip1186_proof_to_account_proof(before), Some(eip1186_proof_to_account_proof(after))))
 }
