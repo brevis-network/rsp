@@ -82,6 +82,8 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         let fetch_start = Instant::now();
         // Fetch the current block and the previous block from the provider.
         tracing::info!("fetching the current block and the previous block");
+
+        let t_fetch_blocks = Instant::now();
         let (current_block, previous_block) = try_join!(
             async {
                 provider
@@ -100,13 +102,17 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
                     .map(C::Primitives::into_primitive_block)
             }
         )?;
+        tracing::info!("fetch_blocks: {:?}", t_fetch_blocks.elapsed());
 
+        let t_db_setup = Instant::now();
         // Setup the database for the block executor.
         tracing::info!("setting up the database for the block executor");
         let cache_db = CacheDB::new(rpc_db);
 
         let block_executor = BasicBlockExecutor::new(self.evm_config.clone(), cache_db);
+        tracing::info!("db_setup: {:?}", t_db_setup.elapsed());
 
+        let t_try_recover = Instant::now();
         // Execute the block and fetch all the necessary data along the way.
         tracing::info!(
             "executing the block with rpc db: block_number={}, transaction_count={}",
@@ -119,15 +125,24 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             .try_into_recovered()
             .map_err(|_| HostError::FailedToRecoverSenders)
             .unwrap();
+        tracing::info!("try_recover: {:?}", t_try_recover.elapsed());
 
+
+        let t_validate_header = Instant::now();
         // Validate the block header.
         C::Primitives::validate_header(
             block.sealed_block().sealed_header(),
             self.chain_spec.clone(),
         )?;
+        tracing::info!("validate_header: {:?}", t_validate_header.elapsed());
 
+
+        let t_execute = Instant::now();
         let execution_output = block_executor.execute(&block)?;
+        tracing::info!("evm_execute: {:?}", t_execute.elapsed());
 
+
+        let t_validate_post = Instant::now();
         // Validate the block post execution.
         tracing::info!("validating the block post execution");
         C::Primitives::validate_block_post_execution(
@@ -135,14 +150,20 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             self.chain_spec.clone(),
             &execution_output,
         )?;
+        tracing::info!("validate_post: {:?}", t_validate_post.elapsed());
 
+
+        let t_accumulate_bloom = Instant::now();
         // Accumulate the logs bloom.
         tracing::info!("accumulating the logs bloom");
         let mut logs_bloom = Bloom::default();
         execution_output.result.receipts.iter().for_each(|r| {
             logs_bloom.accrue_bloom(&r.bloom());
         });
+        tracing::info!("accumulate_bloom: {:?}", t_accumulate_bloom.elapsed());
 
+
+        let t_fetch_proofs = Instant::now();
         // Convert the output to an execution outcome.
         let executor_outcome = ExecutionOutcome::new(
             execution_output.state,
@@ -167,22 +188,22 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
                         .get(address)
                         .map(|acct| acct.storage.keys().map(|k| B256::from(*k)).collect::<Vec<_>>())
                         .unwrap_or_default();
-        
+
                     let used_hs: HashSet<B256> = used_keys.iter().map(|k| B256::from(*k)).collect();
-        
+
                     let provider_cloned = provider.clone();
                     let addr = *address;
                     let bn = block_number;
-        
+
                     async move {
                         fetch_account_proofs(provider_cloned, addr, &used_hs, modified_keys, bn)
                             .await
                     }
                 })
                 .buffer_unordered(32);
-        
+
             futures::pin_mut!(proof_stream);
-        
+
             while let Some(res) = proof_stream.next().await {
                 let (before, after_opt) = res?;
                 before_storage_proofs.push(before.clone());
@@ -204,7 +225,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         //         .unwrap_or_default()
         //         .into_iter()
         //         .collect::<Vec<_>>();
-        // 
+        //
         //     let keys = used_keys
         //         .iter()
         //         .map(|key| B256::from(*key))
@@ -212,18 +233,21 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         //         .collect::<BTreeSet<_>>()
         //         .into_iter()
         //         .collect::<Vec<_>>();
-        // 
+        //
         //     let storage_proof = provider
         //         .get_proof(*address, keys.clone())
         //         .block_id((block_number - 1).into())
         //         .await?;
         //     before_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
-        // 
+        //
         //     let storage_proof =
         //         provider.get_proof(*address, modified_keys).block_id((block_number).into()).await?;
         //     after_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
         // }
 
+        tracing::info!("fetch_proofs: {:?}", t_fetch_proofs.elapsed());
+
+        let t_build_state = Instant::now();
         let state = EthereumState::from_transition_proofs(
             previous_block.header().state_root(),
             &before_storage_proofs.iter().map(|item| (item.address, item.clone())).collect(),
@@ -243,7 +267,9 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
                 current_block.header().state_root(),
             ));
         }
+        tracing::info!("build_state: {:?}", t_build_state.elapsed());
 
+        let t_build_header = Instant::now();
         // Derive the block header.
         //
         // Note: the receipts root and gas used are verified by `validate_block_post_execution`.
@@ -285,7 +311,9 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             constructed_header_hash,
             state_root
         );
+        tracing::info!("build_header: {:?}", t_build_header.elapsed());
 
+        let t_fetch_ancestor = Instant::now();
         // Fetch the parent headers needed to constrain the BLOCKHASH opcode.
         let oldest_ancestor = *rpc_db.oldest_ancestor.read().unwrap();
         let mut ancestor_headers = vec![];
@@ -298,7 +326,10 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
 
             ancestor_headers.push(C::Primitives::into_primitive_header(block))
         }
+        tracing::info!("fetch_ancestor_headers: {:?}", t_fetch_ancestor.elapsed());
 
+
+        let t_assemble_input = Instant::now();
         // Create the client input.
         let client_input = ClientExecutorInput {
             current_block: C::Primitives::into_input_block(current_block),
@@ -311,6 +342,8 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             opcode_tracking,
         };
         tracing::info!("successfully generated client input");
+        tracing::info!("assemble_input: {:?}", t_assemble_input.elapsed());
+
         let fetch_duration = fetch_start.elapsed();
         tracing::info!("fetch client input cost: {:?}", fetch_duration);
         Ok(client_input)
