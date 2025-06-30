@@ -26,3 +26,5 @@ elf
 
 input/
 .vscode
+/logs/
+.idea/
