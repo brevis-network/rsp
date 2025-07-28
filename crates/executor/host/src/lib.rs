@@ -23,13 +23,18 @@ mod executor_components;
 pub use executor_components::{EthExecutorComponents, ExecutorComponents, OpExecutorComponents};
 
 mod full_executor;
-pub use full_executor::{build_executor, BlockExecutor, EitherExecutor, FullExecutor, fetch_proving_status, process_client};
+pub use full_executor::{
+    build_executor, fetch_proving_status, process_client, BlockExecutor, EitherExecutor,
+    FullExecutor,
+};
 
 mod hooks;
 pub use hooks::ExecutionHooks;
 
 mod host_executor;
 pub use host_executor::{EthHostExecutor, HostExecutor, OpHostExecutor};
+
+mod execution_witness;
 
 pub fn create_eth_block_execution_strategy_factory(
     genesis: &Genesis,

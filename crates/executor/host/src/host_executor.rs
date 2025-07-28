@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Instant};
 use alloy_consensus::{BlockHeader, Header, TxReceipt};
 use alloy_evm::EthEvmFactory;
 use alloy_primitives::{Bloom, Sealable};
-use alloy_provider::{Network, Provider};
+use alloy_provider::{ext::DebugApi, Network, Provider};
 use reth_chainspec::ChainSpec;
 use reth_evm::{
     execute::{BasicBlockExecutor, Executor},
@@ -24,6 +24,7 @@ use rsp_mpt::EthereumState;
 use rsp_primitives::{account_proof::eip1186_proof_to_account_proof, genesis::Genesis};
 use rsp_rpc_db::RpcDb;
 
+use crate::execution_witness::eth_state_from_execution_witness;
 use crate::HostError;
 
 pub type EthHostExecutor = HostExecutor<EthEvmConfig<CustomEvmFactory<EthEvmFactory>>, ChainSpec>;
@@ -73,7 +74,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
     ) -> Result<ClientExecutorInput<C::Primitives>, HostError>
     where
         C::Primitives: IntoPrimitives<N> + IntoInput + BlockValidator<CS>,
-        P: Provider<N> + Clone,
+        P: DebugApi<N> + Provider<N> + Clone,
         N: Network,
     {
         let fetch_start = Instant::now();
@@ -145,6 +146,16 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
 
         let state_requests = rpc_db.get_state_requests();
 
+        tracing::info!("fetching execution witness");
+        let execution_witness = provider
+            .debug_execution_witness(alloy_rpc_types::BlockNumberOrTag::Number(block_number))
+            .await?;
+        let state = eth_state_from_execution_witness(
+            &execution_witness,
+            previous_block.header().state_root(),
+        );
+
+        /* gupeng
         // For every account we touched, fetch the storage proofs for all the slots we touched.
         tracing::info!("fetching storage proofs");
         let mut before_storage_proofs = Vec::new();
@@ -180,12 +191,12 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
                 provider.get_proof(*address, modified_keys).block_id((block_number).into()).await?;
             after_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
         }
-
         let state = EthereumState::from_transition_proofs(
             previous_block.header().state_root(),
             &before_storage_proofs.iter().map(|item| (item.address, item.clone())).collect(),
             &after_storage_proofs.iter().map(|item| (item.address, item.clone())).collect(),
         )?;
+        */
 
         // Verify the state root.
         tracing::info!("verifying the state root");

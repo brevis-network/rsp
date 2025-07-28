@@ -6,7 +6,7 @@ use reth_trie::{AccountProof, HashedPostState, HashedStorage, TrieAccount};
 use serde::{Deserialize, Serialize};
 
 /// Module containing MPT code adapted from `zeth`.
-mod mpt;
+pub mod mpt;
 pub use mpt::Error;
 use mpt::{
     mpt_from_proof, parse_proof, proofs_to_tries, resolve_nodes, transition_proofs_to_tries,

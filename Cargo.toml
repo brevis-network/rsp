@@ -144,7 +144,6 @@ op-alloy-consensus = "0.13.0"
 op-alloy-network = "0.13.0"
 op-alloy-rpc-types = "0.13.0"
 
-
 [workspace.lints]
 rust.missing_debug_implementations = "warn"
 rust.unreachable_pub = "warn"

@@ -77,7 +77,8 @@ async fn main() -> eyre::Result<()> {
     if args.test_e2e {
         info!("Start to test block : {}", TEST_BLOCK_NUMBER);
         if let Err(err) = executor.execute(TEST_BLOCK_NUMBER, None).await {
-            let error_message: String = format!("Error handling block {}: {err}", TEST_BLOCK_NUMBER);
+            let error_message: String =
+                format!("Error handling block {}: {err}", TEST_BLOCK_NUMBER);
             error!(error_message);
         }
         // sleep 5s
