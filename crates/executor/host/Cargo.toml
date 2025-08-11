@@ -40,13 +40,13 @@ reth-optimism-primitives.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits  = { workspace = true, features = ["secp256k1"] }
 reth-trie.workspace = true
-reth-execution-types.workspace = true
 reth-errors.workspace = true
 reth-chainspec.workspace = true
 
 # revm
 revm.workspace = true
 revm-primitives.workspace = true
+revm-state.workspace = true
 
 # alloy
 alloy-chains.workspace = true
@@ -54,6 +54,7 @@ alloy-consensus.workspace = true
 alloy-evm.workspace = true
 alloy-primitives.workspace = true
 alloy-network.workspace = true
+alloy-rlp.workspace = true
 alloy-transport.workspace = true
 # NOTE: the debug features are only used for the host, we should not add them to workspace for avoiding to add into client elf
 alloy-provider = { version = "0.14.0", default-features = false, features = [
@@ -73,11 +74,6 @@ op-alloy-network.workspace = true
 prost = "0.13"
 prost-types = "0.13"
 tonic = { version = "0.13", features = ["zstd"] }
-tonic-build = { version = "0.13", features = ["prost"] }
-
-# tokio
-tokio-stream = "0.1"
-tokio-util = "0.7.15"
 
 [build-dependencies]
 tonic-build = "0.13"

@@ -1,7 +1,10 @@
+use alloy_primitives::keccak256;
+use alloy_primitives::map::HashMap;
+use alloy_primitives::B256;
+use alloy_rlp::Decodable;
 use alloy_rpc_types::debug::ExecutionWitness;
-use reth_trie::Nibbles;
+use reth_trie::TrieAccount;
 use rsp_mpt::mpt::resolve_nodes;
-use rsp_mpt::mpt::resolve_state_nodes;
 use rsp_mpt::mpt::MptNode;
 use rsp_mpt::mpt::MptNodeData;
 use rsp_mpt::mpt::MptNodeReference;
@@ -9,7 +12,7 @@ use rsp_mpt::EthereumState;
 
 pub(crate) fn eth_state_from_execution_witness(
     witness: &ExecutionWitness,
-    pre_state_root: alloy_primitives::FixedBytes<32>,
+    pre_state_root: B256,
 ) -> EthereumState {
     let (state_trie, storage_tries) = build_validated_tries(witness, pre_state_root).unwrap();
     EthereumState { state_trie, storage_tries }
@@ -19,29 +22,17 @@ pub(crate) fn eth_state_from_execution_witness(
 // NOTE: This method should be called outside zkVM! In general you construct tries, then validate them inside zkVM.
 fn build_validated_tries(
     witness: &ExecutionWitness,
-    pre_state_root: alloy_primitives::FixedBytes<32>,
-) -> Result<
-    (
-        MptNode,
-        alloy_primitives::map::hash_map::HashMap<
-            alloy_primitives::FixedBytes<32>,
-            MptNode,
-            alloy_primitives::map::foldhash::fast::RandomState,
-        >,
-    ),
-    String,
-> {
+    pre_state_root: B256,
+) -> Result<(MptNode, HashMap<B256, MptNode>), String> {
     // Step 1: Decode all RLP-encoded trie nodes and index by hash
     // IMPORTANT: Witness state contains both *state trie* nodes and *storage tries* nodes!
-    let mut node_map: alloy_primitives::map::HashMap<MptNodeReference, MptNode> =
-        alloy_primitives::map::HashMap::default();
-    let mut node_by_hash: alloy_primitives::map::HashMap<alloy_primitives::B256, MptNode> =
-        alloy_primitives::map::HashMap::default();
+    let mut node_map: HashMap<MptNodeReference, MptNode> = HashMap::default();
+    let mut node_by_hash: HashMap<B256, MptNode> = HashMap::default();
     let mut root_node: Option<MptNode> = None;
 
     for encoded in &witness.state {
         let node = MptNode::decode(encoded).expect("Valid MPT node in witness");
-        let hash = alloy_primitives::keccak256(encoded);
+        let hash = keccak256(encoded);
         if hash == pre_state_root {
             root_node = Some(node.clone());
         }
@@ -53,15 +44,19 @@ fn build_validated_tries(
     let root = root_node.unwrap_or_else(|| MptNodeData::Digest(pre_state_root).into());
 
     // Build state trie.
-    let mut storage_tries_detected = vec![];
-    let state_trie =
-        resolve_state_nodes(&root, &node_map, &mut storage_tries_detected, Nibbles::default());
+    let mut raw_storage_tries = vec![];
+    let state_trie = resolve_nodes(&root, &node_map);
+
+    state_trie.for_each_leaves(|key, mut value| {
+        let account = TrieAccount::decode(&mut value).unwrap();
+        let hashed_address = B256::from_slice(key);
+        raw_storage_tries.push((hashed_address, account.storage_root));
+    });
 
     // Step 3: Build storage tries per account efficiently
-    let mut storage_tries: alloy_primitives::map::HashMap<alloy_primitives::B256, MptNode> =
-        alloy_primitives::map::HashMap::default();
+    let mut storage_tries: HashMap<B256, MptNode> = HashMap::default();
 
-    for (hashed_address, storage_root) in storage_tries_detected {
+    for (hashed_address, storage_root) in raw_storage_tries {
         let root_node = match node_by_hash.get(&storage_root).cloned() {
             Some(node) => node,
             None => {
@@ -118,8 +113,7 @@ fn validate_storage_tries(
             return Err(format!(
                 "Mismatched storage root for address hash {:?}: expected {:?}, got {:?}",
                 hashed_address, storage_root, actual_hash
-            )
-            .into());
+            ));
         }
     }
 

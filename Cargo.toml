@@ -107,6 +107,7 @@ revm-primitives = { version = "18.0.0", features = [
 ], default-features = false }
 revm-interpreter = { version = "18.0.0", default-features = false }
 revm-precompile = { version = "19.0.0", default-features = false }
+revm-database = { version = "3.0.0", default-features = false }
 revm-database-interface = { version = "3.0.0", default-features = false }
 op-revm = { version = "3.0.2", default-features = false }
 

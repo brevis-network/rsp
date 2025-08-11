@@ -4,24 +4,28 @@ use alloy_consensus::{BlockHeader, Header, TxReceipt};
 use alloy_evm::EthEvmFactory;
 use alloy_primitives::{Bloom, Sealable};
 use alloy_provider::{ext::DebugApi, Network, Provider};
+use alloy_rlp::Decodable;
+use alloy_rpc_types::BlockNumberOrTag;
 use reth_chainspec::ChainSpec;
 use reth_evm::{
     execute::{BasicBlockExecutor, Executor},
     ConfigureEvm,
 };
 use reth_evm_ethereum::EthEvmConfig;
-use reth_execution_types::ExecutionOutcome;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_evm::OpEvmConfig;
 use reth_primitives_traits::{Block, BlockBody};
+use reth_trie::HashedPostState;
 use reth_trie::KeccakKeyHasher;
 use revm::database::CacheDB;
+use revm_primitives::keccak256;
 use revm_primitives::Address;
+use revm_state::Bytecode;
 use rsp_client_executor::{
     custom::CustomEvmFactory, io::ClientExecutorInput, BlockValidator, IntoInput, IntoPrimitives,
 };
 use rsp_primitives::genesis::Genesis;
-use rsp_rpc_db::RpcDb;
+use rsp_rpc_db::{ExecutionWitnessRpcDb, RpcDb};
 
 use crate::execution_witness::eth_state_from_execution_witness;
 use crate::HostError;
@@ -65,7 +69,6 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
     pub async fn execute<P, N>(
         &self,
         block_number: u64,
-        rpc_db: &RpcDb<P, N>,
         provider: &P,
         genesis: Genesis,
         custom_beneficiary: Option<Address>,
@@ -95,7 +98,25 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
 
         // Setup the database for the block executor.
         tracing::info!("setting up the database for the block executor");
-        let cache_db = CacheDB::new(rpc_db);
+        let execution_witness =
+            provider.debug_execution_witness(BlockNumberOrTag::Number(block_number)).await?;
+        let state = eth_state_from_execution_witness(
+            &execution_witness,
+            previous_block.header().state_root(),
+        );
+        let codes = execution_witness
+            .codes
+            .iter()
+            .map(|encoded| (keccak256(encoded), Bytecode::new_raw(encoded.clone())))
+            .collect();
+        let ancestor_headers = execution_witness
+            .headers
+            .iter()
+            .map(|encoded| Header::decode(&mut encoded.as_ref()).unwrap())
+            .map(|h| (h.number, h))
+            .collect();
+        let rpc_db = ExecutionWitnessRpcDb { state, codes, ancestor_headers };
+        let cache_db = CacheDB::new(&rpc_db);
 
         let block_executor = BasicBlockExecutor::new(self.evm_config.clone(), cache_db);
 
@@ -135,73 +156,15 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             logs_bloom.accrue_bloom(&r.bloom());
         });
 
-        // Convert the output to an execution outcome.
-        let executor_outcome = ExecutionOutcome::new(
-            execution_output.state,
-            vec![execution_output.result.receipts],
-            current_block.header().number(),
-            vec![execution_output.result.requests],
-        );
-
-        let state_requests = rpc_db.get_state_requests();
-
-        tracing::info!("fetching execution witness");
-        let execution_witness = provider
-            .debug_execution_witness(alloy_rpc_types::BlockNumberOrTag::Number(block_number))
-            .await?;
-        let state = eth_state_from_execution_witness(
-            &execution_witness,
-            previous_block.header().state_root(),
-        );
-
-        /* old method to fetch eth state by multiple rpc calls
-        // For every account we touched, fetch the storage proofs for all the slots we touched.
-        tracing::info!("fetching storage proofs");
-        let mut before_storage_proofs = Vec::new();
-        let mut after_storage_proofs = Vec::new();
-
-        for (address, used_keys) in state_requests.iter() {
-            let modified_keys = executor_outcome
-                .state()
-                .state
-                .get(address)
-                .map(|account| {
-                    account.storage.keys().map(|key| B256::from(*key)).collect::<BTreeSet<_>>()
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<Vec<_>>();
-
-            let keys = used_keys
-                .iter()
-                .map(|key| B256::from(*key))
-                .chain(modified_keys.clone().into_iter())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-
-            let storage_proof = provider
-                .get_proof(*address, keys.clone())
-                .block_id((block_number - 1).into())
-                .await?;
-            before_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
-
-            let storage_proof =
-                provider.get_proof(*address, modified_keys).block_id((block_number).into()).await?;
-            after_storage_proofs.push(eip1186_proof_to_account_proof(storage_proof));
-        }
-        let state = EthereumState::from_transition_proofs(
-            previous_block.header().state_root(),
-            &before_storage_proofs.iter().map(|item| (item.address, item.clone())).collect(),
-            &after_storage_proofs.iter().map(|item| (item.address, item.clone())).collect(),
-        )?;
-        */
+        let state = rpc_db.state(&execution_output.state).unwrap();
 
         // Verify the state root.
         tracing::info!("verifying the state root");
         let state_root = {
             let mut mutated_state = state.clone();
-            mutated_state.update(&executor_outcome.hash_state_slow::<KeccakKeyHasher>());
+            mutated_state.update(&HashedPostState::from_bundle_state::<KeccakKeyHasher>(
+                &execution_output.state.state,
+            ));
             mutated_state.state_root()
         };
         if state_root != current_block.header().state_root() {
@@ -238,6 +201,8 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             requests_hash: current_block.header().requests_hash(),
         };
 
+        let ancestor_headers = rpc_db.ancestor_headers().unwrap();
+
         // Assert the derived header is correct.
         let constructed_header_hash = header.hash_slow();
         let target_hash = current_block.header().hash_slow();
@@ -253,26 +218,12 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             state_root
         );
 
-        // Fetch the parent headers needed to constrain the BLOCKHASH opcode.
-        let oldest_ancestor = *rpc_db.oldest_ancestor.read().unwrap();
-        let mut ancestor_headers = vec![];
-        tracing::info!("fetching {} ancestor headers", block_number - oldest_ancestor);
-        for height in (oldest_ancestor..=(block_number - 1)).rev() {
-            let block = provider
-                .get_block_by_number(height.into())
-                .await?
-                .ok_or(HostError::ExpectedBlock(height))?;
-
-            ancestor_headers.push(C::Primitives::into_primitive_header(block))
-        }
-
         // Create the client input.
         let client_input = ClientExecutorInput {
             current_block: C::Primitives::into_input_block(current_block),
             ancestor_headers,
             parent_state: state,
-            state_requests,
-            bytecodes: rpc_db.get_bytecodes(),
+            bytecodes: rpc_db.bytecodes(),
             genesis,
             custom_beneficiary,
             opcode_tracking,

@@ -13,7 +13,6 @@ use either::Either;
 use eyre::bail;
 use reth_primitives_traits::NodePrimitives;
 use rsp_client_executor::io::ClientExecutorInput;
-use rsp_rpc_db::RpcDb;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
@@ -247,14 +246,12 @@ where
             }
             None => {
                 info!("client_input is None, Loading client input from RPC");
-                let rpc_db = RpcDb::new(self.provider.clone(), block_number - 1);
 
                 // Execute the host.
                 let client_input = self
                     .host_executor
                     .execute(
                         block_number,
-                        &rpc_db,
                         &self.provider,
                         self.config.genesis.clone(),
                         self.config.custom_beneficiary,
@@ -366,6 +363,7 @@ where
 }
 
 // Block execution in SP1 is a long-running, blocking task, so run it in a separate thread.
+#[allow(dead_code)]
 async fn execute_client<P: Prover<CpuProverComponents> + 'static>(
     number: u64,
     client: Arc<P>,
