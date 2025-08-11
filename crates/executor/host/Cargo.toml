@@ -55,7 +55,7 @@ alloy-evm.workspace = true
 alloy-primitives.workspace = true
 alloy-network.workspace = true
 alloy-transport.workspace = true
-# NOTE: the debug features are only used for the host app, we should not add them to workspace for avoiding to add into client app
+# NOTE: the debug features are only used for the host, we should not add them to workspace for avoiding to add into client elf
 alloy-provider = { version = "0.14.0", default-features = false, features = [
     "debug-api",
     "reqwest",

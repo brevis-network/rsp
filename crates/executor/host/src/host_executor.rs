@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use alloy_consensus::{BlockHeader, Header, TxReceipt};
 use alloy_evm::EthEvmFactory;
@@ -16,12 +16,11 @@ use reth_optimism_evm::OpEvmConfig;
 use reth_primitives_traits::{Block, BlockBody};
 use reth_trie::KeccakKeyHasher;
 use revm::database::CacheDB;
-use revm_primitives::{Address, B256};
+use revm_primitives::Address;
 use rsp_client_executor::{
     custom::CustomEvmFactory, io::ClientExecutorInput, BlockValidator, IntoInput, IntoPrimitives,
 };
-use rsp_mpt::EthereumState;
-use rsp_primitives::{account_proof::eip1186_proof_to_account_proof, genesis::Genesis};
+use rsp_primitives::genesis::Genesis;
 use rsp_rpc_db::RpcDb;
 
 use crate::execution_witness::eth_state_from_execution_witness;
@@ -155,7 +154,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             previous_block.header().state_root(),
         );
 
-        /* gupeng
+        /* old method to fetch eth state by multiple rpc calls
         // For every account we touched, fetch the storage proofs for all the slots we touched.
         tracing::info!("fetching storage proofs");
         let mut before_storage_proofs = Vec::new();
