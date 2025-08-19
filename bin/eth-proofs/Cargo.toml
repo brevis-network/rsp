@@ -19,9 +19,11 @@ reqwest-retry = "0.6.1"
 base64 = "0.22.1"
 time = "0.3.37"
 futures = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # workspace
-rsp-host-executor = { workspace = true, features = ["alerting"] }
+# `execution-witness` feature is set to use `debug_executionWitness` RPC as default
+rsp-host-executor = { workspace = true, features = ["alerting", "execution-witness"] }
 rsp-client-executor.workspace = true
 rsp-primitives.workspace = true
 rsp-provider.workspace = true

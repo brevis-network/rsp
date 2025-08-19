@@ -12,17 +12,13 @@ use alloy_provider::Provider;
 use either::Either;
 use eyre::bail;
 use reth_primitives_traits::NodePrimitives;
-use rsp_client_executor::io::{ClientExecutorInput, CommittedHeader};
+use rsp_client_executor::io::ClientExecutorInput;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
-use tokio::{
-    sync::mpsc::UnboundedSender,
-    task,
-    time::sleep,
-};
+use tokio::{sync::mpsc::UnboundedSender, task, time::sleep};
 use tonic::{codec::CompressionEncoding, transport::Channel};
-use tracing::{info, info_span, warn, error};
+use tracing::{error, info, info_span, warn};
 
 use crate::{Config, ExecutionHooks, ExecutorComponents, HostExecutor};
 
@@ -108,7 +104,7 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
             error!(error_message);
             return Err(eyre::eyre!(error_message));
         }
-        
+
         if let Some(proof_info) = response.clone().proof_info {
             if proof_info.proof_with_publics.len() > 0 {
                 let prove_end = proof_info
@@ -116,7 +112,6 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
                     .as_ref()
                     .map(|d| Duration::new(d.seconds as u64, d.nanos as u32))
                     .unwrap_or_default();
-
 
                 // report the result to the ethproofs
                 hooks
@@ -128,7 +123,11 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
                         prove_end,
                     )
                     .await?;
-                info!("Proof {:?} successfully generated!, proving time: {:?}", block_number, prove_end.clone());
+                info!(
+                    "Proof {:?} successfully generated!, proving time: {:?}",
+                    block_number,
+                    prove_end.clone()
+                );
                 break;
             } else {
                 info!("Waiting for proof {:?} generation...", block_number);
@@ -278,10 +277,14 @@ where
         info!("client input loaded, size: {}", buffer.len());
         let fetch_data_duration = fetch_data_start.elapsed();
         info!("Fetch data took: {:?}", fetch_data_duration);
-        
+
         // Notification to the sender the prover started
         if let Some(sender) = sender {
-            info!("Sending client input to the sender, block_number: {}, input size: {}", block_number, buffer.len());
+            info!(
+                "Sending client input to the sender, block_number: {}, input size: {}",
+                block_number,
+                buffer.len()
+            );
 
             sender.send((block_number, buffer))?;
         }
@@ -332,7 +335,7 @@ where
     async fn execute(
         &self,
         block_number: u64,
-        sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
+        _sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
     ) -> eyre::Result<()> {
         let client_input = try_load_input_from_cache::<C::Primitives>(
             &self.cache_dir,
@@ -359,6 +362,7 @@ where
 }
 
 // Block execution in SP1 is a long-running, blocking task, so run it in a separate thread.
+#[allow(dead_code)]
 async fn execute_client<P: Prover<CpuProverComponents> + 'static>(
     number: u64,
     client: Arc<P>,

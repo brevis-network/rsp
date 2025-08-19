@@ -1,4 +1,3 @@
-use alloy_network::Ethereum;
 use alloy_provider::{Provider, ProviderBuilder, RootProvider, WsConnect};
 use clap::Parser;
 use cli::Args;
@@ -39,6 +38,10 @@ async fn main() -> eyre::Result<()> {
         )
         .init();
 
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Parse the command line arguments.
     let args = Args::parse();
     let config = args.as_config().await?;
@@ -61,24 +64,14 @@ async fn main() -> eyre::Result<()> {
     let mut stream =
         subscription.into_stream().filter(|h| ready(h.number % args.block_interval == 0));
 
-    let builder = ProverClient::builder().cuda();
-    let client = if let Some(endpoint) = &args.moongate_endpoint {
-        builder.server(endpoint).build()
-    } else {
-        builder.build()
-    };
-
-    let client = Arc::new(client);
-
-    let executor = FullExecutor::<EthExecutorComponents<_, _>, _>::try_new(
-        http_provider.clone(),
-        elf,
-        block_execution_strategy_factory,
-        client,
-        eth_proofs_client,
-        config,
-    )
-    .await?;
+    let executor =
+        FullExecutor::<EthExecutorComponents<_, sp1_sdk::CudaProver>, RootProvider>::try_new(
+            http_provider.clone(),
+            block_execution_strategy_factory,
+            eth_proofs_client.clone(),
+            config,
+        )
+        .await?;
 
     info!("Latest block number: {}", http_provider.get_block_number().await?);
 
@@ -87,7 +80,8 @@ async fn main() -> eyre::Result<()> {
     if args.test_e2e {
         info!("Start to test block : {}", TEST_BLOCK_NUMBER);
         if let Err(err) = executor.execute(TEST_BLOCK_NUMBER, None).await {
-            let error_message: String = format!("Error handling block {}: {err}", TEST_BLOCK_NUMBER);
+            let error_message: String =
+                format!("Error handling block {}: {err}", TEST_BLOCK_NUMBER);
             error!(error_message);
         }
         // sleep 5s
