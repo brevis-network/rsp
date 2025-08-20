@@ -6541,7 +6541,6 @@ dependencies = [
  "sp1-sdk",
  "thiserror 1.0.69",
  "tokio",
- "tokio-stream",
  "tonic 0.13.1",
  "tonic-build",
  "tracing",

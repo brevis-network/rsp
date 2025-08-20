@@ -64,10 +64,6 @@ prost = "0.13"
 prost-types = "0.13"
 tonic = { version = "0.13", features = ["zstd"] }
 
-# tokio
-tokio-stream = "0.1"
-# tokio-util = "0.7.15"
-
 [build-dependencies]
 tonic-build = { version = "0.13", features = ["prost"] }
 

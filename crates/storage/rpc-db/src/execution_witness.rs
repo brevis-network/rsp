@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::time::Instant;
 
 use alloy_consensus::Header;
 use alloy_primitives::{map::HashMap, Address, B256};
@@ -11,6 +12,7 @@ use revm_database::{BundleState, DatabaseRef};
 use revm_primitives::{keccak256, ruint::aliases::U256, StorageKey, StorageValue};
 use revm_state::{AccountInfo, Bytecode};
 use rsp_mpt::EthereumState;
+use tracing::info;
 
 use crate::{RpcDb, RpcDbError};
 
@@ -31,7 +33,9 @@ pub struct ExecutionWitnessRpcDb<P, N> {
 impl<P: Provider<N> + Clone, N: Network> ExecutionWitnessRpcDb<P, N> {
     /// Create a new [`ExecutionWitnessRpcDb`].
     pub async fn new(provider: P, block_number: u64, state_root: B256) -> Result<Self, RpcDbError> {
+        let start = Instant::now();
         let execution_witness = provider.debug_execution_witness((block_number + 1).into()).await?;
+        info!("debug_execution_witness RPC returns in {:?}", start.elapsed());
 
         let state = EthereumState::from_execution_witness(&execution_witness, state_root);
 
