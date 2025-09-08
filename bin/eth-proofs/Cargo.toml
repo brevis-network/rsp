@@ -23,7 +23,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # workspace
 # `execution-witness` feature is set to use `debug_executionWitness` RPC as default
-rsp-host-executor = { workspace = true, features = ["alerting", "execution-witness"] }
+# rsp-host-executor = { workspace = true, features = ["alerting", "execution-witness"] }
+rsp-host-executor = { workspace = true, features = ["alerting"] }
 rsp-client-executor.workspace = true
 rsp-primitives.workspace = true
 rsp-provider.workspace = true
