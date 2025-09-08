@@ -60,23 +60,23 @@ sp1-sdk = "5.1.0"
 
 
 # reth
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-optimism-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-optimism-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-storage-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-optimism-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, features = ["serde"] }
-reth-optimism-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-optimism-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-optimism-evm = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-optimism-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-storage-errors = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-optimism-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false, features = ["serde"] }
+reth-optimism-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
+reth-optimism-forks = { git = "https://github.com/paradigmxyz/reth", rev = "a2751c3", default-features = false }
 
 # reth-primitives-traits = { path = "/Users/jie/Documents/src/reth/crates/primitives-traits", default-features = false }
 # reth-consensus = { path = "/Users/jie/Documents/src/reth/crates/consensus/consensus", default-features = false }
@@ -96,12 +96,12 @@ reth-optimism-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6
 # reth-optimism-forks = { path = "/Users/jie/Documents/src/reth/crates/optimism/hardforks",  default-features = false }
 
 # revm
-revm = { version = "27.0.3", features = [
+revm = { version = "28.0.1", features = [
     "serde",
     "kzg-rs",
     "bn"
 ], default-features = false }
-revm-bytecode = { version = "6.0.1", default-features = false }
+revm-bytecode = { version = "6.2.1", default-features = false }
 revm-state = { version = "7.0.1", default-features = false }
 revm-primitives = { version = "20.0.0", features = [
     "serde",
@@ -109,13 +109,12 @@ revm-primitives = { version = "20.0.0", features = [
 revm-interpreter = { version = "23.0.1", default-features = false }
 revm-database = { version = "7.0.1", default-features = false }
 revm-database-interface = { version = "7.0.1", default-features = false }
-op-revm = { version = "8.0.1", default-features = false }
-
+op-revm = { version = "9.0.1", default-features = false }
 revm-inspectors = "0.27.1"
 
 # alloy
 alloy-chains = { version = "0.2.5", default-features = false }
-alloy-evm = { version = "0.15", default-features = false }
+alloy-evm = { version = "0.18.3", default-features = false }
 alloy-primitives = { version = "1.3.0", default-features = false, features = ["sha3-keccak", "map-foldhash"] }
 alloy-provider = { version = "1.0.23", default-features = false, features = [
     "reqwest",
@@ -142,7 +141,7 @@ alloy-rlp = "0.3.10"
 alloy-trie = "0.9.0"
 
 # op
-alloy-op-evm = { version = "0.15", default-features = false }
+alloy-op-evm = { version = "0.18.3", default-features = false }
 op-alloy-consensus = "0.18.12"
 op-alloy-network = "0.18.12"
 op-alloy-rpc-types = "0.18.12"
@@ -162,3 +161,17 @@ bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-sp1-5.0.0",
 sha3 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", tag = "patch-sha3-0.10.8-sp1-4.0.0" }
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-5.0.0" }
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-5.0.0" }
+
+# revm
+alloy-evm = { git = "ssh://git@github.com/brevis-network/alloy-evm.git", branch = "pico", default-features = false }
+revm = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-bytecode = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-context = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-database = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-database-interface = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-handler = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-inspector = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-interpreter = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-precompile = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-primitives = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
+revm-state = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
