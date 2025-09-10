@@ -163,7 +163,6 @@ k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k2
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-5.0.0" }
 
 # revm
-alloy-evm = { git = "ssh://git@github.com/brevis-network/alloy-evm.git", branch = "pico", default-features = false }
 revm = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
 revm-bytecode = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
 revm-context = { git = "ssh://git@github.com/brevis-network/revm.git", branch = "pico" }
