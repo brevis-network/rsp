@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use alloy_consensus::{BlockHeader, Header, TxReceipt};
-use alloy_evm::EthEvmFactory;
-use alloy_primitives::Bloom;
+use alloy_consensus::{BlockHeader, Header};
+use itertools::Itertools;
 use reth_chainspec::ChainSpec;
 use reth_errors::BlockExecutionError;
 use reth_evm::{
@@ -20,7 +19,7 @@ use crate::{
     custom::CustomEvmFactory,
     error::ClientError,
     into_primitives::FromInput,
-    io::{ClientExecutorInput, TrieDB},
+    io::{ClientExecutorInput, TrieDB, WitnessInput},
     tracking::OpCodesTrackingBlockExecutor,
     BlockValidator,
 };
@@ -31,11 +30,9 @@ pub const RECOVER_SENDERS: &str = "recover senders";
 pub const BLOCK_EXECUTION: &str = "block execution";
 pub const VALIDATE_HEADER: &str = "validate header";
 pub const VALIDATE_EXECUTION: &str = "validate block post-execution";
-pub const ACCRUE_LOG_BLOOM: &str = "accrue logs bloom";
 pub const COMPUTE_STATE_ROOT: &str = "compute state root";
 
-pub type EthClientExecutor =
-    ClientExecutor<EthEvmConfig<CustomEvmFactory<EthEvmFactory>>, ChainSpec>;
+pub type EthClientExecutor = ClientExecutor<EthEvmConfig<ChainSpec, CustomEvmFactory>, ChainSpec>;
 
 #[cfg(feature = "optimism")]
 pub type OpClientExecutor =
@@ -57,9 +54,11 @@ where
         &self,
         mut input: ClientExecutorInput<C::Primitives>,
     ) -> Result<Header, ClientError> {
+        let sealed_headers = input.sealed_headers().collect::<Vec<_>>();
+
         // Initialize the witnessed database with verified storage proofs.
         let db = profile_report!(INIT_WITNESS_DB, {
-            let trie_db = input.witness_db().unwrap();
+            let trie_db = input.witness_db(&sealed_headers).unwrap();
             WrapDatabaseRef(trie_db)
         });
 
@@ -71,13 +70,23 @@ where
                 .map_err(|_| ClientError::SignatureRecoveryFailed)
         })?;
 
-        // Validate the block header.
+        // Validate the blocks.
         profile_report!(VALIDATE_HEADER, {
-            C::Primitives::validate_header(
-                block.sealed_block().sealed_header(),
-                self.chain_spec.clone(),
-            )
-        })?;
+            C::Primitives::validate_block(&block, self.chain_spec.clone())
+                .expect("The block is invalid");
+
+            for (header, parent) in sealed_headers.iter().tuple_windows() {
+                C::Primitives::validate_header(parent, self.chain_spec.clone())
+                    .expect("A parent header is invalid");
+
+                C::Primitives::validate_header_against_parent(
+                    header,
+                    parent,
+                    self.chain_spec.clone(),
+                )
+                .expect("The header is invalid against its parent");
+            }
+        });
 
         let execution_output =
             profile_report!(BLOCK_EXECUTION, { block_executor.execute(&block) })?;
@@ -90,14 +99,6 @@ where
                 &execution_output,
             )
         })?;
-
-        // Accumulate the logs bloom.
-        let mut logs_bloom = Bloom::default();
-        profile_report!(ACCRUE_LOG_BLOOM, {
-            execution_output.result.receipts.iter().for_each(|r| {
-                logs_bloom.accrue_bloom(&r.bloom());
-            })
-        });
 
         // Convert the output to an execution outcome.
         let executor_outcome = ExecutionOutcome::new(
@@ -126,7 +127,7 @@ where
             state_root,
             transactions_root: input.current_block.header().transactions_root(),
             receipts_root: input.current_block.header().receipts_root(),
-            logs_bloom,
+            logs_bloom: input.current_block.logs_bloom,
             difficulty: input.current_block.header().difficulty(),
             number: input.current_block.header().number(),
             gas_limit: input.current_block.header().gas_limit(),
@@ -152,7 +153,7 @@ impl EthClientExecutor {
         Self {
             evm_config: EthEvmConfig::new_with_evm_factory(
                 chain_spec.clone(),
-                CustomEvmFactory::<EthEvmFactory>::new(custom_beneficiary),
+                CustomEvmFactory::new(custom_beneficiary),
             ),
             chain_spec,
         }

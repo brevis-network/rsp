@@ -1,7 +1,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use alloy_chains::Chain;
-use alloy_evm::EthEvmFactory;
 pub use error::Error as HostError;
 use reth_chainspec::ChainSpec;
 use reth_evm_ethereum::EthEvmConfig;
@@ -23,7 +22,10 @@ mod executor_components;
 pub use executor_components::{EthExecutorComponents, ExecutorComponents, OpExecutorComponents};
 
 mod full_executor;
-pub use full_executor::{build_executor, BlockExecutor, EitherExecutor, FullExecutor, fetch_proving_status, process_client};
+pub use full_executor::{
+    build_executor, fetch_proving_status, process_client, BlockExecutor, EitherExecutor,
+    FullExecutor,
+};
 
 mod hooks;
 pub use hooks::ExecutionHooks;
@@ -34,13 +36,10 @@ pub use host_executor::{EthHostExecutor, HostExecutor, OpHostExecutor};
 pub fn create_eth_block_execution_strategy_factory(
     genesis: &Genesis,
     custom_beneficiary: Option<Address>,
-) -> EthEvmConfig<CustomEvmFactory<EthEvmFactory>> {
+) -> EthEvmConfig<ChainSpec, CustomEvmFactory> {
     let chain_spec: Arc<ChainSpec> = Arc::new(genesis.try_into().unwrap());
 
-    EthEvmConfig::new_with_evm_factory(
-        chain_spec,
-        CustomEvmFactory::<EthEvmFactory>::new(custom_beneficiary),
-    )
+    EthEvmConfig::new_with_evm_factory(chain_spec, CustomEvmFactory::new(custom_beneficiary))
 }
 
 pub fn create_op_block_execution_strategy_factory(genesis: &Genesis) -> OpEvmConfig {

@@ -57,7 +57,7 @@ impl HostArgs {
         let (rpc_url, chain_id) = match (self.provider.rpc_url.clone(), self.provider.chain_id) {
             (Some(rpc_url), Some(chain_id)) => (Some(rpc_url), chain_id),
             (None, Some(chain_id)) => {
-                match std::env::var(format!("RPC_{}", chain_id)) {
+                match std::env::var(format!("RPC_{chain_id}")) {
                     Ok(rpc_env_var) => {
                         // We don't always need it but if the value exists it has to be valid.
                         (Some(Url::parse(rpc_env_var.as_str())?), chain_id)
@@ -82,8 +82,9 @@ impl HostArgs {
         let genesis = if let Some(genesis_path) = &self.genesis_path {
             let genesis_json = fs::read_to_string(genesis_path)
                 .map_err(|err| eyre::eyre!("Failed to read genesis file: {err}"))?;
+            let genesis = serde_json::from_str::<alloy_genesis::Genesis>(&genesis_json)?;
 
-            Genesis::Custom(genesis_json)
+            Genesis::Custom(genesis.config)
         } else {
             chain_id.try_into()?
         };

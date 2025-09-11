@@ -1,6 +1,5 @@
 use std::marker::PhantomData;
 
-use alloy_evm::EthEvmFactory;
 use alloy_network::Ethereum;
 use alloy_provider::Network;
 use eyre::{eyre, Ok};
@@ -95,14 +94,15 @@ where
 
     type Primitives = EthPrimitives;
 
-    type EvmConfig = EthEvmConfig<CustomEvmFactory<EthEvmFactory>>;
+    type EvmConfig = EthEvmConfig<ChainSpec, CustomEvmFactory>;
 
     type ChainSpec = ChainSpec;
 
     type Hooks = H;
 
     fn try_into_chain_spec(genesis: &Genesis) -> eyre::Result<ChainSpec> {
-        genesis.try_into()
+        let spec = genesis.try_into()?;
+        Ok(spec)
     }
 }
 
@@ -129,6 +129,7 @@ where
     type Hooks = H;
 
     fn try_into_chain_spec(genesis: &Genesis) -> eyre::Result<OpChainSpec> {
-        genesis.try_into()
+        let spec = genesis.try_into()?;
+        Ok(spec)
     }
 }

@@ -13,17 +13,12 @@ use either::Either;
 use eyre::bail;
 use reth_primitives_traits::NodePrimitives;
 use rsp_client_executor::io::ClientExecutorInput;
-use rsp_rpc_db::RpcDb;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
-use tokio::{
-    sync::mpsc::UnboundedSender,
-    task,
-    time::sleep,
-};
+use tokio::{sync::mpsc::UnboundedSender, task, time::sleep};
 use tonic::{codec::CompressionEncoding, transport::Channel};
-use tracing::{info, info_span, warn, error};
+use tracing::{error, info, info_span, warn};
 
 use crate::{Config, ExecutionHooks, ExecutorComponents, HostExecutor};
 
@@ -37,7 +32,7 @@ pub async fn build_executor<C, P>(
 ) -> eyre::Result<EitherExecutor<C, P>>
 where
     C: ExecutorComponents,
-    P: Provider<C::Network> + Clone,
+    P: Provider<C::Network> + Clone + std::fmt::Debug,
 {
     if let Some(provider) = provider {
         return Ok(Either::Left(FullExecutor::try_new(provider, evm_config, hooks, config).await?));
@@ -109,7 +104,7 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
             error!(error_message);
             return Err(eyre::eyre!(error_message));
         }
-        
+
         if let Some(proof_info) = response.clone().proof_info {
             if proof_info.proof_with_publics.len() > 0 {
                 let prove_end = proof_info
@@ -117,7 +112,6 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
                     .as_ref()
                     .map(|d| Duration::new(d.seconds as u64, d.nanos as u32))
                     .unwrap_or_default();
-
 
                 // report the result to the ethproofs
                 hooks
@@ -129,7 +123,11 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
                         prove_end,
                     )
                     .await?;
-                info!("Proof {:?} successfully generated!, proving time: {:?}", block_number, prove_end.clone());
+                info!(
+                    "Proof {:?} successfully generated!, proving time: {:?}",
+                    block_number,
+                    prove_end.clone()
+                );
                 break;
             } else {
                 info!("Waiting for proof {:?} generation...", block_number);
@@ -144,7 +142,7 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
 impl<C, P> BlockExecutor<C> for EitherExecutor<C, P>
 where
     C: ExecutorComponents,
-    P: Provider<C::Network> + Clone,
+    P: Provider<C::Network> + Clone + std::fmt::Debug,
 {
     async fn execute(
         &self,
@@ -168,7 +166,7 @@ where
 pub struct FullExecutor<C, P>
 where
     C: ExecutorComponents,
-    P: Provider<C::Network> + Clone,
+    P: Provider<C::Network> + Clone + std::fmt::Debug,
 {
     provider: P,
     host_executor: HostExecutor<C::EvmConfig, C::ChainSpec>,
@@ -179,7 +177,7 @@ where
 impl<C, P> FullExecutor<C, P>
 where
     C: ExecutorComponents,
-    P: Provider<C::Network> + Clone,
+    P: Provider<C::Network> + Clone + std::fmt::Debug,
 {
     pub async fn try_new(
         provider: P,
@@ -211,7 +209,7 @@ where
 impl<C, P> BlockExecutor<C> for FullExecutor<C, P>
 where
     C: ExecutorComponents,
-    P: Provider<C::Network> + Clone,
+    P: Provider<C::Network> + Clone + std::fmt::Debug,
 {
     async fn execute(
         &self,
@@ -248,14 +246,11 @@ where
             }
             None => {
                 info!("client_input is None, Loading client input from RPC");
-                let rpc_db = RpcDb::new(self.provider.clone(), block_number - 1);
-
                 // Execute the host.
                 let client_input = self
                     .host_executor
                     .execute(
                         block_number,
-                        &rpc_db,
                         &self.provider,
                         self.config.genesis.clone(),
                         self.config.custom_beneficiary,
@@ -269,7 +264,7 @@ where
                         std::fs::create_dir_all(&input_folder)?;
                     }
 
-                    let input_path = input_folder.join(format!("{}.bin", block_number));
+                    let input_path = input_folder.join(format!("{block_number}.bin"));
                     let mut cache_file = std::fs::File::create(input_path)?;
 
                     bincode::serialize_into(&mut cache_file, &client_input)?;
@@ -282,10 +277,14 @@ where
         info!("client input loaded, size: {}", buffer.len());
         let fetch_data_duration = fetch_data_start.elapsed();
         info!("Fetch data took: {:?}", fetch_data_duration);
-        
+
         // Notification to the sender the prover started
         if let Some(sender) = sender {
-            info!("Sending client input to the sender, block_number: {}, input size: {}", block_number, buffer.len());
+            info!(
+                "Sending client input to the sender, block_number: {}, input size: {}",
+                block_number,
+                buffer.len()
+            );
 
             sender.send((block_number, buffer))?;
         }
@@ -300,7 +299,7 @@ where
 impl<C, P> Debug for FullExecutor<C, P>
 where
     C: ExecutorComponents,
-    P: Provider<C::Network> + Clone,
+    P: Provider<C::Network> + Clone + std::fmt::Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FullExecutor").field("config", &self.config).finish()
@@ -336,7 +335,7 @@ where
     async fn execute(
         &self,
         block_number: u64,
-        sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
+        _sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
     ) -> eyre::Result<()> {
         let client_input = try_load_input_from_cache::<C::Primitives>(
             &self.cache_dir,
@@ -363,6 +362,7 @@ where
 }
 
 // Block execution in SP1 is a long-running, blocking task, so run it in a separate thread.
+#[allow(dead_code)]
 async fn execute_client<P: Prover<CpuProverComponents> + 'static>(
     number: u64,
     client: Arc<P>,
@@ -384,7 +384,7 @@ fn try_load_input_from_cache<P: NodePrimitives + DeserializeOwned>(
     chain_id: u64,
     block_number: u64,
 ) -> eyre::Result<Option<ClientExecutorInput<P>>> {
-    let cache_path = cache_dir.join(format!("input/{}/{}.bin", chain_id, block_number));
+    let cache_path = cache_dir.join(format!("input/{chain_id}/{block_number}.bin"));
 
     if cache_path.exists() {
         // TODO: prune the cache if invalid instead

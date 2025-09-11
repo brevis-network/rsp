@@ -1,4 +1,3 @@
-use alloy_network::Ethereum;
 use alloy_provider::{Provider, ProviderBuilder, RootProvider, WsConnect};
 use clap::Parser;
 use cli::Args;
@@ -39,6 +38,10 @@ async fn main() -> eyre::Result<()> {
         )
         .init();
 
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Parse the command line arguments.
     let args = Args::parse();
     let config = args.as_config().await?;
@@ -53,8 +56,8 @@ async fn main() -> eyre::Result<()> {
     );
 
     let ws = WsConnect::new(args.ws_rpc_url);
-    let ws_provider = ProviderBuilder::new().on_ws(ws).await?;
-    let http_provider = create_provider::<Ethereum>(args.http_rpc_url);
+    let ws_provider = ProviderBuilder::new().connect_ws(ws).await?;
+    let http_provider = create_provider(args.http_rpc_url);
 
     // Subscribe to block headers.
     let subscription = ws_provider.subscribe_blocks().await?;
@@ -77,7 +80,8 @@ async fn main() -> eyre::Result<()> {
     if args.test_e2e {
         info!("Start to test block : {}", TEST_BLOCK_NUMBER);
         if let Err(err) = executor.execute(TEST_BLOCK_NUMBER, None).await {
-            let error_message: String = format!("Error handling block {}: {err}", TEST_BLOCK_NUMBER);
+            let error_message: String =
+                format!("Error handling block {}: {err}", TEST_BLOCK_NUMBER);
             error!(error_message);
         }
         // sleep 5s
