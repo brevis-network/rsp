@@ -22,8 +22,6 @@ futures = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # workspace
-# `execution-witness` feature is set to use `debug_executionWitness` RPC as default
-# rsp-host-executor = { workspace = true, features = ["alerting", "execution-witness"] }
 rsp-host-executor = { workspace = true, features = ["alerting"] }
 rsp-client-executor.workspace = true
 rsp-primitives.workspace = true
@@ -45,3 +43,8 @@ tonic = { version = "0.13", features = ["zstd"] }
 
 [build-dependencies]
 sp1-build.workspace = true
+
+[features]
+default = []
+# execution-witness feature enables `debug_executionWitness` RPC call
+execution-witness = ["rsp-host-executor/execution-witness"]
