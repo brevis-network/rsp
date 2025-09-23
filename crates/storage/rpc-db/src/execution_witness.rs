@@ -1,10 +1,15 @@
-use std::marker::PhantomData;
-use std::time::Instant;
+use std::{
+    fs::{create_dir_all, File},
+    marker::PhantomData,
+    path::PathBuf,
+    time::Instant,
+};
 
 use alloy_consensus::Header;
 use alloy_primitives::{map::HashMap, Address, B256};
 use alloy_provider::{ext::DebugApi, Network, Provider};
 use alloy_rlp::Decodable;
+use alloy_rpc_types_debug::ExecutionWitness;
 use alloy_trie::TrieAccount;
 use async_trait::async_trait;
 use reth_storage_errors::ProviderError;
@@ -32,10 +37,25 @@ pub struct ExecutionWitnessRpcDb<P, N> {
 
 impl<P: Provider<N> + Clone, N: Network> ExecutionWitnessRpcDb<P, N> {
     /// Create a new [`ExecutionWitnessRpcDb`].
-    pub async fn new(provider: P, block_number: u64, state_root: B256) -> Result<Self, RpcDbError> {
-        let start = Instant::now();
-        let execution_witness = provider.debug_execution_witness((block_number + 1).into()).await?;
-        info!("debug_execution_witness RPC returns in {:?}", start.elapsed());
+    pub async fn new(
+        provider: P,
+        block_number: u64,
+        state_root: B256,
+        cache_dir: &Option<PathBuf>,
+    ) -> Result<Self, RpcDbError> {
+        let block_number = block_number + 1;
+        let execution_witness = if let Some(execution_witness) =
+            load_execution_witness_from_cache(block_number, cache_dir)
+        {
+            execution_witness
+        } else {
+            let start = Instant::now();
+            let execution_witness = provider.debug_execution_witness(block_number.into()).await?;
+            info!("debug_execution_witness RPC returns in {:?}", start.elapsed());
+            save_execution_witness_to_cache(block_number, &execution_witness, cache_dir);
+
+            execution_witness
+        };
 
         let state = EthereumState::from_execution_witness(&execution_witness, state_root);
 
@@ -139,5 +159,39 @@ where
         let mut ancestor_headers: Vec<Header> = self.ancestor_headers.values().cloned().collect();
         ancestor_headers.sort_by(|a, b| b.number.cmp(&a.number));
         Ok(ancestor_headers)
+    }
+}
+
+fn load_execution_witness_from_cache(
+    block_number: u64,
+    cache_dir: &Option<PathBuf>,
+) -> Option<ExecutionWitness> {
+    if let Some(cache_dir) = cache_dir {
+        let file_path = cache_dir.join(format!("execution_witness/{block_number}.bin"));
+
+        file_path.exists().then(|| {
+            let mut f = File::open(file_path).unwrap();
+            bincode::deserialize_from(&mut f).unwrap()
+        })
+    } else {
+        None
+    }
+}
+
+fn save_execution_witness_to_cache(
+    block_number: u64,
+    execution_witness: &ExecutionWitness,
+    cache_dir: &Option<PathBuf>,
+) {
+    if let Some(cache_dir) = cache_dir {
+        let dir_path = cache_dir.join("execution_witness");
+        if !dir_path.exists() {
+            create_dir_all(&dir_path).unwrap();
+        }
+        let file_path = dir_path.join(format!("{block_number}.bin"));
+        info!("saving to {file_path:?}");
+
+        let mut f = File::create(file_path).unwrap();
+        bincode::serialize_into(&mut f, execution_witness).unwrap();
     }
 }

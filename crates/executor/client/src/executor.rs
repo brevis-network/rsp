@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader, Header};
+use alloy_evm::EthEvmFactory;
 use itertools::Itertools;
 use reth_chainspec::ChainSpec;
 use reth_errors::BlockExecutionError;
@@ -16,7 +17,6 @@ use revm::database::WrapDatabaseRef;
 use revm_primitives::Address;
 
 use crate::{
-    custom::CustomEvmFactory,
     error::ClientError,
     into_primitives::FromInput,
     io::{ClientExecutorInput, TrieDB, WitnessInput},
@@ -32,7 +32,7 @@ pub const VALIDATE_HEADER: &str = "validate header";
 pub const VALIDATE_EXECUTION: &str = "validate block post-execution";
 pub const COMPUTE_STATE_ROOT: &str = "compute state root";
 
-pub type EthClientExecutor = ClientExecutor<EthEvmConfig<ChainSpec, CustomEvmFactory>, ChainSpec>;
+pub type EthClientExecutor = ClientExecutor<EthEvmConfig<ChainSpec, EthEvmFactory>, ChainSpec>;
 
 #[cfg(feature = "optimism")]
 pub type OpClientExecutor =
@@ -149,14 +149,9 @@ where
 }
 
 impl EthClientExecutor {
-    pub fn eth(chain_spec: Arc<ChainSpec>, custom_beneficiary: Option<Address>) -> Self {
-        Self {
-            evm_config: EthEvmConfig::new_with_evm_factory(
-                chain_spec.clone(),
-                CustomEvmFactory::new(custom_beneficiary),
-            ),
-            chain_spec,
-        }
+    pub fn eth(chain_spec: Arc<ChainSpec>, _custom_beneficiary: Option<Address>) -> Self {
+        let evm_config = EthEvmConfig::new(chain_spec.clone());
+        Self { evm_config, chain_spec }
     }
 }
 

@@ -515,7 +515,7 @@ impl MptNode {
                     Ok(None)
                 }
             }
-            MptNodeData::Digest(digest) => Err(Error::NodeNotResolved(*digest)),
+            MptNodeData::Digest(_digest) => Ok(None),
         }
     }
 
