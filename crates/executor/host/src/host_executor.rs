@@ -1,6 +1,7 @@
-use std::{sync::Arc, time::Instant};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use alloy_consensus::{BlockHeader, Header, TxReceipt};
+use alloy_evm::EthEvmFactory;
 use alloy_network::BlockResponse;
 use alloy_primitives::{Bloom, Sealable};
 use alloy_provider::{Network, Provider};
@@ -16,15 +17,13 @@ use reth_primitives_traits::{Block, BlockBody, SealedHeader};
 use reth_trie::{HashedPostState, KeccakKeyHasher};
 use revm::database::CacheDB;
 use revm_primitives::Address;
-use rsp_client_executor::{
-    custom::CustomEvmFactory, io::ClientExecutorInput, BlockValidator, IntoInput, IntoPrimitives,
-};
+use rsp_client_executor::{io::ClientExecutorInput, BlockValidator, IntoInput, IntoPrimitives};
 use rsp_primitives::genesis::Genesis;
 use rsp_rpc_db::RpcDb;
 
 use crate::HostError;
 
-pub type EthHostExecutor = HostExecutor<EthEvmConfig<ChainSpec, CustomEvmFactory>, ChainSpec>;
+pub type EthHostExecutor = HostExecutor<EthEvmConfig<ChainSpec, EthEvmFactory>, ChainSpec>;
 
 pub type OpHostExecutor = HostExecutor<OpEvmConfig, OpChainSpec>;
 
@@ -36,14 +35,9 @@ pub struct HostExecutor<C: ConfigureEvm, CS> {
 }
 
 impl EthHostExecutor {
-    pub fn eth(chain_spec: Arc<ChainSpec>, custom_beneficiary: Option<Address>) -> Self {
-        Self {
-            evm_config: EthEvmConfig::new_with_evm_factory(
-                chain_spec.clone(),
-                CustomEvmFactory::new(custom_beneficiary),
-            ),
-            chain_spec,
-        }
+    pub fn eth(chain_spec: Arc<ChainSpec>, _custom_beneficiary: Option<Address>) -> Self {
+        let evm_config = EthEvmConfig::new(chain_spec.clone().into());
+        Self { evm_config, chain_spec }
     }
 }
 
@@ -67,6 +61,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         genesis: Genesis,
         custom_beneficiary: Option<Address>,
         opcode_tracking: bool,
+        cache_dir: &Option<PathBuf>,
     ) -> Result<ClientExecutorInput<C::Primitives>, HostError>
     where
         C::Primitives: IntoPrimitives<N> + IntoInput + BlockValidator<CS>,
@@ -104,6 +99,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             provider.clone(),
             block_number - 1,
             previous_block.header().state_root(),
+            cache_dir,
         )
         .await?;
 
