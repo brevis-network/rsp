@@ -1,7 +1,12 @@
-use std::sync::Arc;
-
+use crate::{
+    custom::{CustomCrypto, CustomEvmFactory},
+    error::ClientError,
+    into_primitives::FromInput,
+    io::{ClientExecutorInput, TrieDB, WitnessInput},
+    tracking::OpCodesTrackingBlockExecutor,
+    BlockValidator,
+};
 use alloy_consensus::{BlockHeader, Header};
-use alloy_evm::EthEvmFactory;
 use itertools::Itertools;
 use reth_chainspec::ChainSpec;
 use reth_errors::BlockExecutionError;
@@ -13,16 +18,9 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_execution_types::ExecutionOutcome;
 use reth_primitives_traits::Block;
 use reth_trie::KeccakKeyHasher;
-use revm::database::WrapDatabaseRef;
+use revm::{database::WrapDatabaseRef, install_crypto};
 use revm_primitives::Address;
-
-use crate::{
-    error::ClientError,
-    into_primitives::FromInput,
-    io::{ClientExecutorInput, TrieDB, WitnessInput},
-    tracking::OpCodesTrackingBlockExecutor,
-    BlockValidator,
-};
+use std::sync::Arc;
 
 pub const DESERIALZE_INPUTS: &str = "deserialize inputs";
 pub const INIT_WITNESS_DB: &str = "initialize witness db";
@@ -32,7 +30,7 @@ pub const VALIDATE_HEADER: &str = "validate header";
 pub const VALIDATE_EXECUTION: &str = "validate block post-execution";
 pub const COMPUTE_STATE_ROOT: &str = "compute state root";
 
-pub type EthClientExecutor = ClientExecutor<EthEvmConfig<ChainSpec, EthEvmFactory>, ChainSpec>;
+pub type EthClientExecutor = ClientExecutor<EthEvmConfig<ChainSpec, CustomEvmFactory>, ChainSpec>;
 
 #[cfg(feature = "optimism")]
 pub type OpClientExecutor =
@@ -149,15 +147,25 @@ where
 }
 
 impl EthClientExecutor {
-    pub fn eth(chain_spec: Arc<ChainSpec>, _custom_beneficiary: Option<Address>) -> Self {
-        let evm_config = EthEvmConfig::new(chain_spec.clone());
-        Self { evm_config, chain_spec }
+    pub fn eth(chain_spec: Arc<ChainSpec>, custom_beneficiary: Option<Address>) -> Self {
+        // gupeng
+        install_crypto(CustomCrypto::default());
+
+        Self {
+            evm_config: EthEvmConfig::new_with_evm_factory(
+                chain_spec.clone(),
+                CustomEvmFactory::new(custom_beneficiary),
+            ),
+            chain_spec,
+        }
     }
 }
 
 #[cfg(feature = "optimism")]
 impl OpClientExecutor {
     pub fn optimism(chain_spec: Arc<reth_optimism_chainspec::OpChainSpec>) -> Self {
+        install_crypto(CustomCrypto::default());
+
         Self {
             evm_config: reth_optimism_evm::OpEvmConfig::optimism(chain_spec.clone()),
             chain_spec,

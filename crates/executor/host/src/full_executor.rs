@@ -1,12 +1,6 @@
-use std::{
-    fmt::{Debug, Formatter},
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
 use crate::{
-    pico_prover_client::PicoProverClient, GetProveResultRequest, ProvingRequest, ProvingType,
+    pico_prover_client::PicoProverClient, Config, ExecutionHooks, ExecutorComponents,
+    GetProveResultRequest, HostExecutor, ProvingRequest, ProvingType,
 };
 use alloy_provider::Provider;
 use either::Either;
@@ -16,11 +10,15 @@ use rsp_client_executor::io::ClientExecutorInput;
 use serde::de::DeserializeOwned;
 use sp1_prover::components::CpuProverComponents;
 use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
+use std::{
+    fmt::{Debug, Formatter},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::{sync::mpsc::UnboundedSender, task, time::sleep};
 use tonic::{codec::CompressionEncoding, transport::Channel};
 use tracing::{error, info, info_span, warn};
-
-use crate::{Config, ExecutionHooks, ExecutorComponents, HostExecutor};
 
 pub type EitherExecutor<C, P> = Either<FullExecutor<C, P>, CachedExecutor<C>>;
 
@@ -246,6 +244,7 @@ where
             }
             None => {
                 info!("client_input is None, Loading client input from RPC");
+
                 // Execute the host.
                 let client_input = self
                     .host_executor

@@ -1,10 +1,4 @@
-use std::{
-    fs::{create_dir_all, File},
-    marker::PhantomData,
-    path::PathBuf,
-    time::Instant,
-};
-
+use crate::{RpcDb, RpcDbError};
 use alloy_consensus::Header;
 use alloy_primitives::{map::HashMap, Address, B256};
 use alloy_provider::{ext::DebugApi, Network, Provider};
@@ -17,9 +11,13 @@ use revm_database::{BundleState, DatabaseRef};
 use revm_primitives::{keccak256, ruint::aliases::U256, StorageKey, StorageValue};
 use revm_state::{AccountInfo, Bytecode};
 use rsp_mpt::EthereumState;
+use std::{
+    fs::{create_dir_all, File},
+    marker::PhantomData,
+    path::PathBuf,
+    time::Instant,
+};
 use tracing::info;
-
-use crate::{RpcDb, RpcDbError};
 
 #[derive(Debug)]
 pub struct ExecutionWitnessRpcDb<P, N> {
