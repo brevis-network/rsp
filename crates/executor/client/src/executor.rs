@@ -148,7 +148,6 @@ where
 
 impl EthClientExecutor {
     pub fn eth(chain_spec: Arc<ChainSpec>, custom_beneficiary: Option<Address>) -> Self {
-        // gupeng
         install_crypto(CustomCrypto::default());
 
         Self {
