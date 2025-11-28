@@ -9,7 +9,7 @@ CACHE_DIR="cache_dir"
 RPC_URL=
 
 BLOCK_NUMBERS=(
-  23424730
+  9738371
 )
 
 for BLOCK_NUMBER in "${BLOCK_NUMBERS[@]}"; do

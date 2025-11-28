@@ -70,9 +70,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90d103d3e440ad6f703dd71a5b58a6abd24834563bde8a5fabe706e00242f810"
+checksum = "8b6440213a22df93a87ed512d2f668e7dc1d62a05642d107f82d61edc9e12370"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -81,6 +81,7 @@ dependencies = [
  "alloy-trie",
  "alloy-tx-macros",
  "auto_impl",
+ "borsh",
  "c-kzg",
  "derive_more 2.0.1",
  "either",
@@ -96,9 +97,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus-any"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48ead76c8c84ab3a50c31c56bc2c748c2d64357ad2131c32f9b10ab790a25e1a"
+checksum = "15d0bea09287942405c4f9d2a4f22d1e07611c2dbd9d5bf94b75366340f9e6e0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -150,9 +151,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-eips"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bdbec74583d0067798d77afa43d58f00d93035335d7ceaa5d3f93857d461bb9"
+checksum = "4bd2c7ae05abcab4483ce821f12f285e01c0b33804e6883dd9ca1569a87ee2be"
 dependencies = [
  "alloy-eip2124",
  "alloy-eip2930",
@@ -161,6 +162,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde",
  "auto_impl",
+ "borsh",
  "c-kzg",
  "derive_more 2.0.1",
  "either",
@@ -172,9 +174,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-evm"
-version = "0.23.2"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6223235f0b785a83dd10dc1599b7f3763c65e4f98b4e9e4e10e576bbbdf7dfa2"
+checksum = "527b47dc39850c6168002ddc1f7a2063e15d26137c1bb5330f6065a7524c1aa9"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -192,14 +194,15 @@ dependencies = [
 
 [[package]]
 name = "alloy-genesis"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c25d5acb35706e683df1ea333c862bdb6b7c5548836607cd5bb56e501cca0b4f"
+checksum = "fc47eaae86488b07ea8e20236184944072a78784a1f4993f8ec17b3aa5d08c21"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-serde",
  "alloy-trie",
+ "borsh",
  "serde",
  "serde_with",
 ]
@@ -272,9 +275,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network-primitives"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0e7918396eecd69d9c907046ec8a93fb09b89e2f325d5e7ea9c4e3929aa0dd2"
+checksum = "7805124ad69e57bbae7731c9c344571700b2a18d351bda9e0eba521c991d1bcb"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -285,9 +288,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-op-evm"
-version = "0.23.2"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ad8f3a679eb44ee21481edabd628d191c9a42d182ed29923b4d43a27a0f2cc8"
+checksum = "6eea81517a852d9e3b03979c10febe00aacc3d50fbd34c5c30281051773285f7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -489,9 +492,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-engine"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07da696cc7fbfead4b1dda8afe408685cae80975cbb024f843ba74d9639cd0d3"
+checksum = "d9c4c53a8b0905d931e7921774a1830609713bd3e8222347963172b03a3ecc68"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -503,9 +506,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-eth"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a15e4831b71eea9d20126a411c1c09facf1d01d5cac84fd51d532d3c429cfc26"
+checksum = "ed5fafb741c19b3cca4cdd04fa215c89413491f9695a3e928dee2ae5657f607e"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -538,9 +541,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-serde"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "751d1887f7d202514a82c5b3caf28ee8bd4a2ad9549e4f498b6f0bff99b52add"
+checksum = "a6f180c399ca7c1e2fe17ea58343910cad0090878a696ff5a50241aee12fc529"
 dependencies = [
  "alloy-primitives",
  "serde",
@@ -741,9 +744,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-tx-macros"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd7ce8ed34106acd6e21942022b6a15be6454c2c3ead4d76811d3bdcd63cf771"
+checksum = "ae109e33814b49fc0a62f2528993aa8a2dd346c26959b151f05441dc0b9da292"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -1904,6 +1907,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bls12_381"
+version = "0.8.0"
+source = "git+https://github.com/brevis-network/bls12_381?branch=patch-v1.0.1#4738552f987d748367fd6a055f3ae08797739fba"
+dependencies = [
+ "cfg-if",
+ "ff 0.13.1",
+ "group 0.13.0",
+ "pairing 0.23.0",
+ "pico-patch-libs 1.1.8 (git+https://github.com/brevis-network/pico.git)",
+ "rand_core 0.6.4",
+ "subtle",
+]
+
+[[package]]
 name = "blst"
 version = "0.3.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2289,6 +2306,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "core_affinity"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a034b3a7b624016c6e13f5df875747cc25f884156aad2abd12b6c46797971342"
+dependencies = [
+ "libc",
+ "num_cpus",
+ "winapi",
+]
+
+[[package]]
+name = "cpu-time"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e393a7668fe1fad3075085b86c781883000b4ede868f43627b34a87c8b7ded"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2328,6 +2366,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
+name = "crossbeam"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1137cd7e7fc0fb5d3c5a8678be38ec56e819125d8d7907411fe24ccb943faca8"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-epoch",
+ "crossbeam-queue",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2351,6 +2402,15 @@ name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f58bbc28f91df819d0aa2a2c00cd19754769c2fad90579b3592b1c9ba7a3115"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -2419,6 +2479,32 @@ dependencies = [
  "dispatch2",
  "nix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "curve25519-dalek"
+version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "curve25519-dalek-derive",
+ "fiat-crypto",
+ "rustc_version 0.4.1",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.109",
 ]
 
 [[package]]
@@ -2724,6 +2810,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2875,6 +2967,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3c259d255ca70051b30e2e95b5446cdb8949ac4cd22c0d7fd634d89f568e2"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c863f0904021b108aa8b2f55046443e6b1ebde8fd4a15c399893aae4fa069f"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "jiff",
+ "log",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2887,7 +3002,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3012,6 +3127,12 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "fiat-crypto"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "find-msvc-tools"
@@ -3363,6 +3484,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "halo2curves"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d380afeef3f1d4d3245b76895172018cfb087d9976a7cabcd5597775b2933e07"
+dependencies = [
+ "blake2",
+ "digest 0.10.7",
+ "ff 0.13.1",
+ "group 0.13.0",
+ "halo2derive",
+ "hex",
+ "lazy_static",
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
+ "pairing 0.23.0",
+ "pasta_curves 0.5.1",
+ "paste",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "rayon",
+ "serde",
+ "serde_arrays 0.1.0",
+ "sha2",
+ "static_assertions",
+ "subtle",
+ "unroll",
+]
+
+[[package]]
+name = "halo2derive"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdb99e7492b4f5ff469d238db464131b86c2eaac814a78715acba369f64d2c76"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3423,6 +3588,9 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "hex-conservative"
@@ -3524,6 +3692,15 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "hybrid-array"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2d35805454dc9f8662a98d6d61886ffe26bd465f5960e0e55345c70d5c0d2a9"
+dependencies = [
+ "typenum",
+]
 
 [[package]]
 name = "hyper"
@@ -3932,6 +4109,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
+name = "jiff"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49cce2b81f2098e7e3efc35bc2e0a6b7abec9d34128283d7a26fa8f32a6dbb35"
+dependencies = [
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "980af8b43c3ad5d8d349ace167ec8170839f753a42d233ba19e08afe1850fa69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.109",
+]
+
+[[package]]
 name = "jobserver"
 version = "0.1.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3958,7 +4159,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a575df5f985fe1cd5b2b05664ff6accfc46559032b954529fd225a2168d27b0f"
 dependencies = [
  "bitvec",
- "bls12_381",
+ "bls12_381 0.7.1",
  "ff 0.12.1",
  "group 0.12.1",
  "rand_core 0.6.4",
@@ -4003,13 +4204,13 @@ dependencies = [
 [[package]]
 name = "kzg-rs"
 version = "0.2.7"
-source = "git+https://github.com/succinctlabs/kzg-rs#15bdc9bfdb31859acd4e7a6558f84fae5eab71c8"
+source = "git+https://github.com/brevis-network/kzg-rs?branch=pico-v0.2.7-fusaka#92e7eb8a44a8e6950309cf4dc7c746a2988f8926"
 dependencies = [
+ "bls12_381 0.8.0",
  "ff 0.13.1",
  "hex",
- "serde_arrays",
+ "serde_arrays 0.2.0",
  "sha2",
- "sp1_bls12_381",
  "spin",
 ]
 
@@ -4297,7 +4498,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4333,6 +4534,7 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -4465,6 +4667,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
+name = "nums"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf3c74f925fb8cfc49a8022f2afce48a0683b70f9e439885594e84c5edbf5b01"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "nybbles"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4520,9 +4734,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "op-alloy-consensus"
-version = "0.22.0"
+version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e42e9de945efe3c2fbd207e69720c9c1af2b8caa6872aee0e216450c25a3ca70"
+checksum = "726da827358a547be9f1e37c2a756b9e3729cb0350f43408164794b370cad8ae"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -4555,9 +4769,9 @@ dependencies = [
 
 [[package]]
 name = "op-alloy-rpc-types"
-version = "0.22.0"
+version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cd1eb7bddd2232856ba9d259320a094f9edf2b9061acfe5966e7960208393e6"
+checksum = "562dd4462562c41f9fdc4d860858c40e14a25df7f983ae82047f15f08fce4d19"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -4574,9 +4788,9 @@ dependencies = [
 
 [[package]]
 name = "op-alloy-rpc-types-engine"
-version = "0.22.0"
+version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5429622150d18d8e6847a701135082622413e2451b64d03f979415d764566bef"
+checksum = "d8f24b8cb66e4b33e6c9e508bf46b8ecafc92eadd0b93fedd306c0accb477657"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -4591,8 +4805,7 @@ dependencies = [
 [[package]]
 name = "op-revm"
 version = "12.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcd8cb3274e87936b595eb2247ad3bda146695fceb7159afa76010529af53553"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "auto_impl",
  "revm",
@@ -4669,12 +4882,35 @@ dependencies = [
 
 [[package]]
 name = "p3-air"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+]
+
+[[package]]
+name = "p3-air"
 version = "0.2.3-succinct"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d05a97452c4b1cfa8626e69181d901fc8231d99ff7d87e9701a2e6b934606615"
 dependencies = [
- "p3-field",
- "p3-matrix",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+]
+
+[[package]]
+name = "p3-baby-bear"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "p3-field 0.1.0",
+ "p3-mds 0.1.0",
+ "p3-monty-31",
+ "p3-poseidon2 0.1.0",
+ "p3-symmetric 0.1.0",
+ "rand 0.8.5",
+ "serde",
 ]
 
 [[package]]
@@ -4684,10 +4920,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7521838ecab2ddf4f7bc4ceebad06ec02414729598485c1ada516c39900820e8"
 dependencies = [
  "num-bigint 0.4.6",
- "p3-field",
- "p3-mds",
- "p3-poseidon2",
- "p3-symmetric",
+ "p3-field 0.2.3-succinct",
+ "p3-mds 0.2.3-succinct",
+ "p3-poseidon2 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "rand 0.8.5",
+ "serde",
+]
+
+[[package]]
+name = "p3-blake3"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "blake3",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+]
+
+[[package]]
+name = "p3-bn254-fr"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "ff 0.13.1",
+ "halo2curves",
+ "num-bigint 0.4.6",
+ "p3-field 0.1.0",
+ "p3-poseidon2 0.1.0",
+ "p3-symmetric 0.1.0",
  "rand 0.8.5",
  "serde",
 ]
@@ -4700,11 +4961,23 @@ checksum = "c0dd4d095d254783098bd09fc5fdf33fd781a1be54608ab93cb3ed4bd723da54"
 dependencies = [
  "ff 0.13.1",
  "num-bigint 0.4.6",
- "p3-field",
- "p3-poseidon2",
- "p3-symmetric",
+ "p3-field 0.2.3-succinct",
+ "p3-poseidon2 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
  "rand 0.8.5",
  "serde",
+]
+
+[[package]]
+name = "p3-challenger"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "p3-field 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -4713,12 +4986,44 @@ version = "0.2.3-succinct"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5d18c223b7e0177f4ac91070fa3f6cc557d5ee3b279869924c3102fb1b20910"
 dependencies = [
- "p3-field",
- "p3-maybe-rayon",
- "p3-symmetric",
- "p3-util",
+ "p3-field 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "p3-circle"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-challenger 0.1.0",
+ "p3-commit 0.1.0",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-fri 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "p3-commit"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-challenger 0.1.0",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-util 0.1.0",
+ "serde",
 ]
 
 [[package]]
@@ -4728,11 +5033,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b38fe979d53d4f1d64158c40b3cd9ea1bd6b7bc8f085e489165c542ef914ae28"
 dependencies = [
  "itertools 0.12.1",
- "p3-challenger",
- "p3-field",
- "p3-matrix",
- "p3-util",
+ "p3-challenger 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "serde",
+]
+
+[[package]]
+name = "p3-dft"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -4741,10 +5059,27 @@ version = "0.2.3-succinct"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46414daedd796f1eefcdc1811c0484e4bced5729486b6eaba9521c572c76761a"
 dependencies = [
- "p3-field",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-util",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
+ "tracing",
+]
+
+[[package]]
+name = "p3-field"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
+ "nums",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+ "serde",
  "tracing",
 ]
 
@@ -4757,9 +5092,28 @@ dependencies = [
  "itertools 0.12.1",
  "num-bigint 0.4.6",
  "num-traits",
- "p3-util",
+ "p3-util 0.2.3-succinct",
  "rand 0.8.5",
  "serde",
+]
+
+[[package]]
+name = "p3-fri"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-challenger 0.1.0",
+ "p3-commit 0.1.0",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-interpolation 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -4769,16 +5123,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0c274dab2dcd060cdea9ab3f8f7129f5fa5f08917d6092dc2b297a31d883aa0"
 dependencies = [
  "itertools 0.12.1",
- "p3-challenger",
- "p3-commit",
- "p3-dft",
- "p3-field",
- "p3-interpolation",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-util",
+ "p3-challenger 0.2.3-succinct",
+ "p3-commit 0.2.3-succinct",
+ "p3-dft 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-interpolation 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "p3-goldilocks"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "num-bigint 0.4.6",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-mds 0.1.0",
+ "p3-poseidon2 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+ "serde",
+]
+
+[[package]]
+name = "p3-interpolation"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
 ]
 
 [[package]]
@@ -4787,9 +5168,34 @@ version = "0.2.3-succinct"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed8de7333abb0ad0a17bb78726a43749cc7fcab4763f296894e8b2933841d4d8"
 dependencies = [
- "p3-field",
- "p3-matrix",
- "p3-util",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
+]
+
+[[package]]
+name = "p3-keccak"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-field 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+ "tiny-keccak",
+]
+
+[[package]]
+name = "p3-keccak-air"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "p3-air 0.1.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -4798,12 +5204,41 @@ version = "0.2.3-succinct"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01c7ec21317c455d39588428e4ec85b96d663ff171ddf102a10e2ca54c942dea"
 dependencies = [
- "p3-air",
- "p3-field",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-util",
+ "p3-air 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "tracing",
+]
+
+[[package]]
+name = "p3-koala-bear"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "p3-field 0.1.0",
+ "p3-mds 0.1.0",
+ "p3-monty-31",
+ "p3-poseidon2 0.1.0",
+ "p3-symmetric 0.1.0",
+ "rand 0.8.5",
+ "serde",
+]
+
+[[package]]
+name = "p3-matrix"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-field 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+ "serde",
+ "tracing",
+ "transpose",
 ]
 
 [[package]]
@@ -4813,12 +5248,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e4de3f373589477cb735ea58e125898ed20935e03664b4614c7fac258b3c42f"
 dependencies = [
  "itertools 0.12.1",
- "p3-field",
- "p3-maybe-rayon",
- "p3-util",
+ "p3-field 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "rand 0.8.5",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "p3-maybe-rayon"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "rayon",
 ]
 
 [[package]]
@@ -4832,17 +5275,48 @@ dependencies = [
 
 [[package]]
 name = "p3-mds"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "p3-mds"
 version = "0.2.3-succinct"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2356b1ed0add6d5dfbf7a338ce534a6fde827374394a52cec16a0840af6e97c9"
 dependencies = [
  "itertools 0.12.1",
- "p3-dft",
- "p3-field",
- "p3-matrix",
- "p3-symmetric",
- "p3-util",
+ "p3-dft 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "rand 0.8.5",
+]
+
+[[package]]
+name = "p3-merkle-tree"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-commit 0.1.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -4852,14 +5326,66 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f159e073afbee02c00d22390bf26ebb9ce03bbcd3e6dcd13c6a7a3811ab39608"
 dependencies = [
  "itertools 0.12.1",
- "p3-commit",
- "p3-field",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-symmetric",
- "p3-util",
+ "p3-commit 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "p3-mersenne-31"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "num-bigint 0.4.6",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-mds 0.1.0",
+ "p3-poseidon2 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+ "serde",
+]
+
+[[package]]
+name = "p3-monty-31"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "num-bigint 0.4.6",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-mds 0.1.0",
+ "p3-poseidon2 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-util 0.1.0",
+ "rand 0.8.5",
+ "serde",
+ "tracing",
+ "transpose",
+]
+
+[[package]]
+name = "p3-poseidon2"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "gcd",
+ "p3-field 0.1.0",
+ "p3-mds 0.1.0",
+ "p3-symmetric 0.1.0",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -4869,10 +5395,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da1eec7e1b6900581bedd95e76e1ef4975608dd55be9872c9d257a8a9651c3a"
 dependencies = [
  "gcd",
- "p3-field",
- "p3-mds",
- "p3-symmetric",
+ "p3-field 0.2.3-succinct",
+ "p3-mds 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
  "rand 0.8.5",
+ "serde",
+]
+
+[[package]]
+name = "p3-symmetric"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-field 0.1.0",
  "serde",
 ]
 
@@ -4883,8 +5419,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edb439bea1d822623b41ff4b51e3309e80d13cadf8b86d16ffd5e6efb9fdc360"
 dependencies = [
  "itertools 0.12.1",
- "p3-field",
+ "p3-field 0.2.3-succinct",
  "serde",
+]
+
+[[package]]
+name = "p3-uni-stark"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "itertools 0.13.0",
+ "p3-air 0.1.0",
+ "p3-challenger 0.1.0",
+ "p3-commit 0.1.0",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-util 0.1.0",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -4894,16 +5448,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a86f29c32bf46fa4acb6547d2065a711e146d4faca388b56d75718c60a0097d"
 dependencies = [
  "itertools 0.12.1",
- "p3-air",
- "p3-challenger",
- "p3-commit",
- "p3-dft",
- "p3-field",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-util",
+ "p3-air 0.2.3-succinct",
+ "p3-challenger 0.2.3-succinct",
+ "p3-commit 0.2.3-succinct",
+ "p3-dft 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "p3-util"
+version = "0.1.0"
+source = "git+https://github.com/brevis-network/Plonky3.git?rev=a4d376b#a4d376babf5d09497f1fab1df7f1ffce01260973"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -5033,8 +5595,10 @@ dependencies = [
  "blake2b_simd",
  "ff 0.13.1",
  "group 0.13.0",
+ "hex",
  "lazy_static",
  "rand 0.8.5",
+ "serde",
  "static_assertions",
  "subtle",
 ]
@@ -5140,6 +5704,167 @@ dependencies = [
 ]
 
 [[package]]
+name = "pico-derive"
+version = "1.1.8"
+source = "git+https://github.com/brevis-network/pico?tag=v1.1.8#f1813ece61058c3f1f09e878d1c8d791c6226629"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "pico-patch-libs"
+version = "1.1.8"
+source = "git+https://github.com/brevis-network/pico?tag=v1.1.8#f1813ece61058c3f1f09e878d1c8d791c6226629"
+dependencies = [
+ "bincode",
+ "serde",
+]
+
+[[package]]
+name = "pico-patch-libs"
+version = "1.1.8"
+source = "git+https://github.com/brevis-network/pico.git#f84173e7d7200201a582cf38ad9b7c4bff63fdf4"
+dependencies = [
+ "bincode",
+ "serde",
+]
+
+[[package]]
+name = "pico-processor"
+version = "0.1.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-provider",
+ "anyhow",
+ "clap",
+ "dotenvy",
+ "futures",
+ "pico-sdk",
+ "pico-vm",
+ "rsp-client-executor",
+ "rsp-host-executor",
+ "rsp-provider",
+ "rustls 0.23.35",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "pico-sdk"
+version = "1.1.8"
+source = "git+https://github.com/brevis-network/pico?tag=v1.1.8#f1813ece61058c3f1f09e878d1c8d791c6226629"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "cfg-if",
+ "env_logger",
+ "getrandom 0.2.16",
+ "hex",
+ "lazy_static",
+ "log",
+ "p3-baby-bear 0.1.0",
+ "p3-challenger 0.1.0",
+ "p3-field 0.1.0",
+ "p3-koala-bear",
+ "p3-mersenne-31",
+ "pico-patch-libs 1.1.8 (git+https://github.com/brevis-network/pico?tag=v1.1.8)",
+ "pico-vm",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "pico-vm"
+version = "1.1.8"
+source = "git+https://github.com/brevis-network/pico?tag=v1.1.8#f1813ece61058c3f1f09e878d1c8d791c6226629"
+dependencies = [
+ "anyhow",
+ "arrayref",
+ "backtrace",
+ "bincode",
+ "bytemuck",
+ "cfg-if",
+ "clap",
+ "core_affinity",
+ "cpu-time",
+ "crossbeam",
+ "csv",
+ "curve25519-dalek",
+ "dashmap",
+ "dashu",
+ "derive_more 2.0.1",
+ "elf",
+ "elliptic-curve",
+ "eyre",
+ "ff 0.13.1",
+ "halo2curves",
+ "hashbrown 0.14.5",
+ "hex",
+ "hybrid-array",
+ "itertools 0.13.0",
+ "k256",
+ "lazy_static",
+ "log",
+ "num",
+ "num-bigint 0.4.6",
+ "num-traits",
+ "num_cpus",
+ "once_cell",
+ "p256",
+ "p3-air 0.1.0",
+ "p3-baby-bear 0.1.0",
+ "p3-blake3",
+ "p3-bn254-fr 0.1.0",
+ "p3-challenger 0.1.0",
+ "p3-circle",
+ "p3-commit 0.1.0",
+ "p3-dft 0.1.0",
+ "p3-field 0.1.0",
+ "p3-fri 0.1.0",
+ "p3-goldilocks",
+ "p3-keccak",
+ "p3-keccak-air 0.1.0",
+ "p3-koala-bear",
+ "p3-matrix 0.1.0",
+ "p3-maybe-rayon 0.1.0",
+ "p3-mds 0.1.0",
+ "p3-merkle-tree 0.1.0",
+ "p3-mersenne-31",
+ "p3-poseidon2 0.1.0",
+ "p3-symmetric 0.1.0",
+ "p3-uni-stark 0.1.0",
+ "p3-util 0.1.0",
+ "paste",
+ "pico-derive",
+ "rand 0.8.5",
+ "rayon",
+ "rayon-scan",
+ "rrs-succinct",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "snowbridge-amcl",
+ "static_assertions",
+ "strum 0.26.3",
+ "strum_macros 0.26.4",
+ "sysinfo",
+ "thiserror 1.0.69",
+ "tiny-keccak",
+ "tracing",
+ "tracing-forest",
+ "tracing-subscriber",
+ "typenum",
+ "vec_map",
+ "zkhash",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5192,6 +5917,15 @@ name = "portable-atomic"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8a2f0d8d040d7848a709caf78912debcc3f33ee4b3cac47d73d1e1069e83507"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "potential_utf"
@@ -5331,7 +6065,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -5435,7 +6169,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.1",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6233,8 +6967,7 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "31.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93df0ff5eb70facbc872f82da4b815d7bd8e36b7ee525c637cabcb2a6af8a708"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "revm-bytecode",
  "revm-context",
@@ -6252,8 +6985,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "7.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2c6b5e6e8dd1e28a4a60e5f46615d4ef0809111c9e63208e55b5c7058200fb0"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "bitvec",
  "phf",
@@ -6264,8 +6996,7 @@ dependencies = [
 [[package]]
 name = "revm-context"
 version = "11.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "583c80d674f51b28a0d0a7309bda0867bcb0fd41b4e34976eded145edbb089fc"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "bitvec",
  "cfg-if",
@@ -6281,8 +7012,7 @@ dependencies = [
 [[package]]
 name = "revm-context-interface"
 version = "12.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6d701e2c2347d65216b066489ab22a0a8e1f7b2568256110d73a7d5eff3385c"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",
@@ -6297,8 +7027,7 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "9.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a4505d9688482fe0c3b8c09d9afbc4656e2bf9b48855e1c86c93bd4508e496a"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "alloy-eips",
  "revm-bytecode",
@@ -6311,8 +7040,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "8.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cce03e3780287b07abe58faf4a7f5d8be7e81321f93ccf3343c8f7755602bae"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "auto_impl",
  "either",
@@ -6324,8 +7052,7 @@ dependencies = [
 [[package]]
 name = "revm-handler"
 version = "12.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3da9e26f05ed723cf423b92f012a7775eef9e7d897633d11ec83535e92cda2d"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "auto_impl",
  "derive-where",
@@ -6343,8 +7070,7 @@ dependencies = [
 [[package]]
 name = "revm-inspector"
 version = "12.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57afb06e5985dbd2e8a48a3e6727cb0dd45148e4e6e028ac8222e262e440d3de"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "auto_impl",
  "either",
@@ -6360,8 +7086,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "29.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22789ce92c5808c70185e3bc49732f987dc6fd907f77828c8d3470b2299c9c65"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "revm-bytecode",
  "revm-context-interface",
@@ -6373,8 +7098,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "29.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "968b124028960201abf6d6bf8e223f15fadebb4307df6b7dc9244a0aab5d2d05"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -6395,8 +7119,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "21.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29e161db429d465c09ba9cbff0df49e31049fe6b549e28eb0b7bd642fcbd4412"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "alloy-primitives",
  "num_enum 0.7.5",
@@ -6407,8 +7130,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "8.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d8be953b7e374dbdea0773cf360debed8df394ea8d82a8b240a6b5da37592fc"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v97-31-0-1#a57afbd887109d2a7c635799815f470c44692a0c"
 dependencies = [
  "bitflags 2.10.0",
  "revm-bytecode",
@@ -6769,7 +7491,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7104,6 +7826,15 @@ dependencies = [
 
 [[package]]
 name = "serde_arrays"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38636132857f68ec3d5f3eb121166d2af33cb55174c4d5ff645db6165cbef0fd"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_arrays"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94a16b99c5ea4fe3daccd14853ad260ec00ea043b2708d1fd1da3106dcd8d9df"
@@ -7422,10 +8153,10 @@ dependencies = [
  "itertools 0.13.0",
  "nohash-hasher",
  "num",
- "p3-baby-bear",
- "p3-field",
- "p3-maybe-rayon",
- "p3-util",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "rand 0.8.5",
  "range-set-blaze",
  "rrs-succinct",
@@ -7464,17 +8195,17 @@ dependencies = [
  "num",
  "num_cpus",
  "p256",
- "p3-air",
- "p3-baby-bear",
- "p3-challenger",
- "p3-field",
- "p3-keccak-air",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-poseidon2",
- "p3-symmetric",
- "p3-uni-stark",
- "p3-util",
+ "p3-air 0.2.3-succinct",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-challenger 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-keccak-air 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-poseidon2 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-uni-stark 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "pathdiff",
  "rand 0.8.5",
  "rayon",
@@ -7531,7 +8262,7 @@ dependencies = [
  "k256",
  "num",
  "p256",
- "p3-field",
+ "p3-field 0.2.3-succinct",
  "rug",
  "serde",
  "snowbridge-amcl",
@@ -7574,10 +8305,10 @@ dependencies = [
  "hex",
  "lazy_static",
  "num-bigint 0.4.6",
- "p3-baby-bear",
- "p3-field",
- "p3-poseidon2",
- "p3-symmetric",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-poseidon2 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
  "serde",
  "sha2",
 ]
@@ -7600,14 +8331,14 @@ dependencies = [
  "itertools 0.13.0",
  "lru 0.12.5",
  "num-bigint 0.4.6",
- "p3-baby-bear",
- "p3-bn254-fr",
- "p3-challenger",
- "p3-commit",
- "p3-field",
- "p3-matrix",
- "p3-symmetric",
- "p3-util",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-bn254-fr 0.2.3-succinct",
+ "p3-challenger 0.2.3-succinct",
+ "p3-commit 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "rayon",
  "serde",
  "serde_json",
@@ -7636,18 +8367,18 @@ dependencies = [
  "hashbrown 0.14.5",
  "itertools 0.13.0",
  "num-traits",
- "p3-air",
- "p3-baby-bear",
- "p3-bn254-fr",
- "p3-challenger",
- "p3-commit",
- "p3-dft",
- "p3-field",
- "p3-fri",
- "p3-matrix",
- "p3-symmetric",
- "p3-uni-stark",
- "p3-util",
+ "p3-air 0.2.3-succinct",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-bn254-fr 0.2.3-succinct",
+ "p3-challenger 0.2.3-succinct",
+ "p3-commit 0.2.3-succinct",
+ "p3-dft 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-fri 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-uni-stark 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "rand 0.8.5",
  "rayon",
  "serde",
@@ -7670,10 +8401,10 @@ checksum = "5611ead360e9875f426c5add60ce8082bfee28302a5c7dbfa39cad02e9178f88"
 dependencies = [
  "backtrace",
  "itertools 0.13.0",
- "p3-baby-bear",
- "p3-bn254-fr",
- "p3-field",
- "p3-symmetric",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-bn254-fr 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
  "serde",
  "sp1-core-machine",
  "sp1-primitives",
@@ -7699,20 +8430,20 @@ dependencies = [
  "hashbrown 0.14.5",
  "itertools 0.13.0",
  "num_cpus",
- "p3-air",
- "p3-baby-bear",
- "p3-bn254-fr",
- "p3-challenger",
- "p3-commit",
- "p3-dft",
- "p3-field",
- "p3-fri",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-merkle-tree",
- "p3-poseidon2",
- "p3-symmetric",
- "p3-util",
+ "p3-air 0.2.3-succinct",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-bn254-fr 0.2.3-succinct",
+ "p3-challenger 0.2.3-succinct",
+ "p3-commit 0.2.3-succinct",
+ "p3-dft 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-fri 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-merkle-tree 0.2.3-succinct",
+ "p3-poseidon2 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "pathdiff",
  "rand 0.8.5",
  "serde",
@@ -7750,9 +8481,9 @@ dependencies = [
  "cfg-if",
  "hex",
  "num-bigint 0.4.6",
- "p3-baby-bear",
- "p3-field",
- "p3-symmetric",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
  "serde",
  "serde_json",
  "sha2",
@@ -7789,9 +8520,9 @@ dependencies = [
  "indicatif",
  "itertools 0.13.0",
  "k256",
- "p3-baby-bear",
- "p3-field",
- "p3-fri",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-fri 0.2.3-succinct",
  "prost",
  "reqwest",
  "reqwest-middleware",
@@ -7827,20 +8558,20 @@ dependencies = [
  "itertools 0.13.0",
  "num-bigint 0.4.6",
  "num-traits",
- "p3-air",
- "p3-baby-bear",
- "p3-challenger",
- "p3-commit",
- "p3-dft",
- "p3-field",
- "p3-fri",
- "p3-matrix",
- "p3-maybe-rayon",
- "p3-merkle-tree",
- "p3-poseidon2",
- "p3-symmetric",
- "p3-uni-stark",
- "p3-util",
+ "p3-air 0.2.3-succinct",
+ "p3-baby-bear 0.2.3-succinct",
+ "p3-challenger 0.2.3-succinct",
+ "p3-commit 0.2.3-succinct",
+ "p3-dft 0.2.3-succinct",
+ "p3-field 0.2.3-succinct",
+ "p3-fri 0.2.3-succinct",
+ "p3-matrix 0.2.3-succinct",
+ "p3-maybe-rayon 0.2.3-succinct",
+ "p3-merkle-tree 0.2.3-succinct",
+ "p3-poseidon2 0.2.3-succinct",
+ "p3-symmetric 0.2.3-succinct",
+ "p3-uni-stark 0.2.3-succinct",
+ "p3-util 0.2.3-succinct",
  "rayon-scan",
  "serde",
  "sp1-derive",
@@ -7848,21 +8579,6 @@ dependencies = [
  "strum 0.26.3",
  "sysinfo",
  "tracing",
-]
-
-[[package]]
-name = "sp1_bls12_381"
-version = "0.8.0-sp1-5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac255e1704ebcdeec5e02f6a0ebc4d2e9e6b802161938330b6810c13a610c583"
-dependencies = [
- "cfg-if",
- "ff 0.13.1",
- "group 0.13.0",
- "pairing 0.23.0",
- "rand_core 0.6.4",
- "sp1-lib",
- "subtle",
 ]
 
 [[package]]
@@ -7892,6 +8608,12 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "strength_reduce"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82"
 
 [[package]]
 name = "strsim"
@@ -8088,7 +8810,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8635,6 +9357,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "transpose"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad61aed86bc3faea4300c7aee358b4c6d0c8d6ccc36524c96e4c92ccf26e77e"
+dependencies = [
+ "num-integer",
+ "strength_reduce",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8734,6 +9466,16 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unroll"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ad948c1cb799b1a70f836077721a92a35ac177d4daddf4c20a633786d4cf618"
+dependencies = [
+ "quote",
+ "syn 1.0.109",
+]
 
 [[package]]
 name = "untrusted"
@@ -9569,7 +10311,7 @@ dependencies = [
  "ark-std 0.4.0",
  "bitvec",
  "blake2",
- "bls12_381",
+ "bls12_381 0.7.1",
  "byteorder",
  "cfg-if",
  "group 0.12.1",
