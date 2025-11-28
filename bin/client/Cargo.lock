@@ -3391,7 +3391,6 @@ dependencies = [
  "alloy-eips",
  "alloy-genesis",
  "alloy-rpc-types",
- "alloy-serde",
  "reth-chainspec",
  "reth-primitives-traits",
  "reth-trie",

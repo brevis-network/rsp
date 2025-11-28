@@ -6611,7 +6611,6 @@ dependencies = [
  "alloy-eips",
  "alloy-genesis",
  "alloy-rpc-types",
- "alloy-serde",
  "bincode",
  "reth-chainspec",
  "reth-optimism-chainspec",

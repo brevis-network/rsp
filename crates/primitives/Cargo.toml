@@ -24,7 +24,6 @@ reth-trie.workspace = true
 alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-rpc-types.workspace = true
-alloy-serde.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true
