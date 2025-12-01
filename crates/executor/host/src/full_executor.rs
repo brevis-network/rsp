@@ -49,7 +49,7 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         &self,
         block_number: u64,
         sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<()>;
+    ) -> eyre::Result<ClientExecutorInput<C::Primitives>>;
 
     fn config(&self) -> &Config;
 }
@@ -146,7 +146,7 @@ where
         &self,
         block_number: u64,
         sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<ClientExecutorInput<C::Primitives>> {
         match self {
             Either::Left(ref executor) => executor.execute(block_number, sender).await,
             Either::Right(ref executor) => executor.execute(block_number, sender).await,
@@ -213,7 +213,7 @@ where
         &self,
         block_number: u64,
         sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<ClientExecutorInput<C::Primitives>> {
         let fetch_data_start = Instant::now();
 
         self.hooks.on_execution_start(block_number).await?;
@@ -288,7 +288,7 @@ where
 
             sender.send((block_number, buffer))?;
         }
-        Ok(())
+        Ok(client_input)
     }
 
     fn config(&self) -> &Config {
@@ -336,7 +336,7 @@ where
         &self,
         block_number: u64,
         _sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<ClientExecutorInput<C::Primitives>> {
         let client_input = try_load_input_from_cache::<C::Primitives>(
             &self.cache_dir,
             self.config.chain.id(),
@@ -344,7 +344,9 @@ where
         )?
         .ok_or(eyre::eyre!("No cached input found"))?;
         let buffer: Vec<u8> = bincode::serialize(&client_input).unwrap();
-        process_client::<C>(&self.hooks, block_number, buffer, "".to_string()).await
+        process_client::<C>(&self.hooks, block_number, buffer, "".to_string()).await?;
+
+        Ok(client_input)
     }
 
     fn config(&self) -> &Config {

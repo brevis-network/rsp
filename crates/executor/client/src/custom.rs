@@ -5,7 +5,7 @@
 //! The [CustomEvmConfig] type implements the [ConfigureEvm] and [ConfigureEvmEnv] traits,
 //! configuring the custom CustomEvmConfig precompiles and instructions.
 
-use alloy_evm::EthEvm;
+use alloy_evm::{eth::EthEvmBuilder, EthEvm};
 use kzg_rs::{Bytes32, Bytes48, KzgProof, KzgSettings};
 use reth_evm::{precompiles::PrecompilesMap, Database, EvmEnv, EvmFactory};
 use revm::{
@@ -14,14 +14,13 @@ use revm::{
         result::{EVMError, HaltReason},
         BlockEnv, CfgEnv, TxEnv,
     },
-    handler::EthPrecompiles,
     inspector::NoOpInspector,
     interpreter::{
         interpreter_types::{Jumps, LoopControl},
         Interpreter, InterpreterTypes,
     },
-    precompile::{Crypto, PrecompileError},
-    Context, Inspector, MainBuilder, MainContext,
+    precompile::{Crypto, PrecompileError, PrecompileSpecId, Precompiles},
+    Context, Inspector,
 };
 use revm_primitives::{hardfork::SpecId, Address};
 use std::fmt::Debug;
@@ -67,56 +66,7 @@ impl EvmFactory for CustomEvmFactory {
             input.block_env.beneficiary = custom_beneficiary;
         }
 
-        #[allow(unused_mut)]
-        let mut precompiles = PrecompilesMap::from(EthPrecompiles::default());
-
-        #[cfg(target_os = "zkvm")]
-        precompiles.map_precompiles(|address, p| {
-            use alloy_evm::precompiles::Precompile;
-            use reth_evm::precompiles::PrecompileInput;
-            use revm::precompile::u64_to_address;
-            use std::collections::HashMap;
-
-            let addresses_to_names = HashMap::from([
-                (u64_to_address(1), "ecrecover"),
-                (u64_to_address(2), "sha256"),
-                (u64_to_address(3), "ripemd160"),
-                (u64_to_address(4), "identity"),
-                (u64_to_address(5), "modexp"),
-                (u64_to_address(6), "bn-add"),
-                (u64_to_address(7), "bn-mul"),
-                (u64_to_address(8), "bn-pair"),
-                (u64_to_address(9), "blake2f"),
-                (u64_to_address(10), "kzg-point-evaluation"),
-                (u64_to_address(11), "bls-g1add"),
-                (u64_to_address(12), "bls-g1msm"),
-                (u64_to_address(13), "bls-g2add"),
-                (u64_to_address(14), "bls-g2msm"),
-                (u64_to_address(15), "bls-pairing"),
-                (u64_to_address(16), "bls-map-fp-to-g1"),
-                (u64_to_address(17), "bls-map-fp2-to-g2"),
-            ]);
-
-            let name = addresses_to_names.get(address).cloned().unwrap_or("unknown");
-
-            let precompile = move |input: PrecompileInput<'_>| {
-                println!("cycle-tracker-report-start: precompile-{name}");
-                let result = p.call(input);
-                println!("cycle-tracker-report-end: precompile-{name}");
-
-                result
-            };
-            precompile.into()
-        });
-
-        let evm = Context::mainnet()
-            .with_db(db)
-            .with_cfg(input.cfg_env)
-            .with_block(input.block_env)
-            .build_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(precompiles);
-
-        EthEvm::new(evm, false)
+        evm_builder(db, input).build()
     }
 
     fn create_evm_with_inspector<DB: Database, I: revm::Inspector<Self::Context<DB>>>(
@@ -129,7 +79,7 @@ impl EvmFactory for CustomEvmFactory {
             input.block_env.beneficiary = custom_beneficiary;
         }
 
-        EthEvm::new(self.create_evm(db, input).into_inner().with_inspector(inspector), true)
+        evm_builder(db, input).activate_inspector(inspector).build()
     }
 }
 
@@ -196,4 +146,56 @@ impl Crypto for CustomCrypto {
 
         Ok(())
     }
+}
+
+// create the evm builder
+fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoOpInspector> {
+    #[allow(unused_mut)]
+    let mut precompiles = PrecompilesMap::from_static(Precompiles::new(
+        PrecompileSpecId::from_spec_id(input.cfg_env.spec),
+    ));
+
+    #[cfg(target_os = "zkvm")]
+    precompiles.map_precompiles(|address, p| {
+        use alloy_evm::precompiles::Precompile;
+        use reth_evm::precompiles::PrecompileInput;
+        use revm::precompile::u64_to_address;
+        use std::collections::HashMap;
+
+        let addresses_to_names = HashMap::from([
+            (u64_to_address(1), "ecrecover"),
+            (u64_to_address(2), "sha256"),
+            (u64_to_address(3), "ripemd160"),
+            (u64_to_address(4), "identity"),
+            (u64_to_address(5), "modexp"),
+            (u64_to_address(6), "bn-add"),
+            (u64_to_address(7), "bn-mul"),
+            (u64_to_address(8), "bn-pair"),
+            (u64_to_address(9), "blake2f"),
+            (u64_to_address(10), "kzg-point-evaluation"),
+            (u64_to_address(11), "bls-g1add"),
+            (u64_to_address(12), "bls-g1msm"),
+            (u64_to_address(13), "bls-g2add"),
+            (u64_to_address(14), "bls-g2msm"),
+            (u64_to_address(15), "bls-pairing"),
+            (u64_to_address(16), "bls-map-fp-to-g1"),
+            (u64_to_address(17), "bls-map-fp2-to-g2"),
+        ]);
+
+        let name = addresses_to_names.get(address).cloned().unwrap_or("unknown");
+
+        let precompile = move |input: PrecompileInput<'_>| {
+            println!("cycle-tracker-report-start: precompile-{name}");
+            let result = p.call(input);
+            println!("cycle-tracker-report-end: precompile-{name}");
+
+            result
+        };
+        precompile.into()
+    });
+
+    // disable nonce check for replay
+    input.cfg_env.disable_nonce_check = true;
+
+    EthEvmBuilder::new(db, input).precompiles(precompiles)
 }
