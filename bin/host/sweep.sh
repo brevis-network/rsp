@@ -19,5 +19,10 @@ CACHE_DIR="cache_dir"
 RPC_URL=
 
 RUST_LOG="$RUST_LOG_LEVEL" cargo run -r -- \
+  --begin-block "$BEGIN_BLOCK" \
+  --end-block "$END_BLOCK" \
+  --step-size "$STEP_SIZE" \
+  --batch-size "$BATCH_SIZE" \
+  --par-size "$PAR_SIZE" \
   --rpc-url "$RPC_URL" \
   --cache-dir "$CACHE_DIR"

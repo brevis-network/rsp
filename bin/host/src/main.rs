@@ -71,7 +71,7 @@ async fn main() -> eyre::Result<()> {
     let mut handles = vec![];
     for batch in blocks.chunks(batch_size).into_iter() {
         // temp comment out
-        fs::remove_dir_all(&cache_dir)?;
+        fs::remove_dir_all(&cache_dir);
 
         if batch.is_empty() {
             break;
