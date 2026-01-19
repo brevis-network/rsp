@@ -14,7 +14,15 @@ use url::Url;
 pub struct HostArgs {
     /// The block number of the block to execute.
     #[clap(long)]
-    pub block_number: u64,
+    pub begin_block: u64,
+    #[clap(long)]
+    pub end_block: u64,
+    #[clap(long)]
+    pub step_size: usize,
+    #[clap(long)]
+    pub batch_size: usize,
+    #[clap(long)]
+    pub par_size: usize,
 
     #[clap(flatten)]
     pub provider: ProviderArgs,

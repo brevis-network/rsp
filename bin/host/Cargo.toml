@@ -4,6 +4,11 @@ name = "rsp"
 edition = "2021"
 
 [dependencies]
+flate2 = "1.1"
+futures = "0.3"
+object_store = { version = "0.12", features = ["aws"] }
+tar = "0.4"
+
 tokio.workspace = true
 url.workspace = true
 tracing-subscriber = "0.3.18"
