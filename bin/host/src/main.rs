@@ -92,7 +92,7 @@ async fn main() -> eyre::Result<()> {
 
         let zip_buf = zip_dir(&dump_dir)?;
 
-        let s3_key = format!("rsp-20250901/{batch_begin_block}+{batch_size}.tar.gz");
+        let s3_key = format!("rsp-24000000/{batch_begin_block}+{batch_size}.tar.gz");
         let handle = tokio::task::spawn_blocking(move || {
             upload_to_s3(&s3_key, zip_buf, "application/x-gzip");
         });
