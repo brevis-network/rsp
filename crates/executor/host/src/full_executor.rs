@@ -8,17 +8,15 @@ use eyre::bail;
 use reth_primitives_traits::NodePrimitives;
 use rsp_client_executor::io::ClientExecutorInput;
 use serde::de::DeserializeOwned;
-use sp1_prover::components::CpuProverComponents;
-use sp1_sdk::{ExecutionReport, Prover, SP1ProvingKey, SP1PublicValues, SP1Stdin};
 use std::{
     fmt::{Debug, Formatter},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{sync::mpsc::UnboundedSender, task, time::sleep};
+use tokio::{sync::mpsc::UnboundedSender, time::sleep};
 use tonic::{codec::CompressionEncoding, transport::Channel};
-use tracing::{error, info, info_span, warn};
+use tracing::{error, info, warn};
 
 pub type EitherExecutor<C, P> = Either<FullExecutor<C, P>, CachedExecutor<C>>;
 
@@ -361,24 +359,6 @@ where
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CachedExecutor").field("cache_dir", &self.cache_dir).finish()
     }
-}
-
-// Block execution in SP1 is a long-running, blocking task, so run it in a separate thread.
-#[allow(dead_code)]
-async fn execute_client<P: Prover<CpuProverComponents> + 'static>(
-    number: u64,
-    client: Arc<P>,
-    pk: Arc<SP1ProvingKey>,
-    stdin: Arc<SP1Stdin>,
-) -> eyre::Result<eyre::Result<(SP1PublicValues, ExecutionReport)>> {
-    task::spawn_blocking(move || {
-        info_span!("execute_client", number).in_scope(|| {
-            let result = client.execute(&pk.elf, &stdin);
-            result.map_err(|err| eyre::eyre!("{err}"))
-        })
-    })
-    .await
-    .map_err(|err| eyre::eyre!("{err}"))
 }
 
 fn try_load_input_from_cache<P: NodePrimitives + DeserializeOwned>(

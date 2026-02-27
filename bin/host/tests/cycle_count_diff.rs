@@ -117,7 +117,7 @@ impl ExecutionHooks for Hook {
                         .copied()
                         .unwrap_or(0),
                     syscall_count: execution_report.total_syscall_count(),
-                    prover_gas: execution_report.gas.unwrap_or_default(),
+                    prover_gas: execution_report.gas().unwrap_or_default(),
                 };
 
                 serde_json::to_writer(File::create("cycle_stats.json")?, &stats)?;
@@ -223,7 +223,7 @@ impl ExecutionHooks for Hook {
                         ),
                         row(
                             "Prover Gas",
-                            execution_report.gas.unwrap_or_default(),
+                            execution_report.gas().unwrap_or_default(),
                             current_dev_stats.prover_gas,
                         ),
                     ],

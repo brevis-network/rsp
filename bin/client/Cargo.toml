@@ -9,20 +9,31 @@ edition = "2021"
 rsp-client-executor = { path = "../../crates/executor/client" }
 
 # pico
-pico-sdk = { git = "https://github.com/brevis-network/pico", tag = "v1.2.2" }
+pico-sdk = { git = "https://github.com/brevis-network/pico", branch = "rv64" }
+# local debug
+# pico-sdk = { path = "../../../brevis-vm/sdk/sdk" }
 
 # misc
 bincode = "1.3.3"
 
 [patch.crates-io]
 # precompile patches
-sha2 = { git = "https://github.com/brevis-network/hashes.git", package = "sha2", branch = "sha2-0.10.9"}
-curve25519-dalek-ng = { git = "https://github.com/brevis-network/curve25519-dalek-ng", branch = "patch-v1.0.1"  }
-ecdsa-core = { git = "https://github.com/brevis-network/signatures", package = "ecdsa", branch = "patch-v1.0.1" }
-tiny-keccak = { git = "https://github.com/brevis-network/tiny-keccak", branch = "patch-v1.0.0" }
-bn = { git = "https://github.com/brevis-network/bn", branch = "patch-v1.0.1", package = "substrate-bn" }
-bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1" }
-sha3 = { git = "https://github.com/brevis-network/hashes.git", branch = "sha3-0.10.8-v1.0.0"}
+bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1-rv64" }
+bn = { git = "https://github.com/brevis-network/bn", package = "substrate-bn", branch = "patch-v1.0.1-rv64" }
+k256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "k256-0.13.4-rv64" }
+p256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "p256-0.13.2-rv64" }
+sha2 = { git = "https://github.com/brevis-network/hashes.git", package = "sha2", branch = "sha2-0.10.9-rv64" }
+sha3 = { git = "https://github.com/brevis-network/hashes.git", branch = "sha3-0.10.8-v1.0.0-rv64" }
+tiny-keccak = { git = "https://github.com/brevis-network/tiny-keccak", branch = "patch-v1.0.0-rv64" }
+
+# local debug
+# bls12_381 = { path = "../../../pico-patches/bls12_381" }
+# bn = { path = "../../../pico-patches/bn", package = "substrate-bn" }
+# k256 = { path = "../../../pico-patches/k256/k256" }
+# p256 = { path = "../../../pico-patches/p256/p256" }
+# sha2 = { path = "../../../pico-patches/sha2/sha2" }
+# sha3 = { path = "../../../pico-patches/sha3/sha3" }
+# tiny-keccak = { path = "../../../pico-patches/tiny-keccak" }
 
 # elf optimization
 [profile.release]
