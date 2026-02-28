@@ -10,7 +10,7 @@ use rsp_host_executor::{
 };
 use rsp_provider::create_provider;
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod cli;
@@ -117,7 +117,16 @@ async fn main() -> eyre::Result<()> {
             }
         });
 
+        let mut last_block = 0;
+
         while let Some(header) = stream.next().await {
+            // skip if not greater than last processed block
+            if header.number <= last_block {
+                warn!("Skipping duplicate/old block: {}", header.number);
+                continue;
+            }
+            last_block = header.number;
+
             // Wait for the block to be avaliable in the HTTP provider
             executor.wait_for_block(header.number).await?;
             if let Err(err) = executor.execute(header.number, Some(&sender)).await {
