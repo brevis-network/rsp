@@ -91,6 +91,7 @@ async fn main() -> eyre::Result<()> {
                 .send_compressed(CompressionEncoding::Zstd);
 
             while let Some((block_num, client_input)) = receiver.recv().await {
+                let consumer_start = std::time::Instant::now();
                 info!(
                     "receiver client input, block_number: {}, input size: {}",
                     block_num,
@@ -114,6 +115,7 @@ async fn main() -> eyre::Result<()> {
                 if res.is_err() {
                     error!("Error fetching proving status: {:?}", res);
                 }
+                info!("Block {} total consumer time: {:?}", block_num, consumer_start.elapsed());
             }
         });
 
