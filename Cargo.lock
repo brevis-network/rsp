@@ -5769,8 +5769,8 @@ dependencies = [
 
 [[package]]
 name = "pico-derive"
-version = "1.2.1"
-source = "git+https://github.com/brevis-network/pico?tag=v1.2.1#2391651d52136d46553b86e85a2aef484716d1fe"
+version = "1.2.2"
+source = "git+https://github.com/brevis-network/pico?tag=v1.2.2#57ff6c5c0755f38bfa55a54eda053eae664ebcd2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5788,8 +5788,8 @@ dependencies = [
 
 [[package]]
 name = "pico-patch-libs"
-version = "1.2.1"
-source = "git+https://github.com/brevis-network/pico?tag=v1.2.1#2391651d52136d46553b86e85a2aef484716d1fe"
+version = "1.2.2"
+source = "git+https://github.com/brevis-network/pico?tag=v1.2.2#57ff6c5c0755f38bfa55a54eda053eae664ebcd2"
 dependencies = [
  "bincode",
  "serde",
@@ -5819,8 +5819,8 @@ dependencies = [
 
 [[package]]
 name = "pico-sdk"
-version = "1.2.1"
-source = "git+https://github.com/brevis-network/pico?tag=v1.2.1#2391651d52136d46553b86e85a2aef484716d1fe"
+version = "1.2.2"
+source = "git+https://github.com/brevis-network/pico?tag=v1.2.2#57ff6c5c0755f38bfa55a54eda053eae664ebcd2"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5835,7 +5835,7 @@ dependencies = [
  "p3-field 0.1.0",
  "p3-koala-bear",
  "p3-mersenne-31",
- "pico-patch-libs 1.2.1",
+ "pico-patch-libs 1.2.2",
  "pico-vm",
  "rand 0.8.5",
  "serde",
@@ -5845,8 +5845,8 @@ dependencies = [
 
 [[package]]
 name = "pico-vm"
-version = "1.2.1"
-source = "git+https://github.com/brevis-network/pico?tag=v1.2.1#2391651d52136d46553b86e85a2aef484716d1fe"
+version = "1.2.2"
+source = "git+https://github.com/brevis-network/pico?tag=v1.2.2#57ff6c5c0755f38bfa55a54eda053eae664ebcd2"
 dependencies = [
  "anyhow",
  "arrayref",

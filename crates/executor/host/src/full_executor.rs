@@ -89,8 +89,8 @@ pub async fn fetch_proving_status<C: ExecutorComponents>(
     hooks: &C::Hooks,
     grpc_client: &mut PicoProverClient<Channel>,
 ) -> eyre::Result<()> {
-    // start to loop result at interval of 2s
-    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    // start to loop result at interval of 200ms
+    let mut interval = tokio::time::interval(Duration::from_millis(200));
 
     loop {
         interval.tick().await;

@@ -55,8 +55,8 @@ rsp-primitives = { path = "./crates/primitives" }
 rsp-provider = { path = "./crates/provider" }
 
 # pico
-pico-sdk = { git = "https://github.com/brevis-network/pico", tag = "v1.2.1" }
-pico-vm = { git = "https://github.com/brevis-network/pico", tag = "v1.2.1" }
+pico-sdk = { git = "https://github.com/brevis-network/pico", tag = "v1.2.2" }
+pico-vm = { git = "https://github.com/brevis-network/pico", tag = "v1.2.2" }
 
 # sp1
 sp1-build = "5.1.0"
