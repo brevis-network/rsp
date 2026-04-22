@@ -35,6 +35,19 @@ tiny-keccak = { git = "https://github.com/brevis-network/tiny-keccak", branch = 
 # sha3 = { path = "../../../pico-patches/sha3/sha3" }
 # tiny-keccak = { path = "../../../pico-patches/tiny-keccak" }
 
+# revm patches
+revm = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-bytecode = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-context = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-database = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-database-interface = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-handler = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-inspector = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-interpreter = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-precompile = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-primitives = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+revm-state = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+
 # elf optimization
 [profile.release]
 opt-level = 3
