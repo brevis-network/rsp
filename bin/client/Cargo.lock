@@ -5166,7 +5166,7 @@ dependencies = [
 [[package]]
 name = "substrate-bn"
 version = "0.6.0"
-source = "git+https://github.com/brevis-network/bn?branch=patch-v1.0.1-rv64#68e4ac5245a8187d666e9575bbe04d50bf755770"
+source = "git+https://github.com/brevis-network/bn?branch=patch-v1.0.2-rv64#1455d63953ba9f7231043c57c7077cee6a10dc89"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -5175,7 +5175,7 @@ dependencies = [
  "lazy_static",
  "num-bigint 0.4.6",
  "pico-patch-libs",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rustc-hex",
 ]
 
