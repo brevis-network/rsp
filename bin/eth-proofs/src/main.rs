@@ -48,14 +48,11 @@ async fn main() -> eyre::Result<()> {
         args.eth_proofs_api_token,
     );
 
-    let ws = WsConnect::new(args.ws_rpc_url);
-    let ws_provider = ProviderBuilder::new().connect_ws(ws).await?;
+    // The WS connection + block subscription are (re)established inside the reconnect loop
+    // below, so a dropped WS auto-reconnects instead of terminating the service. The HTTP
+    // provider is created once here and reused (it has an internal server-error retry layer;
+    // transient connection errors are handled by wait_for_block's retry).
     let http_provider = create_provider(args.http_rpc_url);
-
-    // Subscribe to block headers.
-    let subscription = ws_provider.subscribe_blocks().await?;
-    let mut stream =
-        subscription.into_stream().filter(|h| ready(h.number % args.block_interval == 0));
 
     let executor =
         FullExecutor::<EthExecutorComponents<_, sp1_sdk::CudaProver>, RootProvider>::try_new(
@@ -80,6 +77,11 @@ async fn main() -> eyre::Result<()> {
         // sleep 5s
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     } else {
+        // Capture what the reconnect loop needs before the proving task's `async move`
+        // takes ownership of parts of `args`.
+        let ws_rpc_url = args.ws_rpc_url.clone();
+        let block_interval = args.block_interval;
+
         let hooks = eth_proofs_client.clone();
         tokio::task::spawn(async move {
             let mut client = PicoProverClient::connect(args.witness_getaway_endpoint.clone())
@@ -117,23 +119,60 @@ async fn main() -> eyre::Result<()> {
             }
         });
 
-        let mut last_block = 0;
+        let mut last_block = 0u64;
 
-        while let Some(header) = stream.next().await {
-            // skip if not greater than last processed block
-            if header.number <= last_block {
-                warn!("Skipping duplicate/old block: {}", header.number);
-                continue;
-            }
-            last_block = header.number;
+        // Reconnect loop: if the WS subscription drops (stream ends), reconnect and
+        // re-subscribe instead of exiting. Combined with wait_for_block's internal retry
+        // and the skip-on-error below, a transient RPC/node blip no longer kills the service.
+        loop {
+            let ws_provider = match ProviderBuilder::new()
+                .connect_ws(WsConnect::new(ws_rpc_url.clone()))
+                .await
+            {
+                Ok(p) => p,
+                Err(err) => {
+                    error!("WS connect failed: {err}; retrying in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            let subscription = match ws_provider.subscribe_blocks().await {
+                Ok(s) => s,
+                Err(err) => {
+                    error!("subscribe_blocks failed: {err}; retrying in 5s");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            let mut stream = subscription
+                .into_stream()
+                .filter(move |h| ready(h.number % block_interval == 0));
+            info!("Subscribed to new blocks (last_block={last_block})");
 
-            // Wait for the block to be avaliable in the HTTP provider
-            executor.wait_for_block(header.number).await?;
-            if let Err(err) = executor.execute(header.number, Some(&sender)).await {
-                let error_message = format!("Error handling block {}: {err}", header.number);
-                error!(error_message);
+            while let Some(header) = stream.next().await {
+                // skip if not greater than last processed block
+                if header.number <= last_block {
+                    warn!("Skipping duplicate/old block: {}", header.number);
+                    continue;
+                }
+                last_block = header.number;
+
+                // Wait for the block to be available in the HTTP provider. wait_for_block
+                // retries transient RPC errors internally; if it still fails (node down for
+                // a long time) skip this block instead of terminating the service.
+                if let Err(err) = executor.wait_for_block(header.number).await {
+                    error!("Error waiting for block {}: {err}; skipping", header.number);
+                    continue;
+                }
+                if let Err(err) = executor.execute(header.number, Some(&sender)).await {
+                    let error_message = format!("Error handling block {}: {err}", header.number);
+                    error!(error_message);
+                }
+                debug!("Received Block number: {}", header.number);
             }
-            debug!("Received Block number: {}", header.number);
+
+            warn!("Block stream ended (WS dropped?); reconnecting in 5s");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
     }
     Ok(())

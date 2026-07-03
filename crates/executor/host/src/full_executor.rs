@@ -195,10 +195,33 @@ where
     pub async fn wait_for_block(&self, block_number: u64) -> eyre::Result<()> {
         let block_number = block_number.into();
 
-        while self.provider.get_block_by_number(block_number).await?.is_none() {
-            sleep(Duration::from_millis(100)).await;
+        // Retry transient RPC errors (e.g. connection timeouts) with backoff instead of
+        // propagating them, so a brief RPC/node blip doesn't kill the service. `Ok(None)`
+        // just means the block isn't mined yet (normal fast polling, resets the retry
+        // budget). Only after ~5min of *consecutive* RPC failures do we give up on this
+        // block and let the caller skip it.
+        let mut rpc_err_attempts = 0u32;
+        loop {
+            match self.provider.get_block_by_number(block_number).await {
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) => {
+                    rpc_err_attempts = 0;
+                    sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    rpc_err_attempts += 1;
+                    if rpc_err_attempts >= 150 {
+                        return Err(eyre::eyre!(
+                            "RPC unavailable for block {block_number:?} after {rpc_err_attempts} retries: {e}"
+                        ));
+                    }
+                    warn!(
+                        "wait_for_block {block_number:?}: RPC error ({e}); retry {rpc_err_attempts}/150 in 2s"
+                    );
+                    sleep(Duration::from_secs(2)).await;
+                }
+            }
         }
-        Ok(())
     }
 }
 
