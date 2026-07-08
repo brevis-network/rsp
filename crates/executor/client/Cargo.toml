@@ -45,6 +45,7 @@ kzg-rs.workspace = true
 
 # alloy
 alloy-evm.workspace = true
+alloy-rlp.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-network.workspace = true

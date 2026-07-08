@@ -430,12 +430,12 @@ impl MptNode {
                 }
                 MptNodeData::Leaf(prefix, value) => {
                     let mut full_path = path;
-                    full_path.extend(&Nibbles::from_nibbles(prefix_nibs(prefix)));
+                    extend_with_prefix_nibs(&mut full_path, prefix);
                     f(&full_path.pack(), value)
                 }
                 MptNodeData::Extension(prefix, node) => {
                     let mut new_path = path;
-                    new_path.extend(&Nibbles::from_nibbles(prefix_nibs(prefix)));
+                    extend_with_prefix_nibs(&mut new_path, prefix);
                     stack.push((node, new_path));
                 }
             }
@@ -941,6 +941,21 @@ fn lcp(a: &[u8], b: &[u8]) -> usize {
         }
     }
     cmp::min(a.len(), b.len())
+}
+
+/// Appends the nibbles of a compact-encoded prefix to `path` without allocating an
+/// intermediate nibble vector.
+fn extend_with_prefix_nibs(path: &mut Nibbles, prefix: &[u8]) {
+    let (extension, tail) = prefix.split_first().unwrap();
+    // the first bit of the first nibble denotes the parity
+    if extension & (1 << 4) != 0 {
+        // for odd lengths, the second nibble contains the first element
+        path.push(extension & 0xf);
+    }
+    for nib in tail {
+        path.push(nib >> 4);
+        path.push(nib & 0xf);
+    }
 }
 
 fn prefix_nibs(prefix: &[u8]) -> Vec<u8> {

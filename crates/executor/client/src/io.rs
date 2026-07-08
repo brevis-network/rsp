@@ -2,6 +2,7 @@ use std::iter::once;
 
 use alloy_consensus::{Block, BlockHeader, Header};
 use alloy_primitives::map::HashMap;
+use alloy_rlp::Decodable;
 use itertools::Itertools;
 use reth_errors::ProviderError;
 use reth_ethereum_primitives::EthPrimitives;
@@ -105,18 +106,22 @@ impl From<Header> for CommittedHeader {
 
 #[derive(Debug)]
 pub struct TrieDB<'a> {
-    inner: &'a EthereumState,
     block_hashes: HashMap<u64, B256>,
     bytecode_by_hash: HashMap<B256, &'a Bytecode>,
+    /// Accounts of the verified state trie, keyed by hashed address.
+    accounts: HashMap<B256, TrieAccount>,
+    /// Storage slots of the verified storage tries, keyed by hashed address and hashed slot.
+    storage: HashMap<B256, HashMap<B256, U256>>,
 }
 
 impl<'a> TrieDB<'a> {
     pub fn new(
-        inner: &'a EthereumState,
         block_hashes: HashMap<u64, B256>,
         bytecode_by_hash: HashMap<B256, &'a Bytecode>,
+        accounts: HashMap<B256, TrieAccount>,
+        storage: HashMap<B256, HashMap<B256, U256>>,
     ) -> Self {
-        Self { inner, block_hashes, bytecode_by_hash }
+        Self { block_hashes, bytecode_by_hash, accounts, storage }
     }
 }
 
@@ -127,11 +132,8 @@ impl DatabaseRef for TrieDB<'_> {
     /// Get basic account information.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let hashed_address = keccak256(address);
-        let hashed_address = hashed_address.as_slice();
 
-        let account_in_trie = self.inner.state_trie.get_rlp::<TrieAccount>(hashed_address).unwrap();
-
-        let account = account_in_trie.map(|account_in_trie| AccountInfo {
+        let account = self.accounts.get(&hashed_address).map(|account_in_trie| AccountInfo {
             balance: account_in_trie.balance,
             nonce: account_in_trie.nonce,
             code_hash: account_in_trie.code_hash,
@@ -149,18 +151,13 @@ impl DatabaseRef for TrieDB<'_> {
     /// Get storage value of address at index.
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let hashed_address = keccak256(address);
-        let hashed_address = hashed_address.as_slice();
 
-        let storage_trie = self
-            .inner
-            .storage_tries
-            .get(hashed_address)
+        let slots = self
+            .storage
+            .get(&hashed_address)
             .expect("A storage trie must be provided for each account");
 
-        Ok(storage_trie
-            .get_rlp::<U256>(keccak256(index.to_be_bytes::<32>()).as_slice())
-            .expect("Can get from MPT")
-            .unwrap_or_default())
+        Ok(slots.get(&keccak256(index.to_be_bytes::<32>())).copied().unwrap_or_default())
     }
 
     /// Get block hash by block number.
@@ -203,13 +200,30 @@ pub trait WitnessInput {
             return Err(ClientError::MismatchedStateRoot);
         }
 
+        // Flatten the verified tries into preimage maps so account and storage lookups during
+        // execution are O(1) instead of MPT walks. The tries themselves are kept around for the
+        // post-execution state root recomputation.
+        let mut accounts: HashMap<B256, TrieAccount> = HashMap::with_hasher(Default::default());
+        state.state_trie.for_each_leaves(|key, mut value| {
+            let account = TrieAccount::decode(&mut value).unwrap();
+            accounts.insert(B256::from_slice(key), account);
+        });
+
+        let mut storage: HashMap<B256, HashMap<B256, U256>> =
+            HashMap::with_capacity_and_hasher(state.storage_tries.len(), Default::default());
         for (hashed_address, storage_trie) in state.storage_tries.iter() {
-            let account =
-                state.state_trie.get_rlp::<TrieAccount>(hashed_address.as_slice()).unwrap();
-            let storage_root = account.map_or(EMPTY_ROOT_HASH, |a| a.storage_root);
+            let storage_root =
+                accounts.get(hashed_address).map_or(EMPTY_ROOT_HASH, |a| a.storage_root);
             if storage_root != storage_trie.hash() {
                 return Err(ClientError::MismatchedStorageRoot);
             }
+
+            let mut slots: HashMap<B256, U256> = HashMap::with_hasher(Default::default());
+            storage_trie.for_each_leaves(|key, mut value| {
+                let slot_value = U256::decode(&mut value).unwrap();
+                slots.insert(B256::from_slice(key), slot_value);
+            });
+            storage.insert(*hashed_address, slots);
         }
 
         let bytecodes_by_hash =
@@ -236,6 +250,6 @@ pub trait WitnessInput {
             block_hashes.insert(parent_header.number(), child_header.parent_hash());
         }
 
-        Ok(TrieDB::new(state, block_hashes, bytecodes_by_hash))
+        Ok(TrieDB::new(block_hashes, bytecodes_by_hash, accounts, storage))
     }
 }
