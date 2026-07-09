@@ -50,15 +50,17 @@ where
 {
     pub fn execute(
         &self,
-        mut input: ClientExecutorInput<C::Primitives>,
+        input: ClientExecutorInput<'_, C::Primitives>,
     ) -> Result<Header, ClientError> {
         let sealed_headers = input.sealed_headers().collect::<Vec<_>>();
 
         // Initialize the witnessed database with verified storage proofs.
-        let db = profile_report!(INIT_WITNESS_DB, {
-            let trie_db = input.witness_db(&sealed_headers).unwrap();
-            WrapDatabaseRef(trie_db)
+        let (views, block_hashes, bytecodes_by_hash) = profile_report!(INIT_WITNESS_DB, {
+            let views = input.verified_views().unwrap();
+            let (block_hashes, bytecodes_by_hash) = input.witness_aux(&sealed_headers).unwrap();
+            (views, block_hashes, bytecodes_by_hash)
         });
+        let db = WrapDatabaseRef(TrieDB::new(&views, block_hashes, bytecodes_by_hash));
 
         let block_executor = BlockExecutor::new(self.evm_config.clone(), db, input.opcode_tracking);
 
@@ -106,10 +108,13 @@ where
             vec![execution_output.result.requests],
         );
 
-        // Verify the state root.
+        // Verify the state root: materialize a copy-on-write overlay of the touched paths and
+        // apply the state transition to it.
         let state_root = profile_report!(COMPUTE_STATE_ROOT, {
-            input.parent_state.update(&executor_outcome.hash_state_slow::<KeccakKeyHasher>());
-            input.parent_state.state_root()
+            let hashed_state = executor_outcome.hash_state_slow::<KeccakKeyHasher>();
+            let mut overlay = views.materialize_overlay(&hashed_state).unwrap();
+            overlay.update(&hashed_state);
+            overlay.state_root()
         });
 
         if state_root != input.current_block.header().state_root() {

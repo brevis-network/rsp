@@ -152,6 +152,9 @@ pub enum Error {
     /// errors.
     #[error("RLP error")]
     LegacyRlp(#[from] DecoderError),
+    /// A malformed flat-RLP trie wire encoding.
+    #[error("malformed flat trie: {0}")]
+    FlatTrie(&'static str),
 }
 
 /// Represents the various types of data that can be stored within a node in the sparse
@@ -943,7 +946,7 @@ fn lcp(a: &[u8], b: &[u8]) -> usize {
     cmp::min(a.len(), b.len())
 }
 
-fn prefix_nibs(prefix: &[u8]) -> Vec<u8> {
+pub(crate) fn prefix_nibs(prefix: &[u8]) -> Vec<u8> {
     let (extension, tail) = prefix.split_first().unwrap();
     // the first bit of the first nibble denotes the parity
     let is_odd = extension & (1 << 4) != 0;
@@ -1258,7 +1261,7 @@ fn add_orphaned_leafs(
 }
 
 /// Creates a new MPT node from a digest.
-fn node_from_digest(digest: B256) -> MptNode {
+pub(crate) fn node_from_digest(digest: B256) -> MptNode {
     match digest {
         EMPTY_ROOT | B256::ZERO => MptNode::default(),
         _ => MptNodeData::Digest(digest).into(),

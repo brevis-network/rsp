@@ -23,7 +23,7 @@ fn main() {
 
     // Read and deserialize input
     let input_data = std::fs::read(&args.input).expect("failed to read input file");
-    let input: EthClientExecutorInput =
+    let input: EthClientExecutorInput<'_> =
         bincode::deserialize(&input_data).expect("failed to deserialize input");
     info!("input block-{:?}", input.current_block.header.number);
 

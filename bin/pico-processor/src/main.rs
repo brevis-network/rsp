@@ -99,7 +99,7 @@ async fn main() {
 
             // generate stdin builder
             let mut stdin_builder = EmulatorStdinBuilder::<Vec<u8>, KoalaBearPoseidon2>::default();
-            stdin_builder.write::<EthClientExecutorInput>(&input);
+            stdin_builder.write::<EthClientExecutorInput<'_>>(&input);
 
             // emulate reth with block input
             let elf = fs::read(elf_path).expect("pico-processor: failed to read reth ELF file");

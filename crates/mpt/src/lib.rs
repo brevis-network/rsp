@@ -11,6 +11,12 @@ mod execution_witness;
 /// Module containing MPT code adapted from `zeth`.
 mod mpt;
 pub use mpt::Error;
+
+/// Flat RLP wire format for the witness tries (see module docs).
+mod flat;
+pub use flat::{
+    flatten_trie, FlatEthereumState, FlatStateViews, FlatStorageEntry, FlatTrieView,
+};
 use mpt::{
     mpt_from_proof, parse_proof, proofs_to_tries, resolve_nodes, transition_proofs_to_tries,
     MptNode,

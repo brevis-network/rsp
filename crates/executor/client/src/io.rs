@@ -2,6 +2,7 @@ use std::iter::once;
 
 use alloy_consensus::{Block, BlockHeader, Header};
 use alloy_primitives::map::HashMap;
+use alloy_rlp::Decodable;
 use itertools::Itertools;
 use reth_errors::ProviderError;
 use reth_ethereum_primitives::EthPrimitives;
@@ -12,26 +13,29 @@ use revm::{
     DatabaseRef,
 };
 use revm_primitives::{keccak256, Address, B256, U256};
-use rsp_mpt::EthereumState;
+use rsp_mpt::{FlatEthereumState, FlatStateViews};
 use rsp_primitives::genesis::Genesis;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::error::ClientError;
 
-pub type EthClientExecutorInput = ClientExecutorInput<EthPrimitives>;
+pub type EthClientExecutorInput<'a> = ClientExecutorInput<'a, EthPrimitives>;
 
 #[cfg(feature = "optimism")]
-pub type OpClientExecutorInput = ClientExecutorInput<reth_optimism_primitives::OpPrimitives>;
+pub type OpClientExecutorInput<'a> =
+    ClientExecutorInput<'a, reth_optimism_primitives::OpPrimitives>;
 
 /// The input for the client to execute a block and fully verify the STF (state transition
 /// function).
 ///
 /// Instead of passing in the entire state, we only pass in the state roots along with merkle proofs
-/// for the storage slots that were modified and accessed.
+/// for the storage slots that were modified and accessed. The tries are shipped in the flat RLP
+/// wire format (see [`FlatEthereumState`]) and, in the zkVM, are borrowed zero-copy from the raw
+/// input buffer.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ClientExecutorInput<P: NodePrimitives> {
+pub struct ClientExecutorInput<'a, P: NodePrimitives> {
     /// The current block (which will be executed inside the client).
     #[serde_as(
         as = "reth_primitives_traits::serde_bincode_compat::Block<'_, P::SignedTx, Header>"
@@ -41,8 +45,9 @@ pub struct ClientExecutorInput<P: NodePrimitives> {
     /// to provide the parent state root.
     #[serde_as(as = "Vec<alloy_consensus::serde_bincode_compat::Header>")]
     pub ancestor_headers: Vec<Header>,
-    /// Network state as of the parent block.
-    pub parent_state: EthereumState,
+    /// Network state as of the parent block, as flat RLP trie blobs.
+    #[serde(borrow)]
+    pub parent_state: FlatEthereumState<'a>,
     /// Account bytecodes.
     pub bytecodes: Vec<Bytecode>,
     /// The genesis block, as a json string.
@@ -53,22 +58,45 @@ pub struct ClientExecutorInput<P: NodePrimitives> {
     pub opcode_tracking: bool,
 }
 
-impl<P: NodePrimitives> ClientExecutorInput<P> {
+impl<P: NodePrimitives> ClientExecutorInput<'_, P> {
     /// Gets the immediate parent block's header.
     #[inline(always)]
     pub fn parent_header(&self) -> &Header {
         &self.ancestor_headers[0]
     }
 
-    /// Creates a [`WitnessDb`].
-    pub fn witness_db(&self, sealed_headers: &[SealedHeader]) -> Result<TrieDB<'_>, ClientError> {
-        <Self as WitnessInput>::witness_db(self, sealed_headers)
+    /// Parses and verifies the witness tries against the parent state root; see
+    /// [`WitnessInput::verified_views`].
+    pub fn verified_views(&self) -> Result<FlatStateViews<'_>, ClientError> {
+        <Self as WitnessInput>::verified_views(self)
+    }
+
+    /// Verifies bytecodes and ancestor headers; see [`WitnessInput::witness_aux`].
+    #[allow(clippy::type_complexity)]
+    pub fn witness_aux(
+        &self,
+        sealed_headers: &[SealedHeader],
+    ) -> Result<(HashMap<u64, B256>, HashMap<B256, &Bytecode>), ClientError> {
+        <Self as WitnessInput>::witness_aux(self, sealed_headers)
+    }
+
+    /// Converts any borrowed wire bytes into owned buffers.
+    pub fn into_owned(self) -> ClientExecutorInput<'static, P> {
+        ClientExecutorInput {
+            current_block: self.current_block,
+            ancestor_headers: self.ancestor_headers,
+            parent_state: self.parent_state.into_owned(),
+            bytecodes: self.bytecodes,
+            genesis: self.genesis,
+            custom_beneficiary: self.custom_beneficiary,
+            opcode_tracking: self.opcode_tracking,
+        }
     }
 }
 
-impl<P: NodePrimitives> WitnessInput for ClientExecutorInput<P> {
+impl<P: NodePrimitives> WitnessInput for ClientExecutorInput<'_, P> {
     #[inline(always)]
-    fn state(&self) -> &EthereumState {
+    fn state(&self) -> &FlatEthereumState<'_> {
         &self.parent_state
     }
 
@@ -105,18 +133,18 @@ impl From<Header> for CommittedHeader {
 
 #[derive(Debug)]
 pub struct TrieDB<'a> {
-    inner: &'a EthereumState,
+    views: &'a FlatStateViews<'a>,
     block_hashes: HashMap<u64, B256>,
     bytecode_by_hash: HashMap<B256, &'a Bytecode>,
 }
 
 impl<'a> TrieDB<'a> {
     pub fn new(
-        inner: &'a EthereumState,
+        views: &'a FlatStateViews<'a>,
         block_hashes: HashMap<u64, B256>,
         bytecode_by_hash: HashMap<B256, &'a Bytecode>,
     ) -> Self {
-        Self { inner, block_hashes, bytecode_by_hash }
+        Self { views, block_hashes, bytecode_by_hash }
     }
 }
 
@@ -127,15 +155,18 @@ impl DatabaseRef for TrieDB<'_> {
     /// Get basic account information.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let hashed_address = keccak256(address);
-        let hashed_address = hashed_address.as_slice();
 
-        let account_in_trie = self.inner.state_trie.get_rlp::<TrieAccount>(hashed_address).unwrap();
+        let account_in_trie =
+            self.views.state.get(hashed_address.as_slice()).expect("Can get from flat MPT");
 
-        let account = account_in_trie.map(|account_in_trie| AccountInfo {
-            balance: account_in_trie.balance,
-            nonce: account_in_trie.nonce,
-            code_hash: account_in_trie.code_hash,
-            code: None,
+        let account = account_in_trie.map(|mut bytes| {
+            let account_in_trie = TrieAccount::decode(&mut bytes).unwrap();
+            AccountInfo {
+                balance: account_in_trie.balance,
+                nonce: account_in_trie.nonce,
+                code_hash: account_in_trie.code_hash,
+                code: None,
+            }
         });
 
         Ok(account)
@@ -149,17 +180,17 @@ impl DatabaseRef for TrieDB<'_> {
     /// Get storage value of address at index.
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let hashed_address = keccak256(address);
-        let hashed_address = hashed_address.as_slice();
 
-        let storage_trie = self
-            .inner
-            .storage_tries
-            .get(hashed_address)
+        let storage_view = self
+            .views
+            .storage
+            .get(&hashed_address)
             .expect("A storage trie must be provided for each account");
 
-        Ok(storage_trie
-            .get_rlp::<U256>(keccak256(index.to_be_bytes::<32>()).as_slice())
-            .expect("Can get from MPT")
+        Ok(storage_view
+            .get(keccak256(index.to_be_bytes::<32>()).as_slice())
+            .expect("Can get from flat MPT")
+            .map(|mut bytes| U256::decode(&mut bytes).unwrap())
             .unwrap_or_default())
     }
 
@@ -172,10 +203,10 @@ impl DatabaseRef for TrieDB<'_> {
     }
 }
 
-/// A trait for constructing [`WitnessDb`].
+/// A trait for constructing [`TrieDB`].
 pub trait WitnessInput {
-    /// Gets a reference to the state from which account info and storage slots are loaded.
-    fn state(&self) -> &EthereumState;
+    /// Gets a reference to the flat state from which account info and storage slots are loaded.
+    fn state(&self) -> &FlatEthereumState<'_>;
 
     /// Gets the state trie root hash that the state referenced by
     /// [state()](trait.WitnessInput#tymethod.state) must conform to.
@@ -188,30 +219,44 @@ pub trait WitnessInput {
     /// starting from the current block header.
     fn sealed_headers(&self) -> impl Iterator<Item = SealedHeader>;
 
-    /// Creates a [`WitnessDb`] from a [`WitnessInput`] implementation. To do so, it verifies the
-    /// state root, ancestor headers and account bytecodes, and constructs the account and
-    /// storage values by reading against state tries.
+    /// Parses the flat witness tries, verifying every node against the state root anchor and
+    /// each storage trie against its account's storage root.
     ///
     /// NOTE: For some unknown reasons, calling this trait method directly from outside of the type
     /// implementing this trait causes a zkVM run to cost over 5M cycles more. To avoid this, define
     /// a method inside the type that calls this trait method instead.
     #[inline(always)]
-    fn witness_db(&self, sealed_headers: &[SealedHeader]) -> Result<TrieDB<'_>, ClientError> {
-        let state = self.state();
+    fn verified_views(&self) -> Result<FlatStateViews<'_>, ClientError> {
+        let views = self.state().views()?;
 
-        if self.state_anchor() != state.state_root() {
+        if self.state_anchor() != views.state.root_hash {
             return Err(ClientError::MismatchedStateRoot);
         }
 
-        for (hashed_address, storage_trie) in state.storage_tries.iter() {
-            let account =
-                state.state_trie.get_rlp::<TrieAccount>(hashed_address.as_slice()).unwrap();
+        for (hashed_address, storage_view) in views.storage.iter() {
+            let account = views
+                .state
+                .get(hashed_address.as_slice())?
+                .map(|mut bytes| TrieAccount::decode(&mut bytes))
+                .transpose()
+                .map_err(rsp_mpt::Error::from)?;
             let storage_root = account.map_or(EMPTY_ROOT_HASH, |a| a.storage_root);
-            if storage_root != storage_trie.hash() {
+            if storage_root != storage_view.root_hash {
                 return Err(ClientError::MismatchedStorageRoot);
             }
         }
 
+        Ok(views)
+    }
+
+    /// Verifies the account bytecodes and the ancestor header chain, returning the block hash
+    /// and bytecode lookup tables for [`TrieDB`].
+    #[allow(clippy::type_complexity)]
+    #[inline(always)]
+    fn witness_aux(
+        &self,
+        sealed_headers: &[SealedHeader],
+    ) -> Result<(HashMap<u64, B256>, HashMap<B256, &Bytecode>), ClientError> {
         let bytecodes_by_hash =
             self.bytecodes().map(|code| (code.hash_slow(), code)).collect::<HashMap<_, _>>();
 
@@ -236,6 +281,6 @@ pub trait WitnessInput {
             block_hashes.insert(parent_header.number(), child_header.parent_hash());
         }
 
-        Ok(TrieDB::new(state, block_hashes, bytecodes_by_hash))
+        Ok((block_hashes, bytecodes_by_hash))
     }
 }

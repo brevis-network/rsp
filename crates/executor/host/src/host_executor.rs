@@ -66,7 +66,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         custom_beneficiary: Option<Address>,
         opcode_tracking: bool,
         cache_dir: &Option<PathBuf>,
-    ) -> Result<ClientExecutorInput<C::Primitives>, HostError>
+    ) -> Result<ClientExecutorInput<'static, C::Primitives>, HostError>
     where
         C::Primitives: IntoPrimitives<N> + IntoInput + BlockValidator<CS>,
         P: Provider<N> + Clone + std::fmt::Debug,
@@ -215,7 +215,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         let client_input = ClientExecutorInput {
             current_block: C::Primitives::into_input_block(current_block),
             ancestor_headers,
-            parent_state: state,
+            parent_state: rsp_mpt::FlatEthereumState::from_state(&state),
             bytecodes: rpc_db.bytecodes(),
             genesis,
             custom_beneficiary,
