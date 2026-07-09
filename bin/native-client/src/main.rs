@@ -1,5 +1,8 @@
 use clap::Parser;
-use rsp_client_executor::{executor::EthClientExecutor, io::EthClientExecutorInput};
+use rsp_client_executor::{
+    executor::EthClientExecutor,
+    io::{EthClientExecutorInput, LegacyEthClientExecutorInput},
+};
 use std::sync::Arc;
 use tracing::info;
 
@@ -8,6 +11,11 @@ struct Args {
     /// Path to the input file containing bincode-serialized EthClientExecutorInput
     #[arg(long)]
     input: std::path::PathBuf,
+
+    /// Treat the input file as the legacy (MptNode-graph) format and convert it to the flat
+    /// format, writing the converted input to this path before executing it.
+    #[arg(long)]
+    convert_legacy_to: Option<std::path::PathBuf>,
 }
 
 fn main() {
@@ -23,8 +31,18 @@ fn main() {
 
     // Read and deserialize input
     let input_data = std::fs::read(&args.input).expect("failed to read input file");
-    let input: EthClientExecutorInput<'_> =
-        bincode::deserialize(&input_data).expect("failed to deserialize input");
+    let converted;
+    let input: EthClientExecutorInput<'_> = if let Some(out) = &args.convert_legacy_to {
+        let legacy: LegacyEthClientExecutorInput =
+            bincode::deserialize(&input_data).expect("failed to deserialize legacy input");
+        converted = EthClientExecutorInput::from(legacy);
+        let bytes = bincode::serialize(&converted).expect("failed to serialize converted input");
+        std::fs::write(out, &bytes).expect("failed to write converted input");
+        info!("converted legacy input ({} bytes) -> flat input ({} bytes)", input_data.len(), bytes.len());
+        converted.clone()
+    } else {
+        bincode::deserialize(&input_data).expect("failed to deserialize input")
+    };
     info!("input block-{:?}", input.current_block.header.number);
 
     // Execute the block

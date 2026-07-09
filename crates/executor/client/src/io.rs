@@ -284,3 +284,38 @@ pub trait WitnessInput {
         Ok((block_hashes, bytecodes_by_hash))
     }
 }
+
+/// The legacy wire format of [`ClientExecutorInput`], where the witness tries were shipped as a
+/// bincode-serialized [`rsp_mpt::EthereumState`] node graph. Kept for converting previously
+/// generated inputs/fixtures to the flat format (host tooling only).
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyClientExecutorInput<P: NodePrimitives> {
+    #[serde_as(
+        as = "reth_primitives_traits::serde_bincode_compat::Block<'_, P::SignedTx, Header>"
+    )]
+    pub current_block: Block<P::SignedTx>,
+    #[serde_as(as = "Vec<alloy_consensus::serde_bincode_compat::Header>")]
+    pub ancestor_headers: Vec<Header>,
+    pub parent_state: rsp_mpt::EthereumState,
+    pub bytecodes: Vec<Bytecode>,
+    pub genesis: Genesis,
+    pub custom_beneficiary: Option<Address>,
+    pub opcode_tracking: bool,
+}
+
+pub type LegacyEthClientExecutorInput = LegacyClientExecutorInput<EthPrimitives>;
+
+impl<P: NodePrimitives> From<LegacyClientExecutorInput<P>> for ClientExecutorInput<'static, P> {
+    fn from(legacy: LegacyClientExecutorInput<P>) -> Self {
+        ClientExecutorInput {
+            current_block: legacy.current_block,
+            ancestor_headers: legacy.ancestor_headers,
+            parent_state: FlatEthereumState::from_state(&legacy.parent_state),
+            bytecodes: legacy.bytecodes,
+            genesis: legacy.genesis,
+            custom_beneficiary: legacy.custom_beneficiary,
+            opcode_tracking: legacy.opcode_tracking,
+        }
+    }
+}
