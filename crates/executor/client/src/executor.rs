@@ -108,18 +108,10 @@ where
             vec![execution_output.result.requests],
         );
 
-        // Verify the state root: materialize a copy-on-write overlay of the touched paths and
-        // apply the state transition to it.
+        // Verify the state root: one batched bottom-up delta pass over the verified blobs.
         let state_root = profile_report!(COMPUTE_STATE_ROOT, {
-            // TEMP (CPU-13 instrumentation)
-            let hashed_state = crate::profile!("root: hash post state", {
-                executor_outcome.hash_state_slow::<KeccakKeyHasher>()
-            });
-            let mut overlay = crate::profile!("root: materialize", {
-                views.materialize_overlay(&hashed_state).unwrap()
-            });
-            crate::profile!("root: update", { overlay.update(&hashed_state) });
-            crate::profile!("root: recompute", { overlay.state_root() })
+            let hashed_state = executor_outcome.hash_state_slow::<KeccakKeyHasher>();
+            views.post_state_root(&hashed_state).unwrap()
         });
 
         if state_root != input.current_block.header().state_root() {

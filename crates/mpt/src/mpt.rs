@@ -937,7 +937,7 @@ pub fn to_encoded_path(mut nibs: &[u8], is_leaf: bool) -> Vec<u8> {
 }
 
 /// Returns the length of the common prefix.
-fn lcp(a: &[u8], b: &[u8]) -> usize {
+pub(crate) fn lcp(a: &[u8], b: &[u8]) -> usize {
     for (i, (a, b)) in iter::zip(a, b).enumerate() {
         if a != b {
             return i;

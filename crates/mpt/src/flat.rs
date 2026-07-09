@@ -852,20 +852,9 @@ impl FlatStateViews<'_> {
     /// digest stubs. Running the existing `update()` + `state_root()` on the overlay with the
     /// returned (filtered) post state yields the exact post-state root.
     pub fn materialize_overlay(&self, post_state: &HashedPostState) -> Result<EthereumState, Error> {
-        // TEMP (CPU-13 instrumentation)
-        #[cfg(target_os = "zkvm")]
-        println!("cycle-tracker-start: root: mat state");
-
         let account_keys: Vec<(B256, bool)> =
             post_state.accounts.iter().map(|(k, a)| (*k, a.is_none())).collect();
         let state_trie = self.state.materialize(&account_keys)?;
-
-        #[cfg(target_os = "zkvm")]
-        {
-            println!("cycle-tracker-end: root: mat state");
-            println!("cpu13-stats: state overlay size {}", state_trie.size());
-            println!("cycle-tracker-start: root: mat storages");
-        }
 
         let mut storage_tries =
             HashMap::with_capacity_and_hasher(self.storage.len(), Default::default());
@@ -880,9 +869,6 @@ impl FlatStateViews<'_> {
             };
             storage_tries.insert(*hashed_address, trie);
         }
-
-        #[cfg(target_os = "zkvm")]
-        println!("cycle-tracker-end: root: mat storages");
 
         Ok(EthereumState { state_trie, storage_tries })
     }
@@ -1139,5 +1125,654 @@ mod tests {
         let mut overlay = views.materialize_overlay(&post).unwrap();
         overlay.update(&post);
         assert_eq!(overlay.state_root(), expected_root);
+
+        // (c) batched delta root, no intermediate trie at all
+        assert_eq!(views.post_state_root(&post).unwrap(), expected_root);
+    }
+
+    /// Applies ops to a graph trie (reference) and via delta_root; roots must agree.
+    fn delta_parity_case(trie: &MptNode, ops: &[([u8; 32], Option<u64>)]) {
+        let bytes = flatten_trie(trie);
+        let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
+        assert_eq!(view.root_hash, trie.hash());
+
+        let mut full = trie.clone();
+        for (k, v) in ops {
+            match v {
+                Some(v) => {
+                    full.insert_rlp(k, *v).unwrap();
+                }
+                None => {
+                    full.delete(k).unwrap();
+                }
+            }
+        }
+
+        let changes: Vec<(B256, Option<Vec<u8>>)> = ops
+            .iter()
+            .map(|(k, v)| (B256::from(*k), v.map(|v| alloy_rlp::encode(v))))
+            .collect();
+        assert_eq!(view.delta_root(&changes).unwrap(), full.hash());
+    }
+
+    #[test]
+    fn delta_root_parity() {
+        const N: usize = 300;
+        let trie = keccak_trie(N);
+
+        // mixed batch: updates, deletes (collapses), inserts
+        let mut ops: Vec<([u8; 32], Option<u64>)> = Vec::new();
+        for i in 0..10usize {
+            ops.push((keccak(i.to_be_bytes()), Some(1_000_000 + i as u64)));
+        }
+        for i in 10..40usize {
+            ops.push((keccak(i.to_be_bytes()), None));
+        }
+        for i in N..N + 10 {
+            ops.push((keccak(i.to_be_bytes()), Some(i as u64)));
+        }
+        delta_parity_case(&trie, &ops);
+
+        // delete everything
+        let all_del: Vec<([u8; 32], Option<u64>)> =
+            (0..N).map(|i| (keccak(i.to_be_bytes()), None)).collect();
+        delta_parity_case(&trie, &all_del);
+
+        // delete non-existent keys (no-ops) mixed with real work
+        let mut noops: Vec<([u8; 32], Option<u64>)> = Vec::new();
+        for i in N..N + 20 {
+            noops.push((keccak(i.to_be_bytes()), None));
+        }
+        noops.push((keccak(3usize.to_be_bytes()), Some(777)));
+        delta_parity_case(&trie, &noops);
+
+        // small tries exercise extension splits and root collapses
+        for n in [1usize, 2, 3, 5] {
+            let small = keccak_trie(n);
+            let mut ops: Vec<([u8; 32], Option<u64>)> = Vec::new();
+            ops.push((keccak(0usize.to_be_bytes()), None));
+            ops.push((keccak((n + 5).to_be_bytes()), Some(9)));
+            ops.push((keccak((n + 6).to_be_bytes()), Some(10)));
+            delta_parity_case(&small, &ops);
+        }
+
+        // empty trie + inserts
+        let empty = MptNode::default();
+        let ops: Vec<([u8; 32], Option<u64>)> =
+            (0..8).map(|i: usize| (keccak(i.to_be_bytes()), Some(i as u64))).collect();
+        delta_parity_case(&empty, &ops);
+    }
+
+    #[test]
+    fn delta_root_randomized_parity() {
+        // sweep many pseudo-random op batches against the graph implementation
+        for seed in 0u64..30 {
+            let n = 20 + (seed as usize * 13) % 200;
+            let trie = keccak_trie(n);
+            let mut ops: Vec<([u8; 32], Option<u64>)> = Vec::new();
+            let mut x = seed.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(1);
+            let count = 1 + (seed as usize % 25);
+            for j in 0..count {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let existing = x % 2 == 0;
+                let idx = if existing { (x >> 8) as usize % n } else { n + j };
+                let delete = (x >> 16) % 3 == 0;
+                ops.push((
+                    keccak(idx.to_be_bytes()),
+                    if delete { None } else { Some(x >> 24) },
+                ));
+            }
+            // dedup by key (last op wins), mirroring HashedPostState semantics
+            let mut seen = std::collections::HashMap::new();
+            for (k, v) in ops {
+                seen.insert(k, v);
+            }
+            let ops: Vec<([u8; 32], Option<u64>)> = seen.into_iter().collect();
+            delta_parity_case(&trie, &ops);
+        }
+    }
+}
+
+// --- batched delta root ----------------------------------------------------------------------
+//
+// Computes the post-state root directly from the verified blobs and a batch of key changes in
+// one bottom-up pass: unchanged children are copied into the parent as their verbatim reference
+// bytes, changed paths are re-encoded, and only re-encoded nodes are hashed. No intermediate
+// node graph is built.
+
+use crate::mpt::{lcp, to_encoded_path, EMPTY_ROOT as FLAT_EMPTY_ROOT};
+
+/// A branch child during delta assembly.
+#[derive(Default)]
+enum Slot<'a> {
+    #[default]
+    Missing,
+    /// Original child carried over unchanged (with resolution context for collapse).
+    Keep { r: FlatRef<'a>, parent: Src<'a>, slot: u32 },
+    /// Freshly rebuilt child encoding.
+    New(Vec<u8>),
+}
+
+impl Slot<'_> {
+    fn from_out(out: Out) -> Self {
+        match out {
+            Out::Empty => Slot::Missing,
+            Out::Enc(enc) => Slot::New(enc),
+        }
+    }
+}
+
+/// Appends the RLP item bytes referencing `r`.
+fn ref_bytes_of(r: FlatRef<'_>, out: &mut Vec<u8>) {
+    match r {
+        FlatRef::Digest(d) => {
+            out.push(0xa0);
+            out.extend_from_slice(d);
+        }
+        FlatRef::Inline(b) => out.extend_from_slice(b),
+        FlatRef::Empty => out.push(alloy_rlp::EMPTY_STRING_CODE),
+    }
+}
+
+/// A (remaining-key-nibbles, new-value) pair; `None` deletes the key.
+type Change<'c> = (&'c [u8], Option<&'c [u8]>);
+
+/// The result of rebuilding a subtree: its full RLP encoding, or nothing left.
+enum Out {
+    Empty,
+    Enc(Vec<u8>),
+}
+
+/// Appends the RLP string encoding of `s`.
+fn enc_str_into(out: &mut Vec<u8>, s: &[u8]) {
+    if s.len() == 1 && s[0] < 0x80 {
+        out.push(s[0]);
+    } else if s.len() <= 55 {
+        out.push(0x80 + s.len() as u8);
+        out.extend_from_slice(s);
+    } else {
+        let mut len = s.len();
+        let mut be = [0u8; 8];
+        let mut n = 0;
+        while len > 0 {
+            be[7 - n] = (len & 0xff) as u8;
+            len >>= 8;
+            n += 1;
+        }
+        out.push(0xb7 + n as u8);
+        out.extend_from_slice(&be[8 - n..]);
+        out.extend_from_slice(s);
+    }
+}
+
+/// Wraps `payload` into an RLP list.
+fn enc_list(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 4);
+    if payload.len() <= 55 {
+        out.push(0xc0 + payload.len() as u8);
+    } else {
+        let mut len = payload.len();
+        let mut be = [0u8; 8];
+        let mut n = 0;
+        while len > 0 {
+            be[7 - n] = (len & 0xff) as u8;
+            len >>= 8;
+            n += 1;
+        }
+        out.push(0xf7 + n as u8);
+        out.extend_from_slice(&be[8 - n..]);
+    }
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Appends the reference item for a node encoding: verbatim if short, `0xa0 || keccak` else.
+fn ref_item_into(out: &mut Vec<u8>, enc: &[u8]) {
+    if enc.len() < 32 {
+        out.extend_from_slice(enc);
+    } else {
+        out.push(0xa0);
+        out.extend_from_slice(&keccak(enc));
+    }
+}
+
+fn enc_leaf(nibs: &[u8], value: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(nibs.len() / 2 + value.len() + 8);
+    enc_str_into(&mut payload, &to_encoded_path(nibs, true));
+    enc_str_into(&mut payload, value);
+    enc_list(&payload)
+}
+
+/// `child_item` must already be valid RLP item bytes (an inline list or `0xa0 || digest`).
+fn enc_ext(nibs: &[u8], child_item: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(nibs.len() / 2 + child_item.len() + 8);
+    enc_str_into(&mut payload, &to_encoded_path(nibs, false));
+    payload.extend_from_slice(child_item);
+    enc_list(&payload)
+}
+
+/// `items` are the 16 child-slot item byte strings (`[0x80]` for empty).
+fn enc_branch(items: &[Vec<u8>; 16]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(items.iter().map(|i| i.len()).sum::<usize>() + 1);
+    for item in items {
+        payload.extend_from_slice(item);
+    }
+    payload.push(alloy_rlp::EMPTY_STRING_CODE); // branch value: always empty
+    enc_list(&payload)
+}
+
+fn out_item(out: &Out) -> Vec<u8> {
+    match out {
+        Out::Empty => vec![alloy_rlp::EMPTY_STRING_CODE],
+        Out::Enc(enc) => {
+            let mut item = Vec::with_capacity(33);
+            ref_item_into(&mut item, enc);
+            item
+        }
+    }
+}
+
+/// Builds a subtree from scratch out of sorted, distinct (nibbles, value) leaves.
+fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
+    match kvs {
+        [] => Out::Empty,
+        [(nibs, value)] => Out::Enc(enc_leaf(nibs, value)),
+        _ => {
+            // sorted: the common prefix of all is the lcp of first and last
+            let cp = lcp(kvs[0].0, kvs[kvs.len() - 1].0);
+            let mut items: [Vec<u8>; 16] = Default::default();
+            let mut default_item = || vec![alloy_rlp::EMPTY_STRING_CODE];
+            for item in items.iter_mut() {
+                *item = default_item();
+            }
+            let mut start = 0;
+            while start < kvs.len() {
+                let nib = kvs[start].0[cp];
+                let mut end = start + 1;
+                while end < kvs.len() && kvs[end].0[cp] == nib {
+                    end += 1;
+                }
+                let group: Vec<(&[u8], &[u8])> =
+                    kvs[start..end].iter().map(|(k, v)| (&k[cp + 1..], *v)).collect();
+                items[nib as usize] = out_item(&build_kvs(&group));
+                start = end;
+            }
+            let branch = enc_branch(&items);
+            if cp > 0 {
+                let mut item = Vec::with_capacity(33);
+                ref_item_into(&mut item, &branch);
+                Out::Enc(enc_ext(&kvs[0].0[..cp], &item))
+            } else {
+                Out::Enc(branch)
+            }
+        }
+    }
+}
+
+impl<'a> FlatTrieView<'a> {
+    /// Computes the root of this trie after applying `changes` (keyed by full hashed key;
+    /// `None` deletes). One bottom-up pass over the changed paths; untouched subtrees are
+    /// carried over as their existing reference bytes.
+    pub fn delta_root(&self, changes: &[(B256, Option<Vec<u8>>)]) -> Result<B256, Error> {
+        if changes.is_empty() {
+            return Ok(self.root_hash);
+        }
+        let nibs: Vec<Vec<u8>> = changes.iter().map(|(k, _)| to_nibs(k.as_slice())).collect();
+        let mut list: Vec<Change<'_>> = changes
+            .iter()
+            .zip(nibs.iter())
+            .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
+            .collect();
+        list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+
+        let out = if self.is_empty() {
+            Self::apply_empty(&list)
+        } else {
+            self.apply_src(Src::Node(0), &list)?
+        };
+        Ok(match out {
+            Out::Empty => FLAT_EMPTY_ROOT,
+            Out::Enc(enc) => B256::from(keccak(&enc)),
+        })
+    }
+
+    /// Root of a fresh trie holding only `changes`' insertions (used for wiped or unwitnessed
+    /// storage tries).
+    pub fn empty_delta_root(changes: &[(B256, Option<Vec<u8>>)]) -> Result<B256, Error> {
+        let nibs: Vec<Vec<u8>> = changes.iter().map(|(k, _)| to_nibs(k.as_slice())).collect();
+        let mut list: Vec<Change<'_>> = changes
+            .iter()
+            .zip(nibs.iter())
+            .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
+            .collect();
+        list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        Ok(match Self::apply_empty(&list) {
+            Out::Empty => FLAT_EMPTY_ROOT,
+            Out::Enc(enc) => B256::from(keccak(&enc)),
+        })
+    }
+
+    /// Changes applied to an empty position: only insertions survive.
+    fn apply_empty(changes: &[Change<'_>]) -> Out {
+        let kvs: Vec<(&[u8], &[u8])> =
+            changes.iter().filter_map(|(k, v)| v.map(|v| (*k, v))).collect();
+        build_kvs(&kvs)
+    }
+
+    fn apply_src(&self, src: Src<'a>, changes: &[Change<'_>]) -> Result<Out, Error> {
+        debug_assert!(!changes.is_empty());
+        let node = match src {
+            Src::Node(idx) => self.parse_indexed(idx)?,
+            Src::Inline(b) => parse_node(b)?,
+        };
+        match node {
+            FlatNode::Null => Ok(Self::apply_empty(changes)),
+            FlatNode::Digest(d) => {
+                // mutating through an unresolved subtree is impossible; identical failure mode
+                // to MptNode::insert/delete hitting a digest
+                Err(Error::NodeNotResolved(B256::from_slice(d)))
+            }
+            FlatNode::Leaf { prefix, value } => {
+                let pn = prefix_nibs(prefix);
+                let mut kvs: Vec<(&[u8], &[u8])> = Vec::with_capacity(changes.len() + 1);
+                let mut leaf_state: Option<&[u8]> = Some(value);
+                for (k, v) in changes {
+                    if *k == pn.as_slice() {
+                        leaf_state = *v;
+                    } else if let Some(v) = v {
+                        kvs.push((k, v));
+                    }
+                }
+                if let Some(v) = leaf_state {
+                    kvs.push((pn.as_slice(), v));
+                }
+                kvs.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                Ok(build_kvs(&kvs))
+            }
+            FlatNode::Extension { prefix, child } => {
+                let pn = prefix_nibs(prefix);
+                self.apply_ext(src, &pn, child, changes)
+            }
+            FlatNode::Branch { payload } => self.apply_branch(src, payload, changes),
+        }
+    }
+
+    /// Applies changes at an extension with path `pn` and child reference `child`. `src` is the
+    /// node owning `child` (for edge resolution).
+    fn apply_ext(
+        &self,
+        src: Src<'a>,
+        pn: &[u8],
+        child: FlatRef<'a>,
+        changes: &[Change<'_>],
+    ) -> Result<Out, Error> {
+        // diverging deletes are no-ops; drop them first
+        let live: Vec<Change<'_>> = changes
+            .iter()
+            .filter(|(k, v)| v.is_some() || k.len() >= pn.len() && k[..pn.len()] == *pn)
+            .copied()
+            .collect();
+        if live.is_empty() {
+            // nothing effective: re-encode the unchanged extension
+            let mut item = Vec::with_capacity(33);
+            ref_bytes_of(child, &mut item);
+            return Ok(Out::Enc(enc_ext(pn, &item)));
+        }
+        let d = live.iter().map(|(k, _)| lcp(k, pn)).min().unwrap();
+
+        if d == pn.len() {
+            // all changes are inside the extension's subtree
+            let stripped: Vec<Change<'_>> =
+                live.iter().map(|(k, v)| (&k[pn.len()..], *v)).collect();
+            let child_out = self.apply_src(self.child_src(src, child, 0)?, &stripped)?;
+            return self.merge_prefix(pn, child_out);
+        }
+
+        // the extension splits at nibble position d
+        let mut slots: [Slot<'a>; 16] = Default::default();
+
+        let mut same_slot: Vec<Change<'_>> = Vec::new();
+        let mut groups: [Vec<(&[u8], &[u8])>; 16] = Default::default();
+        for (k, v) in &live {
+            if k[d] == pn[d] {
+                same_slot.push((&k[d + 1..], *v));
+            } else if let Some(v) = v {
+                groups[k[d] as usize].push((&k[d + 1..], *v));
+            }
+        }
+
+        // the original path continues under pn[d]
+        let rest = &pn[d + 1..];
+        slots[pn[d] as usize] = if same_slot.is_empty() {
+            if rest.is_empty() {
+                Slot::Keep { r: child, parent: src, slot: 0 }
+            } else {
+                let mut child_item = Vec::with_capacity(33);
+                ref_bytes_of(child, &mut child_item);
+                Slot::New(enc_ext(rest, &child_item))
+            }
+        } else {
+            let sub = if rest.is_empty() {
+                self.apply_src(self.child_src(src, child, 0)?, &same_slot)?
+            } else {
+                self.apply_ext(src, rest, child, &same_slot)?
+            };
+            Slot::from_out(sub)
+        };
+
+        for (slot, group) in groups.iter_mut().enumerate() {
+            if !group.is_empty() {
+                group.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                slots[slot] = Slot::from_out(build_kvs(group));
+            }
+        }
+
+        let out = self.assemble_branch(slots)?;
+        match out {
+            Out::Empty => Ok(Out::Empty),
+            other if d == 0 => Ok(other),
+            other => self.merge_prefix(&pn[..d], other),
+        }
+    }
+
+    fn apply_branch(
+        &self,
+        src: Src<'a>,
+        payload: &'a [u8],
+        changes: &[Change<'_>],
+    ) -> Result<Out, Error> {
+        // collect original child refs in one scan
+        let mut slots: [Slot<'a>; 16] = Default::default();
+        let mut pos = 0usize;
+        let mut orig: [FlatRef<'a>; 16] = [FlatRef::Empty; 16];
+        for r in orig.iter_mut() {
+            let item_len = rlp_item_len(payload, pos)?;
+            *r = parse_ref(&payload[pos..pos + item_len])?;
+            pos += item_len;
+        }
+
+        // group changes by leading nibble (they are sorted)
+        let mut idx = 0usize;
+        for slot in 0..16usize {
+            let start = idx;
+            while idx < changes.len() && changes[idx].0[0] == slot as u8 {
+                idx += 1;
+            }
+            if start == idx {
+                if !matches!(orig[slot], FlatRef::Empty) {
+                    slots[slot] = Slot::Keep { r: orig[slot], parent: src, slot: slot as u32 };
+                }
+                continue;
+            }
+            let group: Vec<Change<'_>> =
+                changes[start..idx].iter().map(|(k, v)| (&k[1..], *v)).collect();
+            let out = match orig[slot] {
+                FlatRef::Empty => Self::apply_empty(&group),
+                r => self.apply_src(self.child_src(src, r, slot as u32)?, &group)?,
+            };
+            slots[slot] = Slot::from_out(out);
+        }
+
+        self.assemble_branch(slots)
+    }
+
+    /// Assembles a branch from its 16 slot states, collapsing when 0 or 1 children remain
+    /// (mirroring `MptNode::delete_internal`'s branch case).
+    fn assemble_branch(&self, slots: [Slot<'a>; 16]) -> Result<Out, Error> {
+        let count = slots.iter().filter(|s| !matches!(s, Slot::Missing)).count();
+        match count {
+            0 => Ok(Out::Empty),
+            1 => {
+                let (nib, slot) = slots
+                    .iter()
+                    .enumerate()
+                    .find(|(_, s)| !matches!(s, Slot::Missing))
+                    .map(|(i, s)| (i as u8, s))
+                    .unwrap();
+                match slot {
+                    Slot::New(enc) => self.merge_prefix(&[nib], Out::Enc(enc.clone())),
+                    Slot::Keep { r, parent, slot } => match r {
+                        FlatRef::Inline(b) => self.merge_child_node(&[nib], parse_node(b)?),
+                        FlatRef::Digest(d) => match self.child_src(*parent, *r, *slot) {
+                            Ok(Src::Node(idx)) => {
+                                self.merge_child_node(&[nib], self.parse_indexed(idx)?)
+                            }
+                            _ => {
+                                // pruned sibling: extension over the digest, identical to the
+                                // graph representation's Digest-orphan fallback
+                                let mut item = Vec::with_capacity(33);
+                                item.push(0xa0);
+                                item.extend_from_slice(d);
+                                Ok(Out::Enc(enc_ext(&[nib], &item)))
+                            }
+                        },
+                        FlatRef::Empty => unreachable!("empty slot counted as present"),
+                    },
+                    Slot::Missing => unreachable!(),
+                }
+            }
+            _ => {
+                let mut items: [Vec<u8>; 16] = Default::default();
+                for (item, slot) in items.iter_mut().zip(slots.iter()) {
+                    match slot {
+                        Slot::Missing => item.push(alloy_rlp::EMPTY_STRING_CODE),
+                        Slot::Keep { r, .. } => ref_bytes_of(*r, item),
+                        Slot::New(enc) => ref_item_into(item, enc),
+                    }
+                }
+                Ok(Out::Enc(enc_branch(&items)))
+            }
+        }
+    }
+
+    /// Prepends `nibs` to a real (blob or inline) node during branch collapse.
+    fn merge_child_node(&self, nibs: &[u8], node: FlatNode<'a>) -> Result<Out, Error> {
+        match node {
+            FlatNode::Leaf { prefix, value } => {
+                let mut n = nibs.to_vec();
+                n.extend(prefix_nibs(prefix));
+                Ok(Out::Enc(enc_leaf(&n, value)))
+            }
+            FlatNode::Extension { prefix, child } => {
+                let mut n = nibs.to_vec();
+                n.extend(prefix_nibs(prefix));
+                let mut item = Vec::with_capacity(33);
+                ref_bytes_of(child, &mut item);
+                Ok(Out::Enc(enc_ext(&n, &item)))
+            }
+            FlatNode::Branch { payload } => {
+                // re-encode the branch reference: rebuild its item from the original payload
+                let mut items: [Vec<u8>; 16] = Default::default();
+                let mut pos = 0usize;
+                for item in items.iter_mut() {
+                    let item_len = rlp_item_len(payload, pos)?;
+                    item.extend_from_slice(&payload[pos..pos + item_len]);
+                    pos += item_len;
+                }
+                let enc = enc_branch(&items);
+                let mut item = Vec::with_capacity(33);
+                ref_item_into(&mut item, &enc);
+                Ok(Out::Enc(enc_ext(nibs, &item)))
+            }
+            _ => Err(Error::FlatTrie("unexpected node kind in collapse")),
+        }
+    }
+
+    /// Prepends extension path `pn` to a rebuilt child, merging prefixes when the child is a
+    /// leaf or extension (mirroring `MptNode::delete_internal`'s extension case).
+    fn merge_prefix(&self, pn: &[u8], child_out: Out) -> Result<Out, Error> {
+        let enc = match child_out {
+            Out::Empty => return Ok(Out::Empty),
+            Out::Enc(enc) => enc,
+        };
+        match parse_node(&enc)? {
+            FlatNode::Leaf { prefix, value } => {
+                let mut nibs = pn.to_vec();
+                nibs.extend(prefix_nibs(prefix));
+                Ok(Out::Enc(enc_leaf(&nibs, value)))
+            }
+            FlatNode::Extension { prefix, .. } => {
+                let mut nibs = pn.to_vec();
+                nibs.extend(prefix_nibs(prefix));
+                let (payload_off, payload_len, _) = rlp_header(&enc, 0)?;
+                let body = &enc[payload_off..payload_off + payload_len];
+                let item0_len = rlp_item_len(body, 0)?;
+                let child_item = body[item0_len..].to_vec();
+                Ok(Out::Enc(enc_ext(&nibs, &child_item)))
+            }
+            FlatNode::Branch { .. } => {
+                let mut item = Vec::with_capacity(33);
+                ref_item_into(&mut item, &enc);
+                Ok(Out::Enc(enc_ext(pn, &item)))
+            }
+            _ => Err(Error::FlatTrie("unexpected node kind after apply")),
+        }
+    }
+}
+
+impl FlatStateViews<'_> {
+    /// Computes the post-state root for `post_state` directly from the verified blobs, without
+    /// building any intermediate trie: storage-trie delta roots feed updated account rows into
+    /// the state-trie delta.
+    pub fn post_state_root(&self, post_state: &HashedPostState) -> Result<B256, Error> {
+        let mut state_changes: Vec<(B256, Option<Vec<u8>>)> =
+            Vec::with_capacity(post_state.accounts.len());
+
+        for (hashed_address, account) in post_state.accounts.iter() {
+            match account {
+                None => state_changes.push((*hashed_address, None)),
+                Some(account) => {
+                    let storage_root = match post_state.storages.get(hashed_address) {
+                        Some(st) => {
+                            let slot_changes: Vec<(B256, Option<Vec<u8>>)> = st
+                                .storage
+                                .iter()
+                                .map(|(slot, value)| {
+                                    (*slot, (!value.is_zero()).then(|| alloy_rlp::encode(value)))
+                                })
+                                .collect();
+                            match self.storage.get(hashed_address) {
+                                Some(view) if !st.wiped => view.delta_root(&slot_changes)?,
+                                _ => FlatTrieView::empty_delta_root(&slot_changes)?,
+                            }
+                        }
+                        None => self
+                            .storage
+                            .get(hashed_address)
+                            .map(|v| v.root_hash)
+                            .unwrap_or(FLAT_EMPTY_ROOT),
+                    };
+                    let trie_account = reth_trie::TrieAccount {
+                        nonce: account.nonce,
+                        balance: account.balance,
+                        storage_root,
+                        code_hash: account.get_bytecode_hash(),
+                    };
+                    state_changes.push((*hashed_address, Some(alloy_rlp::encode(&trie_account))));
+                }
+            }
+        }
+
+        self.state.delta_root(&state_changes)
     }
 }
