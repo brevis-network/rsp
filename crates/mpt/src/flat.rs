@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     mpt::{
-        keccak, node_from_digest, prefix_nibs, to_nibs, Error, MptNode, MptNodeData,
-        MptNodeReference, EMPTY_ROOT,
+        keccak, node_from_digest, node_with_cached_reference, prefix_nibs, to_nibs, Error,
+        MptNode, MptNodeData, MptNodeReference, EMPTY_ROOT,
     },
     EthereumState,
 };
@@ -342,12 +342,18 @@ fn branch_child(payload: &[u8], slot: usize) -> Result<FlatRef<'_>, Error> {
 const EDGE_PRUNED: u32 = u32::MAX;
 const EDGE_INLINE: u32 = u32::MAX - 1;
 
+const KIND_LEAF: u8 = 0;
+const KIND_EXT: u8 = 1;
+const KIND_BRANCH: u8 = 2;
+const KIND_DIGEST: u8 = 3;
+
 #[derive(Debug, Clone, Copy)]
 struct NodeRec {
     off: u32,
     len: u32,
     /// start into `edges`; branches own 16 slots, extensions 1, leaves 0.
     edge_start: u32,
+    kind: u8,
 }
 
 /// A parsed, linkage-verified flat trie.
@@ -356,7 +362,54 @@ pub struct FlatTrieView<'a> {
     bytes: &'a [u8],
     pub root_hash: B256,
     nodes: Vec<NodeRec>,
+    /// keccak of each node's blob (computed during verification)
+    hashes: Vec<B256>,
     edges: Vec<u32>,
+}
+
+/// A DFS-frontier entry with an incremental cursor over a node's child-slot items.
+struct FrontierEntry {
+    node_idx: u32,
+    /// absolute offset of the next unscanned child-slot item
+    item_pos: u32,
+    /// absolute end of the node's item region
+    items_end: u32,
+    slot: u8,
+    nslots: u8,
+}
+
+impl FrontierEntry {
+    fn new(
+        node_idx: u32,
+        blob_off: u32,
+        node: &FlatNode<'_>,
+        bytes: &[u8],
+    ) -> Result<Option<Self>, Error> {
+        match node {
+            FlatNode::Extension { .. } => {
+                let (payload_off, payload_len, _) = rlp_header(bytes, blob_off as usize)?;
+                let item1 = payload_off + rlp_item_len(bytes, payload_off)?;
+                Ok(Some(FrontierEntry {
+                    node_idx,
+                    item_pos: item1 as u32,
+                    items_end: (payload_off + payload_len) as u32,
+                    slot: 0,
+                    nslots: 1,
+                }))
+            }
+            FlatNode::Branch { .. } => {
+                let (payload_off, payload_len, _) = rlp_header(bytes, blob_off as usize)?;
+                Ok(Some(FrontierEntry {
+                    node_idx,
+                    item_pos: payload_off as u32,
+                    items_end: (payload_off + payload_len) as u32,
+                    slot: 0,
+                    nslots: 16,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 impl<'a> FlatTrieView<'a> {
@@ -367,6 +420,7 @@ impl<'a> FlatTrieView<'a> {
             bytes,
             root_hash: EMPTY_ROOT,
             nodes: Vec::with_capacity(bytes.len() / 96 + 4),
+            hashes: Vec::with_capacity(bytes.len() / 96 + 4),
             edges: Vec::with_capacity(bytes.len() / 32 + 4),
         };
 
@@ -390,18 +444,22 @@ impl<'a> FlatTrieView<'a> {
                     return Err(Error::FlatTrie("data after digest root"));
                 }
                 view.root_hash = B256::from_slice(d);
-                view.nodes.push(NodeRec { off: 0, len: root_len as u32, edge_start: 0 });
+                view.nodes.push(NodeRec { off: 0, len: root_len as u32, edge_start: 0, kind: KIND_DIGEST });
+                view.hashes.push(view.root_hash);
                 return Ok(view);
             }
             _ => {}
         }
         view.root_hash = B256::from(keccak(root_blob));
         view.push_node(0, root_len, &root)?;
+        view.hashes.push(view.root_hash);
 
-        // DFS frontier: (node index, next child slot to consider). A child slot is an index
-        // into the node's edge range.
-        let mut frontier: Vec<(u32, u32)> = Vec::with_capacity(64);
-        frontier.push((0, 0));
+        // DFS frontier. Each entry keeps an incremental cursor over the node's child-slot
+        // items so every item is scanned exactly once across the whole pass.
+        let mut frontier: Vec<FrontierEntry> = Vec::with_capacity(64);
+        if let Some(entry) = FrontierEntry::new(0, 0, &root, bytes)? {
+            frontier.push(entry);
+        }
 
         let mut pos = root_len;
         while pos < bytes.len() {
@@ -415,22 +473,22 @@ impl<'a> FlatTrieView<'a> {
             // Find the next pending digest reference matching this blob's hash. Non-matching
             // references we walk past are pruned subtrees and stay EDGE_PRUNED.
             let node_idx = 'search: loop {
-                let Some((n_idx, slot)) = frontier.last_mut() else {
+                let Some(top) = frontier.last_mut() else {
                     return Err(Error::FlatTrie("blob does not attach to the trie"));
                 };
-                let rec = view.nodes[*n_idx as usize];
-                let n_edges = view.edge_count(*n_idx);
-                while *slot < n_edges {
-                    let s = *slot;
-                    *slot += 1;
-                    let edge = view.edges[rec.edge_start as usize + s as usize];
-                    if edge != EDGE_PRUNED {
-                        continue; // inline or already matched
-                    }
-                    let digest = view.child_digest(*n_idx, s)?;
-                    if digest == hash {
+                while top.item_pos < top.items_end && top.slot < top.nslots {
+                    let (payload_off, payload_len, is_list) = rlp_header(bytes, top.item_pos as usize)?;
+                    let item_end = payload_off + payload_len;
+                    let slot = top.slot;
+                    top.item_pos = item_end as u32;
+                    top.slot += 1;
+                    if !is_list
+                        && payload_len == 32
+                        && bytes[payload_off..item_end] == hash[..]
+                    {
                         let idx = view.nodes.len() as u32;
-                        view.edges[rec.edge_start as usize + s as usize] = idx;
+                        let rec = view.nodes[top.node_idx as usize];
+                        view.edges[rec.edge_start as usize + slot as usize] = idx;
                         break 'search idx;
                     }
                 }
@@ -441,8 +499,13 @@ impl<'a> FlatTrieView<'a> {
             if matches!(node, FlatNode::Null | FlatNode::Digest(_)) {
                 return Err(Error::FlatTrie("null/digest blob below root"));
             }
+            let this_idx = view.nodes.len() as u32;
             view.push_node(pos, len, &node)?;
-            frontier.push((node_idx, 0));
+            view.hashes.push(B256::from(hash));
+            let _ = node_idx;
+            if let Some(entry) = FrontierEntry::new(this_idx, pos as u32, &node, bytes)? {
+                frontier.push(entry);
+            }
             pos += len;
         }
 
@@ -451,7 +514,13 @@ impl<'a> FlatTrieView<'a> {
 
     fn push_node(&mut self, off: usize, len: usize, node: &FlatNode<'_>) -> Result<(), Error> {
         let edge_start = self.edges.len() as u32;
-        self.nodes.push(NodeRec { off: off as u32, len: len as u32, edge_start });
+        let kind = match node {
+            FlatNode::Leaf { .. } => KIND_LEAF,
+            FlatNode::Extension { .. } => KIND_EXT,
+            FlatNode::Branch { .. } => KIND_BRANCH,
+            _ => KIND_DIGEST,
+        };
+        self.nodes.push(NodeRec { off: off as u32, len: len as u32, edge_start, kind });
         match node {
             FlatNode::Extension { child, .. } => {
                 self.edges.push(match child {
@@ -477,45 +546,40 @@ impl<'a> FlatTrieView<'a> {
         Ok(())
     }
 
-    fn edge_count(&self, idx: u32) -> u32 {
-        let start = self.nodes[idx as usize].edge_start;
-        let end = self
-            .nodes
-            .get(idx as usize + 1)
-            .map(|n| n.edge_start)
-            .unwrap_or(self.edges.len() as u32);
-        end - start
-    }
-
     fn blob(&self, idx: u32) -> &'a [u8] {
         let rec = self.nodes[idx as usize];
         &self.bytes[rec.off as usize..(rec.off + rec.len) as usize]
     }
 
-    /// The digest stored in child slot `slot` of node `idx` (empty slots return an
-    /// impossible-to-match sentinel digest).
-    fn child_digest(&self, idx: u32, slot: u32) -> Result<[u8; 32], Error> {
-        let node = parse_node(self.blob(idx))?;
-        let r = match node {
-            FlatNode::Extension { child, .. } => {
-                if slot != 0 {
-                    return Err(Error::FlatTrie("bad extension slot"));
+    /// Parses a verified node by index using its recorded kind, skipping the full structural
+    /// validation that already ran during `parse_and_verify`. For branches this avoids scanning
+    /// all 17 items.
+    fn parse_indexed(&self, idx: u32) -> Result<FlatNode<'a>, Error> {
+        let rec = self.nodes[idx as usize];
+        let blob = self.blob(idx);
+        match rec.kind {
+            KIND_BRANCH => {
+                let (payload, len, _) = rlp_header(blob, 0)?;
+                Ok(FlatNode::Branch { payload: &blob[payload..payload + len] })
+            }
+            KIND_LEAF | KIND_EXT => {
+                let (payload, len, _) = rlp_header(blob, 0)?;
+                let body = &blob[payload..payload + len];
+                let (h0, pl0, _) = rlp_header(body, 0)?;
+                let prefix = &body[h0..h0 + pl0];
+                let item1 = h0 + pl0;
+                if rec.kind == KIND_LEAF {
+                    let (h1, pl1, _) = rlp_header(body, item1)?;
+                    Ok(FlatNode::Leaf { prefix, value: &body[h1..h1 + pl1] })
+                } else {
+                    let l1 = rlp_item_len(body, item1)?;
+                    Ok(FlatNode::Extension { prefix, child: parse_ref(&body[item1..item1 + l1])? })
                 }
-                child
             }
-            FlatNode::Branch { payload } => branch_child(payload, slot as usize)?,
-            _ => return Err(Error::FlatTrie("edge on childless node")),
-        };
-        match r {
-            FlatRef::Digest(d) => {
-                let mut out = [0u8; 32];
-                out.copy_from_slice(d);
-                Ok(out)
+            _ => {
+                let (h, _, _) = rlp_header(blob, 0)?;
+                Ok(FlatNode::Digest(&blob[h..h + 32]))
             }
-            // empty branch slots keep an EDGE_PRUNED edge but can never match a real keccak
-            // preimage of a >= 32-byte blob; use an unmatchable sentinel.
-            FlatRef::Empty => Ok([0u8; 32]),
-            FlatRef::Inline(_) => Err(Error::FlatTrie("digest requested for inline child")),
         }
     }
 
@@ -538,7 +602,9 @@ impl<'a> FlatTrieView<'a> {
         let mut pos = 0usize; // nibble cursor
 
         loop {
-            match parse_node(blob)? {
+            let node =
+                if inline { parse_node(blob)? } else { self.parse_indexed(node_idx)? };
+            match node {
                 FlatNode::Null | FlatNode::Digest(_) => return Ok(None),
                 FlatNode::Leaf { prefix, value } => {
                     return Ok(match match_prefix(prefix, key, pos) {
@@ -622,12 +688,15 @@ impl<'a> FlatTrieView<'a> {
             Src::Node(idx) => self.blob(idx),
             Src::Inline(b) => b,
         };
-        let node = parse_node(blob)?;
-        Ok(match node {
-            FlatNode::Null => MptNode::default(),
-            FlatNode::Digest(d) => MptNodeData::Digest(B256::from_slice(d)).into(),
+        let node = match src {
+            Src::Node(idx) => self.parse_indexed(idx)?,
+            Src::Inline(b) => parse_node(b)?,
+        };
+        let data = match node {
+            FlatNode::Null => return Ok(MptNode::default()),
+            FlatNode::Digest(d) => return Ok(MptNodeData::Digest(B256::from_slice(d)).into()),
             FlatNode::Leaf { prefix, value } => {
-                MptNodeData::Leaf(prefix.to_vec(), value.to_vec()).into()
+                MptNodeData::Leaf(prefix.to_vec(), value.to_vec())
             }
             FlatNode::Extension { prefix, child } => {
                 let pn = prefix_nibs(prefix);
@@ -641,7 +710,7 @@ impl<'a> FlatTrieView<'a> {
                 } else {
                     self.mat(self.child_src(src, child, 0)?, &remaining)?
                 };
-                MptNodeData::Extension(prefix.to_vec(), Box::new(child_node)).into()
+                MptNodeData::Extension(prefix.to_vec(), Box::new(child_node))
             }
             FlatNode::Branch { payload } => {
                 // group keys by their next nibble
@@ -654,20 +723,22 @@ impl<'a> FlatTrieView<'a> {
                     has_delete |= *del;
                     groups[k[0] as usize].push((&k[1..], *del));
                 }
-                // a delete through a 2-child branch may collapse it: the surviving sibling's
-                // real shape is then needed, so materialize all children one level deep.
+                // single scan over the child slots
+                let mut refs = [FlatRef::Empty; 16];
                 let mut child_count = 0usize;
-                for_branch_children(payload, |_, r| {
+                for_branch_children(payload, |slot, r| {
                     if !matches!(r, FlatRef::Empty) {
                         child_count += 1;
                     }
+                    refs[slot] = r;
                     Ok(())
                 })?;
+                // a delete through a 2-child branch may collapse it: the surviving sibling's
+                // real shape is then needed, so materialize all children one level deep.
                 let force_shallow = has_delete && child_count == 2;
 
                 let mut children: [Option<Box<MptNode>>; 16] = Default::default();
-                for slot in 0..16 {
-                    let r = branch_child(payload, slot)?;
+                for (slot, r) in refs.into_iter().enumerate() {
                     if matches!(r, FlatRef::Empty) {
                         continue;
                     }
@@ -685,9 +756,21 @@ impl<'a> FlatTrieView<'a> {
                     };
                     children[slot] = Some(Box::new(child_node));
                 }
-                MptNodeData::Branch(children).into()
+                MptNodeData::Branch(children)
             }
-        })
+        };
+
+        // Pre-fill the reference cache: the materialized node encodes identically to its wire
+        // blob (digest-stub children carry the same references), so its reference is already
+        // known. This lets the post-update root recomputation reuse hashes for all untouched
+        // materialized nodes instead of re-hashing them.
+        let reference = match src {
+            Src::Node(idx) if blob.len() >= 32 => {
+                MptNodeReference::Digest(self.hashes[idx as usize])
+            }
+            _ => MptNodeReference::Bytes(blob.to_vec()),
+        };
+        Ok(node_with_cached_reference(data, reference))
     }
 
     /// A child as a stub: digest nodes for pruned/witnessed blob children, fully-materialized
@@ -765,13 +848,24 @@ pub struct FlatStateViews<'a> {
 
 impl FlatStateViews<'_> {
     /// Builds the copy-on-write [`EthereumState`] overlay for a state transition: paths for all
-    /// changed accounts/slots are materialized, untouched storage tries become digest stubs.
-    /// Running the existing `update()` + `state_root()` on the overlay yields the exact
-    /// post-state root.
+    /// effectively-changed accounts/slots are materialized, untouched storage tries become
+    /// digest stubs. Running the existing `update()` + `state_root()` on the overlay with the
+    /// returned (filtered) post state yields the exact post-state root.
     pub fn materialize_overlay(&self, post_state: &HashedPostState) -> Result<EthereumState, Error> {
+        // TEMP (CPU-13 instrumentation)
+        #[cfg(target_os = "zkvm")]
+        println!("cycle-tracker-start: root: mat state");
+
         let account_keys: Vec<(B256, bool)> =
             post_state.accounts.iter().map(|(k, a)| (*k, a.is_none())).collect();
         let state_trie = self.state.materialize(&account_keys)?;
+
+        #[cfg(target_os = "zkvm")]
+        {
+            println!("cycle-tracker-end: root: mat state");
+            println!("cpu13-stats: state overlay size {}", state_trie.size());
+            println!("cycle-tracker-start: root: mat storages");
+        }
 
         let mut storage_tries =
             HashMap::with_capacity_and_hasher(self.storage.len(), Default::default());
@@ -786,6 +880,9 @@ impl FlatStateViews<'_> {
             };
             storage_tries.insert(*hashed_address, trie);
         }
+
+        #[cfg(target_os = "zkvm")]
+        println!("cycle-tracker-end: root: mat storages");
 
         Ok(EthereumState { state_trie, storage_tries })
     }

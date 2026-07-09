@@ -1260,6 +1260,12 @@ fn add_orphaned_leafs(
     Ok(())
 }
 
+/// Creates an MPT node with a pre-computed reference cache. The caller must guarantee that
+/// `reference` is the reference of `data` as encoded.
+pub(crate) fn node_with_cached_reference(data: MptNodeData, reference: MptNodeReference) -> MptNode {
+    MptNode { data, cached_reference: Mutex::new(Some(reference)) }
+}
+
 /// Creates a new MPT node from a digest.
 pub(crate) fn node_from_digest(digest: B256) -> MptNode {
     match digest {

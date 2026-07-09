@@ -111,10 +111,15 @@ where
         // Verify the state root: materialize a copy-on-write overlay of the touched paths and
         // apply the state transition to it.
         let state_root = profile_report!(COMPUTE_STATE_ROOT, {
-            let hashed_state = executor_outcome.hash_state_slow::<KeccakKeyHasher>();
-            let mut overlay = views.materialize_overlay(&hashed_state).unwrap();
-            overlay.update(&hashed_state);
-            overlay.state_root()
+            // TEMP (CPU-13 instrumentation)
+            let hashed_state = crate::profile!("root: hash post state", {
+                executor_outcome.hash_state_slow::<KeccakKeyHasher>()
+            });
+            let mut overlay = crate::profile!("root: materialize", {
+                views.materialize_overlay(&hashed_state).unwrap()
+            });
+            crate::profile!("root: update", { overlay.update(&hashed_state) });
+            crate::profile!("root: recompute", { overlay.state_root() })
         });
 
         if state_root != input.current_block.header().state_root() {

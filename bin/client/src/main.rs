@@ -9,10 +9,11 @@ use rsp_client_executor::{
 use std::sync::Arc;
 
 pub fn main() {
-    // Read the input.
+    // Read the input. The deserialized input borrows the flat trie blobs zero-copy from `raw`,
+    // so the buffer must outlive it.
+    let raw = pico_sdk::io::read_vec();
     let input = profile_report!(DESERIALZE_INPUTS, {
-        let input = pico_sdk::io::read_vec();
-        bincode::deserialize::<EthClientExecutorInput>(&input).unwrap()
+        bincode::deserialize::<EthClientExecutorInput>(&raw).unwrap()
     });
 
     // Execute the block.
