@@ -529,17 +529,12 @@ impl<'a> FlatTrieView<'a> {
                     FlatRef::Empty => return Err(Error::FlatTrie("extension with empty child")),
                 });
             }
-            FlatNode::Branch { payload } => {
+            FlatNode::Branch { .. } => {
+                // all slots default to PRUNED; digest children get their edge patched by the
+                // frontier matching, and inline/empty slots are resolved directly from the
+                // blob during walks (the edge value is never consulted for them)
                 let base = self.edges.len();
                 self.edges.resize(base + 16, EDGE_PRUNED);
-                for_branch_children(payload, |slot, r| {
-                    self.edges[base + slot] = match r {
-                        FlatRef::Digest(_) => EDGE_PRUNED,
-                        FlatRef::Inline(_) => EDGE_INLINE,
-                        FlatRef::Empty => EDGE_PRUNED, // never matched: digest lookup skips empties
-                    };
-                    Ok(())
-                })?;
             }
             _ => {}
         }
@@ -1283,6 +1278,41 @@ enum Out {
     Enc(Vec<u8>),
 }
 
+/// Encoded length of an RLP string.
+fn str_len(s: &[u8]) -> usize {
+    if s.len() == 1 && s[0] < 0x80 {
+        1
+    } else if s.len() <= 55 {
+        1 + s.len()
+    } else {
+        let mut n = 0;
+        let mut len = s.len();
+        while len > 0 {
+            n += 1;
+            len >>= 8;
+        }
+        1 + n + s.len()
+    }
+}
+
+/// Appends an RLP list header for `payload_len` payload bytes.
+fn list_header_into(out: &mut Vec<u8>, payload_len: usize) {
+    if payload_len <= 55 {
+        out.push(0xc0 + payload_len as u8);
+    } else {
+        let mut be = [0u8; 8];
+        let mut n = 0;
+        let mut len = payload_len;
+        while len > 0 {
+            be[7 - n] = (len & 0xff) as u8;
+            len >>= 8;
+            n += 1;
+        }
+        out.push(0xf7 + n as u8);
+        out.extend_from_slice(&be[8 - n..]);
+    }
+}
+
 /// Appends the RLP string encoding of `s`.
 fn enc_str_into(out: &mut Vec<u8>, s: &[u8]) {
     if s.len() == 1 && s[0] < 0x80 {
@@ -1305,27 +1335,6 @@ fn enc_str_into(out: &mut Vec<u8>, s: &[u8]) {
     }
 }
 
-/// Wraps `payload` into an RLP list.
-fn enc_list(payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(payload.len() + 4);
-    if payload.len() <= 55 {
-        out.push(0xc0 + payload.len() as u8);
-    } else {
-        let mut len = payload.len();
-        let mut be = [0u8; 8];
-        let mut n = 0;
-        while len > 0 {
-            be[7 - n] = (len & 0xff) as u8;
-            len >>= 8;
-            n += 1;
-        }
-        out.push(0xf7 + n as u8);
-        out.extend_from_slice(&be[8 - n..]);
-    }
-    out.extend_from_slice(payload);
-    out
-}
-
 /// Appends the reference item for a node encoding: verbatim if short, `0xa0 || keccak` else.
 fn ref_item_into(out: &mut Vec<u8>, enc: &[u8]) {
     if enc.len() < 32 {
@@ -1337,40 +1346,26 @@ fn ref_item_into(out: &mut Vec<u8>, enc: &[u8]) {
 }
 
 fn enc_leaf(nibs: &[u8], value: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(nibs.len() / 2 + value.len() + 8);
-    enc_str_into(&mut payload, &to_encoded_path(nibs, true));
-    enc_str_into(&mut payload, value);
-    enc_list(&payload)
+    let path = to_encoded_path(nibs, true);
+    let payload_len = str_len(&path) + str_len(value);
+    let mut out = Vec::with_capacity(payload_len + 4);
+    list_header_into(&mut out, payload_len);
+    enc_str_into(&mut out, &path);
+    enc_str_into(&mut out, value);
+    out
 }
 
 /// `child_item` must already be valid RLP item bytes (an inline list or `0xa0 || digest`).
 fn enc_ext(nibs: &[u8], child_item: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(nibs.len() / 2 + child_item.len() + 8);
-    enc_str_into(&mut payload, &to_encoded_path(nibs, false));
-    payload.extend_from_slice(child_item);
-    enc_list(&payload)
+    let path = to_encoded_path(nibs, false);
+    let payload_len = str_len(&path) + child_item.len();
+    let mut out = Vec::with_capacity(payload_len + 4);
+    list_header_into(&mut out, payload_len);
+    enc_str_into(&mut out, &path);
+    out.extend_from_slice(child_item);
+    out
 }
 
-/// `items` are the 16 child-slot item byte strings (`[0x80]` for empty).
-fn enc_branch(items: &[Vec<u8>; 16]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(items.iter().map(|i| i.len()).sum::<usize>() + 1);
-    for item in items {
-        payload.extend_from_slice(item);
-    }
-    payload.push(alloy_rlp::EMPTY_STRING_CODE); // branch value: always empty
-    enc_list(&payload)
-}
-
-fn out_item(out: &Out) -> Vec<u8> {
-    match out {
-        Out::Empty => vec![alloy_rlp::EMPTY_STRING_CODE],
-        Out::Enc(enc) => {
-            let mut item = Vec::with_capacity(33);
-            ref_item_into(&mut item, enc);
-            item
-        }
-    }
-}
 
 /// Builds a subtree from scratch out of sorted, distinct (nibbles, value) leaves.
 fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
@@ -1380,11 +1375,7 @@ fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
         _ => {
             // sorted: the common prefix of all is the lcp of first and last
             let cp = lcp(kvs[0].0, kvs[kvs.len() - 1].0);
-            let mut items: [Vec<u8>; 16] = Default::default();
-            let mut default_item = || vec![alloy_rlp::EMPTY_STRING_CODE];
-            for item in items.iter_mut() {
-                *item = default_item();
-            }
+            let mut outs: [Option<Vec<u8>>; 16] = Default::default();
             let mut start = 0;
             while start < kvs.len() {
                 let nib = kvs[start].0[cp];
@@ -1394,10 +1385,28 @@ fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
                 }
                 let group: Vec<(&[u8], &[u8])> =
                     kvs[start..end].iter().map(|(k, v)| (&k[cp + 1..], *v)).collect();
-                items[nib as usize] = out_item(&build_kvs(&group));
+                if let Out::Enc(enc) = build_kvs(&group) {
+                    outs[nib as usize] = Some(enc);
+                }
                 start = end;
             }
-            let branch = enc_branch(&items);
+
+            // single-pass branch encoding
+            let payload_len: usize = outs
+                .iter()
+                .map(|o| o.as_ref().map_or(1, |e| if e.len() < 32 { e.len() } else { 33 }))
+                .sum::<usize>()
+                + 1;
+            let mut branch = Vec::with_capacity(payload_len + 4);
+            list_header_into(&mut branch, payload_len);
+            for out in &outs {
+                match out {
+                    None => branch.push(alloy_rlp::EMPTY_STRING_CODE),
+                    Some(enc) => ref_item_into(&mut branch, enc),
+                }
+            }
+            branch.push(alloy_rlp::EMPTY_STRING_CODE); // branch value: always empty
+
             if cp > 0 {
                 let mut item = Vec::with_capacity(33);
                 ref_item_into(&mut item, &branch);
@@ -1652,15 +1661,37 @@ impl<'a> FlatTrieView<'a> {
                 }
             }
             _ => {
-                let mut items: [Vec<u8>; 16] = Default::default();
-                for (item, slot) in items.iter_mut().zip(slots.iter()) {
+                // single-pass branch encoding: arithmetic lengths, one output buffer
+                let payload_len: usize = slots
+                    .iter()
+                    .map(|slot| match slot {
+                        Slot::Missing => 1,
+                        Slot::Keep { r, .. } => match r {
+                            FlatRef::Digest(_) => 33,
+                            FlatRef::Inline(b) => b.len(),
+                            FlatRef::Empty => 1,
+                        },
+                        Slot::New(enc) => {
+                            if enc.len() < 32 {
+                                enc.len()
+                            } else {
+                                33
+                            }
+                        }
+                    })
+                    .sum::<usize>()
+                    + 1;
+                let mut out = Vec::with_capacity(payload_len + 4);
+                list_header_into(&mut out, payload_len);
+                for slot in slots.iter() {
                     match slot {
-                        Slot::Missing => item.push(alloy_rlp::EMPTY_STRING_CODE),
-                        Slot::Keep { r, .. } => ref_bytes_of(*r, item),
-                        Slot::New(enc) => ref_item_into(item, enc),
+                        Slot::Missing => out.push(alloy_rlp::EMPTY_STRING_CODE),
+                        Slot::Keep { r, .. } => ref_bytes_of(*r, &mut out),
+                        Slot::New(enc) => ref_item_into(&mut out, enc),
                     }
                 }
-                Ok(Out::Enc(enc_branch(&items)))
+                out.push(alloy_rlp::EMPTY_STRING_CODE); // branch value: always empty
+                Ok(Out::Enc(out))
             }
         }
     }
@@ -1681,15 +1712,10 @@ impl<'a> FlatTrieView<'a> {
                 Ok(Out::Enc(enc_ext(&n, &item)))
             }
             FlatNode::Branch { payload } => {
-                // re-encode the branch reference: rebuild its item from the original payload
-                let mut items: [Vec<u8>; 16] = Default::default();
-                let mut pos = 0usize;
-                for item in items.iter_mut() {
-                    let item_len = rlp_item_len(payload, pos)?;
-                    item.extend_from_slice(&payload[pos..pos + item_len]);
-                    pos += item_len;
-                }
-                let enc = enc_branch(&items);
+                // the branch itself is unchanged: its encoding is header + original payload
+                let mut enc = Vec::with_capacity(payload.len() + 4);
+                list_header_into(&mut enc, payload.len());
+                enc.extend_from_slice(payload);
                 let mut item = Vec::with_capacity(33);
                 ref_item_into(&mut item, &enc);
                 Ok(Out::Enc(enc_ext(nibs, &item)))
