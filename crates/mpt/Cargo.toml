@@ -26,6 +26,7 @@ alloy-rpc-types-debug = {workspace = true, optional = true }
 
 [dev-dependencies]
 bincode = "1.3.3"
+keccak = "0.1"
 hex-literal.workspace = true
 reth-primitives-traits.workspace = true
 

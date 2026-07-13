@@ -6842,6 +6842,7 @@ dependencies = [
  "alloy-rpc-types-debug",
  "bincode",
  "hex-literal",
+ "keccak",
  "reth-primitives-traits",
  "reth-trie",
  "rlp",

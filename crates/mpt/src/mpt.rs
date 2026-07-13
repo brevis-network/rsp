@@ -18,6 +18,8 @@
 
 #![allow(unreachable_pub)]
 #![allow(dead_code)]
+// target_vendor = "pico" is defined by the custom riscv64im-pico-zkvm-elf target
+#![allow(unexpected_cfgs)]
 
 use alloc::boxed::Box;
 use alloy_primitives::{b256, map::HashMap, B256};
@@ -78,10 +80,55 @@ pub const KECCAK_EMPTY: B256 =
 /// # TODO
 /// - Consider switching the return type to `B256` for consistency with other parts of the codebase.
 #[inline]
+#[cfg(not(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64")))]
 pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
-    // TODO: Remove this benchmarking code once performance testing is complete.
-    // std::hint::black_box(sha2::Sha256::digest(&data));
     *alloy_primitives::utils::keccak256(data)
+}
+
+/// On the Pico zkVM target, hash with a direct sponge over the keccak permute syscall. This
+/// skips the generic digest machinery (block buffering, trait dispatch) that costs ~1-2K cycles
+/// per call on small inputs; the permute syscall is the same one the patched sha3 crate uses.
+#[inline]
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
+    extern "C" {
+        fn syscall_keccak_permute(state: *mut [u64; 25]);
+    }
+    keccak256_sponge(data.as_ref(), |state| unsafe { syscall_keccak_permute(state) })
+}
+
+/// Keccak-256 sponge (rate 136 bytes, Keccak padding 0x01/0x80) over a permute function.
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) -> [u8; 32] {
+    const RATE: usize = 136;
+    const RATE_WORDS: usize = RATE / 8;
+
+    let mut state = [0u64; 25];
+    let mut chunks = data.chunks_exact(RATE);
+    for block in chunks.by_ref() {
+        for (s, w) in state[..RATE_WORDS].iter_mut().zip(block.chunks_exact(8)) {
+            *s ^= u64::from_le_bytes(w.try_into().unwrap());
+        }
+        permute(&mut state);
+    }
+
+    // final (partial) block with padding; also covers empty input and exact multiples
+    let rem = chunks.remainder();
+    let mut last = [0u8; RATE];
+    last[..rem.len()].copy_from_slice(rem);
+    last[rem.len()] = 0x01;
+    last[RATE - 1] |= 0x80;
+    for (s, w) in state[..RATE_WORDS].iter_mut().zip(last.chunks_exact(8)) {
+        *s ^= u64::from_le_bytes(w.try_into().unwrap());
+    }
+    permute(&mut state);
+
+    let mut out = [0u8; 32];
+    for (o, s) in out.chunks_exact_mut(8).zip(state.iter()) {
+        o.copy_from_slice(&s.to_le_bytes());
+    }
+    out
 }
 
 /// Represents the root node of a sparse Merkle Patricia Trie.
@@ -1279,6 +1326,21 @@ mod tests {
     use hex_literal::hex;
 
     use super::*;
+
+    #[test]
+    pub fn test_keccak_sponge_matches_alloy() {
+        for len in 0..300usize {
+            let data: Vec<u8> = (0..len).map(|i| (i * 7 + len) as u8).collect();
+            let sponge = keccak256_sponge(&data, keccak::f1600);
+            assert_eq!(sponge, *alloy_primitives::utils::keccak256(&data), "len={len}");
+        }
+        // multi-block sizes around the rate boundary
+        for len in [135usize, 136, 137, 271, 272, 273, 1000] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 13) as u8).collect();
+            let sponge = keccak256_sponge(&data, keccak::f1600);
+            assert_eq!(sponge, *alloy_primitives::utils::keccak256(&data), "len={len}");
+        }
+    }
 
     #[test]
     pub fn test_trie_pointer_no_keccak() {
