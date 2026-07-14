@@ -6756,6 +6756,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types",
+ "bincode",
  "itertools 0.13.0",
  "kzg-rs",
  "op-alloy-network",
