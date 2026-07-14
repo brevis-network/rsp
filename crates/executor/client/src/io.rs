@@ -49,6 +49,7 @@ pub struct ClientExecutorInput<'a, P: NodePrimitives> {
     #[serde(borrow)]
     pub parent_state: FlatEthereumState<'a>,
     /// Account bytecodes.
+    #[serde(with = "wire_bytecodes")]
     pub bytecodes: Vec<Bytecode>,
     /// The genesis block, as a json string.
     pub genesis: Genesis,
@@ -282,6 +283,103 @@ pub trait WitnessInput {
         }
 
         Ok((block_hashes, bytecodes_by_hash))
+    }
+}
+
+/// Compact wire format for account bytecodes.
+///
+/// revm's `Bytecode` serde round-trips the jumpdest table through `bitvec`, which bincode
+/// decodes element-wise (~1.85M cycles for a mainnet block's contracts). Ship the raw code
+/// bytes and the raw jump-table words instead and rebuild the analyzed bytecode with two
+/// memcpys per contract. Non-legacy variants (EIP-7702) fall back to their normal encoding.
+mod wire_bytecodes {
+    use std::borrow::Cow;
+
+    use revm::{bytecode::LegacyAnalyzedBytecode, state::Bytecode};
+    use rsp_mpt::serde_cow_bytes;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    enum WireBytecode<'a> {
+        Legacy {
+            #[serde(with = "serde_cow_bytes", borrow)]
+            code: Cow<'a, [u8]>,
+            original_len: u64,
+            jump_bit_len: u64,
+            #[serde(with = "serde_cow_bytes", borrow)]
+            jump_table: Cow<'a, [u8]>,
+        },
+        Other(Bytecode),
+    }
+
+    pub(super) fn serialize<S: Serializer>(v: &[Bytecode], s: S) -> Result<S::Ok, S::Error> {
+        let wire: Vec<WireBytecode<'_>> = v
+            .iter()
+            .map(|b| match b {
+                Bytecode::LegacyAnalyzed(a) => WireBytecode::Legacy {
+                    code: Cow::Borrowed(a.bytecode().as_ref()),
+                    original_len: a.original_len() as u64,
+                    jump_bit_len: a.jump_table().len() as u64,
+                    jump_table: Cow::Borrowed(a.jump_table().as_slice()),
+                },
+                other => WireBytecode::Other(other.clone()),
+            })
+            .collect();
+        wire.serialize(s)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Bytecode>, D::Error> {
+        let wire: Vec<WireBytecode<'de>> = Vec::deserialize(d)?;
+        Ok(wire
+            .into_iter()
+            .map(|w| match w {
+                WireBytecode::Legacy { code, original_len, jump_bit_len, jump_table } => {
+                    Bytecode::LegacyAnalyzed(LegacyAnalyzedBytecode::new(
+                        code.into_owned().into(),
+                        original_len as usize,
+                        revm::bytecode::JumpTable::from_bytes(
+                            jump_table.into_owned().into(),
+                            jump_bit_len as usize,
+                        ),
+                    ))
+                }
+                WireBytecode::Other(b) => b,
+            })
+            .collect())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use bincode::Options;
+
+        use super::*;
+        use revm_primitives::bytes;
+
+        #[test]
+        fn wire_bytecode_roundtrip() {
+            // a couple of real-shaped legacy bytecodes (with jumpdests) + default
+            let codes = vec![
+                Bytecode::new_raw(bytes!("6001600255005b600056")),
+                Bytecode::new_raw(bytes!("5b5b5b5b")),
+                Bytecode::default(),
+            ];
+            let mut buf = Vec::new();
+            let mut ser = bincode::Serializer::new(
+                &mut buf,
+                bincode::options()
+                    .with_fixint_encoding()
+                    .allow_trailing_bytes(),
+            );
+            serialize(&codes, &mut ser).unwrap();
+            let mut de = bincode::Deserializer::from_slice(
+                &buf,
+                bincode::options()
+                    .with_fixint_encoding()
+                    .allow_trailing_bytes(),
+            );
+            let back = deserialize(&mut de).unwrap();
+            assert_eq!(codes, back);
+        }
     }
 }
 

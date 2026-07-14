@@ -32,12 +32,12 @@ use crate::{
 /// Serde helper for `Cow<'a, [u8]>` that borrows from the input when the deserializer supports
 /// it (bincode over a byte slice, i.e. the guest path) and falls back to an owned copy when it
 /// does not (bincode over a reader, i.e. the host input cache path).
-mod cow_bytes {
+pub mod cow_bytes {
     use std::borrow::Cow;
 
     use serde::{Deserializer, Serializer};
 
-    pub(super) fn serialize<S: Serializer>(v: &Cow<'_, [u8]>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(v: &Cow<'_, [u8]>, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_bytes(v)
     }
 
@@ -63,7 +63,7 @@ mod cow_bytes {
         }
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Cow<'de, [u8]>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Cow<'de, [u8]>, D::Error> {
         d.deserialize_bytes(CowVisitor)
     }
 }
