@@ -6,7 +6,8 @@ edition = "2021"
 
 [dependencies]
 # workspace
-rsp-client-executor = { path = "../../crates/executor/client" }
+rsp-client-executor = { path = "../../crates/executor/client", default-features = false, features = ["native-keccak"] }
+rsp-mpt = { path = "../../crates/mpt", default-features = false, features = ["native-keccak"] }
 
 # pico
 pico-sdk = { git = "https://github.com/brevis-network/pico", branch = "rv64" }

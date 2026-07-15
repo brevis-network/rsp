@@ -8,6 +8,19 @@ use rsp_client_executor::{
 };
 use std::sync::Arc;
 
+/// alloy's `native-keccak` hook: routes every alloy `keccak256` call in the guest (EVM
+/// opcodes, transaction hashing, receipts root, bytecode hashing) through the direct
+/// keccak-permute-syscall sponge.
+///
+/// # Safety
+/// Called by alloy with a valid input range and a 32-byte output buffer.
+#[no_mangle]
+pub unsafe extern "C" fn native_keccak256(bytes: *const u8, len: usize, output: *mut u8) {
+    let data = core::slice::from_raw_parts(bytes, len);
+    let hash = rsp_mpt::keccak256_zkvm(data);
+    core::ptr::copy_nonoverlapping(hash.as_ptr(), output, 32);
+}
+
 pub fn main() {
     // Read the input. The deserialized input borrows the flat trie blobs zero-copy from `raw`,
     // so the buffer must outlive it.

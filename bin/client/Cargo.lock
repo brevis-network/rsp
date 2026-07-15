@@ -4232,6 +4232,7 @@ dependencies = [
  "bincode",
  "pico-sdk",
  "rsp-client-executor",
+ "rsp-mpt",
 ]
 
 [[package]]

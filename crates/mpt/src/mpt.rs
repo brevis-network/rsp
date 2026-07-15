@@ -98,30 +98,54 @@ pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
 }
 
 /// Keccak-256 sponge (rate 136 bytes, Keccak padding 0x01/0x80) over a permute function.
+///
+/// Absorbs 8-byte-aligned blocks with direct word XORs (RV64 is little-endian, so an aligned
+/// `u64` load is the LE word). Unaligned blocks are staged through an aligned stack buffer,
+/// which is still ~2x cheaper than byte-wise assembly on a target without unaligned loads.
 #[inline]
 #[allow(dead_code)]
 pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) -> [u8; 32] {
     const RATE: usize = 136;
     const RATE_WORDS: usize = RATE / 8;
 
+    #[repr(align(8))]
+    struct Aligned([u8; RATE]);
+
+    #[inline]
+    fn absorb(state: &mut [u64; 25], block: &[u8]) {
+        debug_assert_eq!(block.len(), RATE);
+        // SAFETY: u64 has no invalid bit patterns; align_to only yields the aligned middle.
+        let (pre, mid, _) = unsafe { block.align_to::<u64>() };
+        if pre.is_empty() && mid.len() == RATE_WORDS {
+            for (s, w) in state[..RATE_WORDS].iter_mut().zip(mid) {
+                *s ^= *w;
+            }
+        } else {
+            let mut buf = Aligned([0u8; RATE]);
+            buf.0.copy_from_slice(block);
+            // SAFETY: buf is 8-aligned and exactly RATE bytes.
+            let words =
+                unsafe { core::slice::from_raw_parts(buf.0.as_ptr() as *const u64, RATE_WORDS) };
+            for (s, w) in state[..RATE_WORDS].iter_mut().zip(words) {
+                *s ^= *w;
+            }
+        }
+    }
+
     let mut state = [0u64; 25];
     let mut chunks = data.chunks_exact(RATE);
     for block in chunks.by_ref() {
-        for (s, w) in state[..RATE_WORDS].iter_mut().zip(block.chunks_exact(8)) {
-            *s ^= u64::from_le_bytes(w.try_into().unwrap());
-        }
+        absorb(&mut state, block);
         permute(&mut state);
     }
 
     // final (partial) block with padding; also covers empty input and exact multiples
     let rem = chunks.remainder();
-    let mut last = [0u8; RATE];
-    last[..rem.len()].copy_from_slice(rem);
-    last[rem.len()] = 0x01;
-    last[RATE - 1] |= 0x80;
-    for (s, w) in state[..RATE_WORDS].iter_mut().zip(last.chunks_exact(8)) {
-        *s ^= u64::from_le_bytes(w.try_into().unwrap());
-    }
+    let mut last = Aligned([0u8; RATE]);
+    last.0[..rem.len()].copy_from_slice(rem);
+    last.0[rem.len()] = 0x01;
+    last.0[RATE - 1] |= 0x80;
+    absorb(&mut state, &last.0);
     permute(&mut state);
 
     let mut out = [0u8; 32];
@@ -129,6 +153,14 @@ pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) ->
         o.copy_from_slice(&s.to_le_bytes());
     }
     out
+}
+
+/// Keccak-256 for the Pico zkVM guest via the permute syscall; provided so the guest binary can
+/// export it as alloy's `native-keccak` hook (routing all alloy keccak256 calls — EVM opcodes,
+/// transaction hashing, receipts root — through the direct sponge).
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+pub fn keccak256_zkvm(data: &[u8]) -> [u8; 32] {
+    keccak(data)
 }
 
 /// Represents the root node of a sparse Merkle Patricia Trie.
