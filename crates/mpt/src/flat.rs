@@ -1590,17 +1590,18 @@ impl<'a> FlatTrieView<'a> {
         payload: &'a [u8],
         changes: &[Change<'_>],
     ) -> Result<Out, Error> {
-        // collect original child refs in one scan
-        let mut slots: [Slot<'a>; 16] = Default::default();
+        // one scan for the 17 item boundaries (16 children + the always-empty value item)
+        let mut bounds = [0u32; 18];
         let mut pos = 0usize;
-        let mut orig: [FlatRef<'a>; 16] = [FlatRef::Empty; 16];
-        for r in orig.iter_mut() {
-            let item_len = rlp_item_len(payload, pos)?;
-            *r = parse_ref(&payload[pos..pos + item_len])?;
-            pos += item_len;
+        for b in bounds.iter_mut().take(17).skip(1) {
+            pos += rlp_item_len(payload, pos)?;
+            *b = pos as u32;
         }
+        bounds[17] = payload.len() as u32;
 
-        // group changes by leading nibble (they are sorted)
+        // rebuild only the changed slots (changes are sorted by leading nibble)
+        let mut rebuilt: [Option<Out>; 16] = Default::default();
+        let mut changed = [false; 16];
         let mut idx = 0usize;
         for slot in 0..16usize {
             let start = idx;
@@ -1608,21 +1609,80 @@ impl<'a> FlatTrieView<'a> {
                 idx += 1;
             }
             if start == idx {
-                if !matches!(orig[slot], FlatRef::Empty) {
-                    slots[slot] = Slot::Keep { r: orig[slot], parent: src, slot: slot as u32 };
-                }
                 continue;
             }
+            changed[slot] = true;
+            let item = &payload[bounds[slot] as usize..bounds[slot + 1] as usize];
             let group: Vec<Change<'_>> =
                 changes[start..idx].iter().map(|(k, v)| (&k[1..], *v)).collect();
-            let out = match orig[slot] {
+            let out = match parse_ref(item)? {
                 FlatRef::Empty => Self::apply_empty(&group),
                 r => self.apply_src(self.child_src(src, r, slot as u32)?, &group)?,
             };
-            slots[slot] = Slot::from_out(out);
+            rebuilt[slot] = Some(out);
         }
 
-        self.assemble_branch(slots)
+        // count children after the change set
+        let mut count = 0usize;
+        let mut last = 0usize;
+        for slot in 0..16usize {
+            let non_empty = if changed[slot] {
+                matches!(rebuilt[slot], Some(Out::Enc(_)))
+            } else {
+                payload[bounds[slot] as usize] != alloy_rlp::EMPTY_STRING_CODE
+            };
+            if non_empty {
+                count += 1;
+                last = slot;
+            }
+        }
+
+        if count <= 1 {
+            // rare: fall back to the slot-based collapse handling
+            let mut slots: [Slot<'a>; 16] = Default::default();
+            if count == 1 {
+                slots[last] = if changed[last] {
+                    Slot::from_out(rebuilt[last].take().unwrap())
+                } else {
+                    let item = &payload[bounds[last] as usize..bounds[last + 1] as usize];
+                    Slot::Keep { r: parse_ref(item)?, parent: src, slot: last as u32 }
+                };
+            }
+            return self.assemble_branch(slots);
+        }
+
+        // splice: copy maximal runs of unchanged original items verbatim, insert new items
+        let mut payload_len = 0usize;
+        for slot in 0..16usize {
+            payload_len += if changed[slot] {
+                match &rebuilt[slot] {
+                    Some(Out::Enc(enc)) if enc.len() < 32 => enc.len(),
+                    Some(Out::Enc(_)) => 33,
+                    _ => 1,
+                }
+            } else {
+                (bounds[slot + 1] - bounds[slot]) as usize
+            };
+        }
+        payload_len += 1; // value item
+
+        let mut out = Vec::with_capacity(payload_len + 4);
+        list_header_into(&mut out, payload_len);
+        let mut run_start = 0usize;
+        for slot in 0..16usize {
+            if !changed[slot] {
+                continue; // extend the current run
+            }
+            out.extend_from_slice(&payload[run_start..bounds[slot] as usize]);
+            match &rebuilt[slot] {
+                Some(Out::Enc(enc)) => ref_item_into(&mut out, enc),
+                _ => out.push(alloy_rlp::EMPTY_STRING_CODE),
+            }
+            run_start = bounds[slot + 1] as usize;
+        }
+        // trailing run, including the (always empty) value item
+        out.extend_from_slice(&payload[run_start..]);
+        Ok(Out::Enc(out))
     }
 
     /// Assembles a branch from its 16 slot states, collapsing when 0 or 1 children remain
