@@ -1,4 +1,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
+// target_vendor = "pico" is defined by the custom riscv64im-pico-zkvm-elf target
+#![allow(unexpected_cfgs)]
 
 use alloy_primitives::{keccak256, map::HashMap, Address, B256};
 use alloy_rpc_types::EIP1186AccountProofResponse;
@@ -11,6 +13,15 @@ mod execution_witness;
 /// Module containing MPT code adapted from `zeth`.
 mod mpt;
 pub use mpt::Error;
+
+/// Flat RLP wire format for the witness tries (see module docs).
+mod flat;
+pub use flat::{
+    cow_bytes as serde_cow_bytes, flatten_trie, FlatEthereumState, FlatStateViews,
+    FlatStorageEntry, FlatTrieView,
+};
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+pub use mpt::keccak256_zkvm;
 use mpt::{
     mpt_from_proof, parse_proof, proofs_to_tries, resolve_nodes, transition_proofs_to_tries,
     MptNode,

@@ -47,7 +47,7 @@ pub trait BlockExecutor<C: ExecutorComponents> {
         &self,
         block_number: u64,
         sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<ClientExecutorInput<C::Primitives>>;
+    ) -> eyre::Result<ClientExecutorInput<'static, C::Primitives>>;
 
     fn config(&self) -> &Config;
 }
@@ -144,7 +144,7 @@ where
         &self,
         block_number: u64,
         sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<ClientExecutorInput<C::Primitives>> {
+    ) -> eyre::Result<ClientExecutorInput<'static, C::Primitives>> {
         match self {
             Either::Left(ref executor) => executor.execute(block_number, sender).await,
             Either::Right(ref executor) => executor.execute(block_number, sender).await,
@@ -211,7 +211,7 @@ where
         &self,
         block_number: u64,
         sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<ClientExecutorInput<C::Primitives>> {
+    ) -> eyre::Result<ClientExecutorInput<'static, C::Primitives>> {
         let fetch_data_start = Instant::now();
 
         self.hooks.on_execution_start(block_number).await?;
@@ -334,7 +334,7 @@ where
         &self,
         block_number: u64,
         _sender: Option<&UnboundedSender<(u64, Vec<u8>)>>,
-    ) -> eyre::Result<ClientExecutorInput<C::Primitives>> {
+    ) -> eyre::Result<ClientExecutorInput<'static, C::Primitives>> {
         let client_input = try_load_input_from_cache::<C::Primitives>(
             &self.cache_dir,
             self.config.chain.id(),
@@ -365,15 +365,17 @@ fn try_load_input_from_cache<P: NodePrimitives + DeserializeOwned>(
     cache_dir: &Path,
     chain_id: u64,
     block_number: u64,
-) -> eyre::Result<Option<ClientExecutorInput<P>>> {
+) -> eyre::Result<Option<ClientExecutorInput<'static, P>>> {
     let cache_path = cache_dir.join(format!("input/{chain_id}/{block_number}.bin"));
 
     if cache_path.exists() {
         // TODO: prune the cache if invalid instead
-        let mut cache_file = std::fs::File::open(cache_path)?;
-        let client_input = bincode::deserialize_from(&mut cache_file)?;
+        // Deserialize from an in-memory buffer (the input borrows from it), then convert to
+        // owned so the input can outlive the buffer.
+        let buffer = std::fs::read(cache_path)?;
+        let client_input: ClientExecutorInput<'_, P> = bincode::deserialize(&buffer)?;
 
-        Ok(Some(client_input))
+        Ok(Some(client_input.into_owned()))
     } else {
         Ok(None)
     }

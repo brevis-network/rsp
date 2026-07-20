@@ -18,7 +18,7 @@ serde_with = "3.12.0"
 itertools = "0.13.0"
 
 # workspace
-rsp-mpt.workspace = true
+rsp-mpt = { path = "../../mpt", default-features = false, features = ["execution-witness"] }
 rsp-primitives.workspace = true
 
 # reth
@@ -45,6 +45,7 @@ kzg-rs.workspace = true
 
 # alloy
 alloy-evm.workspace = true
+alloy-rlp.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-network.workspace = true
@@ -55,10 +56,13 @@ op-alloy-network = { workspace = true, optional = true }
 op-alloy-rpc-types = { workspace = true, optional = true }
 
 
+[dev-dependencies]
+bincode = "1.3.3"
+
 [features]
 default = ["sha3-keccak"]
-sha3-keccak = ["alloy-primitives/sha3-keccak"]
-native-keccak = ["alloy-primitives/native-keccak"]
+sha3-keccak = ["alloy-primitives/sha3-keccak", "rsp-mpt/sha3-keccak"]
+native-keccak = ["alloy-primitives/native-keccak", "rsp-mpt/native-keccak"]
 optimism = [
     "dep:op-alloy-network",
     "dep:op-alloy-rpc-types",

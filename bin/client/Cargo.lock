@@ -4232,6 +4232,7 @@ dependencies = [
  "bincode",
  "pico-sdk",
  "rsp-client-executor",
+ "rsp-mpt",
 ]
 
 [[package]]
@@ -4624,6 +4625,7 @@ dependencies = [
  "alloy-evm",
  "alloy-network",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-rpc-types",
  "itertools 0.13.0",
  "kzg-rs",
@@ -5175,7 +5177,7 @@ dependencies = [
  "lazy_static",
  "num-bigint 0.4.6",
  "pico-patch-libs",
- "rand 0.8.6",
+ "rand 0.8.5",
  "rustc-hex",
 ]
 

@@ -25,9 +25,13 @@ alloy-rpc-types.workspace = true
 alloy-rpc-types-debug = {workspace = true, optional = true }
 
 [dev-dependencies]
+bincode = "1.3.3"
+keccak = "0.1"
 hex-literal.workspace = true
 reth-primitives-traits.workspace = true
 
 [features]
-default = ["execution-witness"]
+default = ["execution-witness", "sha3-keccak"]
 execution-witness = ["dep:alloy-rpc-types-debug"]
+sha3-keccak = ["alloy-primitives/sha3-keccak"]
+native-keccak = ["alloy-primitives/native-keccak"]
