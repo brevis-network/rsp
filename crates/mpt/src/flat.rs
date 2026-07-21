@@ -639,6 +639,21 @@ impl<'a> FlatTrieView<'a> {
                     }
                     let slot = nib_at(key, pos) as usize;
                     pos += 1;
+
+                    // Fast path: a resolved digest child's node index is already in the edge
+                    // table (recorded during verification), so descend in O(1) without
+                    // rescanning the branch payload. This covers the entire interior of the
+                    // descent; only inline/empty/pruned slots fall back to the O(slot) parse.
+                    if !inline {
+                        let edge =
+                            self.edges[self.nodes[node_idx as usize].edge_start as usize + slot];
+                        if edge != EDGE_PRUNED {
+                            node_idx = edge;
+                            blob = self.blob(edge);
+                            continue;
+                        }
+                    }
+
                     match branch_child(payload, slot)? {
                         FlatRef::Empty => return Ok(None),
                         FlatRef::Inline(b) => {
@@ -649,13 +664,9 @@ impl<'a> FlatTrieView<'a> {
                             if inline {
                                 return Err(Error::FlatTrie("digest ref inside inline node"));
                             }
-                            let edge = self.edges
-                                [self.nodes[node_idx as usize].edge_start as usize + slot];
-                            if edge == EDGE_PRUNED {
-                                return Ok(None);
-                            }
-                            node_idx = edge;
-                            blob = self.blob(edge);
+                            // Not inline: the edge was EDGE_PRUNED (else the fast path took it),
+                            // so this digest child is a pruned subtree — absent from the witness.
+                            return Ok(None);
                         }
                     }
                 }
