@@ -16,7 +16,7 @@
 
 use std::borrow::Cow;
 
-use alloy_primitives::{map::HashMap, B256};
+use alloy_primitives::{map::{B256Map, HashMap}, B256};
 use alloy_rlp::Encodable;
 use reth_trie::HashedPostState;
 use serde::{Deserialize, Serialize};
@@ -125,7 +125,7 @@ impl FlatEthereumState<'_> {
     pub fn views(&self) -> Result<FlatStateViews<'_>, Error> {
         let state = FlatTrieView::parse_and_verify(&self.state_nodes)?;
         let mut storage =
-            HashMap::with_capacity_and_hasher(self.storage_tries.len(), Default::default());
+            B256Map::with_capacity_and_hasher(self.storage_tries.len(), Default::default());
         for entry in &self.storage_tries {
             storage.insert(entry.hashed_address, FlatTrieView::parse_and_verify(&entry.nodes)?);
         }
@@ -849,7 +849,7 @@ fn match_prefix(prefix: &[u8], key: &[u8], mut pos: usize) -> Option<usize> {
 #[derive(Debug)]
 pub struct FlatStateViews<'a> {
     pub state: FlatTrieView<'a>,
-    pub storage: HashMap<B256, FlatTrieView<'a>>,
+    pub storage: B256Map<FlatTrieView<'a>>,
 }
 
 impl FlatStateViews<'_> {
