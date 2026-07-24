@@ -16,7 +16,7 @@
 
 use std::borrow::Cow;
 
-use alloy_primitives::{map::HashMap, B256};
+use alloy_primitives::{map::{B256Map, HashMap}, B256};
 use alloy_rlp::Encodable;
 use reth_trie::HashedPostState;
 use serde::{Deserialize, Serialize};
@@ -125,7 +125,7 @@ impl FlatEthereumState<'_> {
     pub fn views(&self) -> Result<FlatStateViews<'_>, Error> {
         let state = FlatTrieView::parse_and_verify(&self.state_nodes)?;
         let mut storage =
-            HashMap::with_capacity_and_hasher(self.storage_tries.len(), Default::default());
+            B256Map::with_capacity_and_hasher(self.storage_tries.len(), Default::default());
         for entry in &self.storage_tries {
             storage.insert(entry.hashed_address, FlatTrieView::parse_and_verify(&entry.nodes)?);
         }
@@ -639,6 +639,21 @@ impl<'a> FlatTrieView<'a> {
                     }
                     let slot = nib_at(key, pos) as usize;
                     pos += 1;
+
+                    // Fast path: a resolved digest child's node index is already in the edge
+                    // table (recorded during verification), so descend in O(1) without
+                    // rescanning the branch payload. This covers the entire interior of the
+                    // descent; only inline/empty/pruned slots fall back to the O(slot) parse.
+                    if !inline {
+                        let edge =
+                            self.edges[self.nodes[node_idx as usize].edge_start as usize + slot];
+                        if edge != EDGE_PRUNED {
+                            node_idx = edge;
+                            blob = self.blob(edge);
+                            continue;
+                        }
+                    }
+
                     match branch_child(payload, slot)? {
                         FlatRef::Empty => return Ok(None),
                         FlatRef::Inline(b) => {
@@ -649,13 +664,9 @@ impl<'a> FlatTrieView<'a> {
                             if inline {
                                 return Err(Error::FlatTrie("digest ref inside inline node"));
                             }
-                            let edge = self.edges
-                                [self.nodes[node_idx as usize].edge_start as usize + slot];
-                            if edge == EDGE_PRUNED {
-                                return Ok(None);
-                            }
-                            node_idx = edge;
-                            blob = self.blob(edge);
+                            // Not inline: the edge was EDGE_PRUNED (else the fast path took it),
+                            // so this digest child is a pruned subtree — absent from the witness.
+                            return Ok(None);
                         }
                     }
                 }
@@ -838,7 +849,7 @@ fn match_prefix(prefix: &[u8], key: &[u8], mut pos: usize) -> Option<usize> {
 #[derive(Debug)]
 pub struct FlatStateViews<'a> {
     pub state: FlatTrieView<'a>,
-    pub storage: HashMap<B256, FlatTrieView<'a>>,
+    pub storage: B256Map<FlatTrieView<'a>>,
 }
 
 impl FlatStateViews<'_> {
