@@ -8,6 +8,10 @@ use rsp_client_executor::{
 };
 use std::sync::Arc;
 
+// Linked for its `memcmp`/`bcmp` symbols, which override compiler-builtins'
+// byte-at-a-time versions. Nothing calls it directly.
+use rsp_guest_mem as _;
+
 /// alloy's `native-keccak` hook: routes every alloy `keccak256` call in the guest (EVM
 /// opcodes, transaction hashing, receipts root, bytecode hashing) through the direct
 /// keccak-permute-syscall sponge.
