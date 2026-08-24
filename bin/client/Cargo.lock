@@ -4232,6 +4232,8 @@ dependencies = [
  "bincode",
  "pico-sdk",
  "rsp-client-executor",
+ "rsp-guest-mem",
+ "rsp-mpt",
 ]
 
 [[package]]
@@ -4648,6 +4650,10 @@ dependencies = [
  "serde_with",
  "thiserror 1.0.69",
 ]
+
+[[package]]
+name = "rsp-guest-mem"
+version = "0.1.0"
 
 [[package]]
 name = "rsp-mpt"

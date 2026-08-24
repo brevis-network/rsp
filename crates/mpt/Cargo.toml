@@ -31,5 +31,7 @@ hex-literal.workspace = true
 reth-primitives-traits.workspace = true
 
 [features]
-default = ["execution-witness"]
+default = ["execution-witness", "sha3-keccak"]
 execution-witness = ["dep:alloy-rpc-types-debug"]
+sha3-keccak = ["alloy-primitives/sha3-keccak"]
+native-keccak = ["alloy-primitives/native-keccak"]
