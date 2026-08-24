@@ -6787,6 +6787,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsp-guest-mem"
+version = "0.1.0"
+
+[[package]]
 name = "rsp-host-executor"
 version = "0.1.0"
 dependencies = [
