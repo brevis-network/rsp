@@ -6,6 +6,7 @@ members = [
     "bin/native-client",
     "crates/executor/client",
     "crates/executor/host",
+    "crates/guest-mem",
     "crates/mpt",
     "crates/primitives",
     "crates/provider",
