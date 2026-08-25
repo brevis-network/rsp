@@ -21,8 +21,9 @@ use tracing_subscriber::{
 };
 
 // reth elf file path
-// in `bin/client` run `cargo pico build` to generate this elf file
-const RETH_ELF_PATH: &str = "../client/elf/riscv32im-pico-zkvm-elf";
+// in `bin/client` run `./build-guest.sh` to generate this elf file (not a plain
+// `cargo pico build` -- see the script for why)
+const RETH_ELF_PATH: &str = "../client/elf/riscv64im-pico-zkvm-elf";
 
 #[tokio::main]
 async fn main() {
@@ -94,7 +95,7 @@ async fn main() {
             // check if reth elf has been build
             let elf_path = Path::new(RETH_ELF_PATH);
             if !elf_path.exists() {
-                panic!("pico-processor: run `cargo pico build` in `bin/client` first");
+                panic!("pico-processor: run `./build-guest.sh` in `bin/client` first");
             }
 
             // generate stdin builder
