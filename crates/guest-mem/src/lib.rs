@@ -69,6 +69,81 @@ pub unsafe fn compare_bytes(mut a: *const u8, mut b: *const u8, mut n: usize) ->
     0
 }
 
+/// Writes fewer than `WORD` copies of `c`, without a loop.
+///
+/// A `while i < n` byte loop costs five instructions per byte (store, pointer bump, branch,
+/// bound test); three size tests instead bring it down to about one.
+///
+/// # Safety
+///
+/// `n < WORD` and `dst` is valid for `n` writes.
+#[inline(always)]
+unsafe fn set_sub_word(mut dst: *mut u8, c: u8, n: usize) {
+    if n & 4 != 0 {
+        *dst = c;
+        *dst.add(1) = c;
+        *dst.add(2) = c;
+        *dst.add(3) = c;
+        dst = dst.add(4);
+    }
+    if n & 2 != 0 {
+        *dst = c;
+        *dst.add(1) = c;
+        dst = dst.add(2);
+    }
+    if n & 1 != 0 {
+        *dst = c;
+    }
+}
+
+/// Writes `n` copies of `c` at `dst`, a word at a time.
+///
+/// `compiler_builtins`' `memset` aligns to 4 bytes and stores with `sw`, behind ~40
+/// instructions of small-size dispatch; the guest's average call is ~78 bytes, so that
+/// prologue is most of the cost.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of `n` bytes. Nothing outside `dst..dst + n` is touched.
+#[inline(always)]
+pub unsafe fn set_bytes(dst: *mut u8, c: u8, n: usize) {
+    let mut d = dst;
+    let mut n = n;
+
+    if n < WORD {
+        set_sub_word(d, c, n);
+        return;
+    }
+
+    let v = (c as usize).wrapping_mul(usize::MAX / 0xff);
+
+    let head = (WORD - (d as usize % WORD)) % WORD;
+    if head != 0 {
+        set_sub_word(d, c, head);
+        d = d.add(head);
+        n -= head;
+    }
+
+    let words = n / WORD;
+    let mut p = d.cast::<usize>();
+    let mut k = words;
+    while k >= 4 {
+        p.write(v);
+        p.add(1).write(v);
+        p.add(2).write(v);
+        p.add(3).write(v);
+        p = p.add(4);
+        k -= 4;
+    }
+    while k != 0 {
+        p.write(v);
+        p = p.add(1);
+        k -= 1;
+    }
+
+    set_sub_word(d.add(words * WORD), c, n - words * WORD);
+}
+
 #[cfg(target_os = "zkvm")]
 mod c_exports {
     #[no_mangle]
@@ -82,11 +157,34 @@ mod c_exports {
     unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
         super::compare_bytes(a, b, n)
     }
+
+    // Overriding `memset` by defining the symbol does *not* work, even though
+    // `compiler_builtins` spells its `mem*` intrinsics with `linkage = "weak"`: linking the
+    // guest that way fails with `rust-lld: error: duplicate symbol: memset` (verified). The
+    // difference from `memcmp` above is most likely reachability -- nothing inside
+    // `compiler_builtins` calls `memcmp`, so the linker never pulls that object out of the
+    // archive, whereas `memset` is referenced internally and always comes along.
+    //
+    // So the guest is linked with `--wrap=memset` instead (see `build_guest.sh`), which
+    // redirects every call here. Note this makes the optimisation depend on the build
+    // invocation: a plain `cargo pico build` silently drops it and costs ~7 M instructions,
+    // with no error. The cycle regression check exists to catch exactly that.
+    //
+    // Only `memset` is replaced. A word-at-a-time `memcpy` was tried too and measured *worse*
+    // than `compiler_builtins`' (53.4 M vs 50.3 M retired instructions on block 24006677): 42 %
+    // of the guest's copies have a misaligned destination but are shorter than 32 bytes, and for
+    // those the straight-line byte blocks that `compiler_builtins` falls back to beat a
+    // destination-aligning prologue plus a shift loop.
+    #[no_mangle]
+    unsafe extern "C" fn __wrap_memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
+        super::set_bytes(dst, c as u8, n);
+        dst
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::compare_bytes;
+    use super::{compare_bytes, set_bytes};
 
     fn reference(a: &[u8], b: &[u8]) -> i32 {
         for (x, y) in core::iter::zip(a, b) {
@@ -95,6 +193,21 @@ mod tests {
             }
         }
         0
+    }
+
+    #[test]
+    fn set_bytes_matches_reference_across_alignments_and_lengths() {
+        let mut buf = [0u8; 512];
+        for d_off in 0..8 {
+            for len in 0..200 {
+                let at = 16 + d_off;
+                buf.fill(0xAA);
+                unsafe { set_bytes(buf.as_mut_ptr().add(at), 0x5C, len) };
+                assert!(buf[at..at + len].iter().all(|&b| b == 0x5C), "len={len}");
+                assert!(buf[..at].iter().all(|&b| b == 0xAA));
+                assert!(buf[at + len..].iter().all(|&b| b == 0xAA));
+            }
+        }
     }
 
     #[test]
