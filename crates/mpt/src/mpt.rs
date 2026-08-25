@@ -99,60 +99,117 @@ pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
 
 /// Keccak-256 sponge (rate 136 bytes, Keccak padding 0x01/0x80) over a permute function.
 ///
-/// Absorbs 8-byte-aligned blocks with direct word XORs (RV64 is little-endian, so an aligned
-/// `u64` load is the LE word). Unaligned blocks are staged through an aligned stack buffer,
-/// which is still ~2x cheaper than byte-wise assembly on a target without unaligned loads.
+/// RV64IM has no misaligned scalar loads, so anything that reads the input as `u64` through a
+/// byte pointer of unknown alignment is expanded by LLVM into `lbu` + shift/or chains (measured
+/// at ~650 instructions for a single 136-byte block). Instead every `u64` is assembled from the
+/// two *aligned* words that contain it, and the 8 bytes at the two ends of the region — the only
+/// ones no fully-contained aligned word covers — are read with `lbu`. Nothing outside the slice
+/// is ever touched.
+///
+/// The final (partial) block is absorbed in place: only the `ceil((n+1)/8)` words that can be
+/// non-zero are XORed, so a short input no longer pays for zeroing and copying a 136-byte
+/// staging buffer and XORing 17 words.
 #[inline]
 #[allow(dead_code)]
 pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) -> [u8; 32] {
     const RATE: usize = 136;
     const RATE_WORDS: usize = RATE / 8;
 
-    #[repr(align(8))]
-    struct Aligned([u8; RATE]);
-
+    /// XOR the `k` little-endian `u64` words held in the `8 * k` bytes at `p` into `state[..k]`.
+    ///
+    /// # Safety
+    /// `p` must point at `8 * k` readable bytes and `k` must be in `1..=RATE_WORDS`.
     #[inline]
-    fn absorb(state: &mut [u64; 25], block: &[u8]) {
-        debug_assert_eq!(block.len(), RATE);
-        // SAFETY: u64 has no invalid bit patterns; align_to only yields the aligned middle.
-        let (pre, mid, _) = unsafe { block.align_to::<u64>() };
-        if pre.is_empty() && mid.len() == RATE_WORDS {
-            for (s, w) in state[..RATE_WORDS].iter_mut().zip(mid) {
-                *s ^= *w;
+    unsafe fn xor_words(state: &mut [u64; 25], p: *const u8, k: usize) {
+        let off = p as usize & 7;
+        if off == 0 {
+            let q = p.cast::<u64>();
+            for i in 0..k {
+                *state.get_unchecked_mut(i) ^= q.add(i).read();
             }
-        } else {
-            let mut buf = Aligned([0u8; RATE]);
-            buf.0.copy_from_slice(block);
-            // SAFETY: buf is 8-aligned and exactly RATE bytes.
-            let words =
-                unsafe { core::slice::from_raw_parts(buf.0.as_ptr() as *const u64, RATE_WORDS) };
-            for (s, w) in state[..RATE_WORDS].iter_mut().zip(words) {
-                *s ^= *w;
-            }
+            return;
         }
+        let r = 8 - off;
+        let sl = (r * 8) as u32;
+        let sr = (off * 8) as u32;
+        // The `r` bytes before the first 8-byte boundary inside the region ...
+        let mut head = 0u64;
+        for j in 0..r {
+            head |= (*p.add(j) as u64) << (8 * j);
+        }
+        // ... and the `off` bytes after the last aligned word fully inside it.
+        let mut tail = 0u64;
+        for j in 0..off {
+            tail |= (*p.add(8 * k - off + j) as u64) << (8 * j);
+        }
+        // `a[i]` spans bytes `[r + 8i, r + 8i + 8)`, so `a[..k - 1]` stays inside the region.
+        let a = p.add(r).cast::<u64>();
+        if k == 1 {
+            *state.get_unchecked_mut(0) ^= head | (tail << sl);
+            return;
+        }
+        let mut prev = a.read();
+        *state.get_unchecked_mut(0) ^= head | (prev << sl);
+        for i in 1..k - 1 {
+            let cur = a.add(i).read();
+            *state.get_unchecked_mut(i) ^= (prev >> sr) | (cur << sl);
+            prev = cur;
+        }
+        *state.get_unchecked_mut(k - 1) ^= (prev >> sr) | (tail << sl);
     }
 
-    let mut state = [0u64; 25];
-    let mut chunks = data.chunks_exact(RATE);
-    for block in chunks.by_ref() {
-        absorb(&mut state, block);
-        permute(&mut state);
+    // `[0u64; 25]` is 200 bytes, which LLVM zeroes with a `memset` call — ~60 instructions,
+    // paid once per hash. Volatile stores keep it as 25 `sd`.
+    let mut state = core::mem::MaybeUninit::<[u64; 25]>::uninit();
+    // SAFETY: the 25 in-bounds writes initialize every word of the array.
+    let state = unsafe {
+        let q = state.as_mut_ptr().cast::<u64>();
+        for i in 0..25 {
+            q.add(i).write_volatile(0);
+        }
+        &mut *state.as_mut_ptr()
+    };
+    let p = data.as_ptr();
+    let nblocks = data.len() / RATE;
+    for b in 0..nblocks {
+        // SAFETY: block `b` is the `RATE` bytes at `p + b * RATE`, inside `data`.
+        unsafe { xor_words(state, p.add(b * RATE), RATE_WORDS) };
+        permute(state);
     }
 
-    // final (partial) block with padding; also covers empty input and exact multiples
-    let rem = chunks.remainder();
-    let mut last = Aligned([0u8; RATE]);
-    last.0[..rem.len()].copy_from_slice(rem);
-    last.0[rem.len()] = 0x01;
-    last.0[RATE - 1] |= 0x80;
-    absorb(&mut state, &last.0);
-    permute(&mut state);
-
-    let mut out = [0u8; 32];
-    for (o, s) in out.chunks_exact_mut(8).zip(state.iter()) {
-        o.copy_from_slice(&s.to_le_bytes());
+    // Final (partial) block with padding; also covers empty input and exact multiples.
+    let rem = data.len() - nblocks * RATE; // 0..RATE
+    let full = rem / 8;
+    let t = rem & 7;
+    // SAFETY: the remainder is the `rem` bytes at the end of `data`, and `full * 8 + t == rem`.
+    unsafe {
+        let q = p.add(nblocks * RATE);
+        if full != 0 {
+            xor_words(state, q, full);
+        }
+        let mut last = 1u64 << (8 * t);
+        for j in 0..t {
+            last |= (*q.add(full * 8 + j) as u64) << (8 * j);
+        }
+        // `full <= RATE_WORDS - 1` because `rem < RATE`.
+        *state.get_unchecked_mut(full) ^= last;
     }
-    out
+    state[RATE_WORDS - 1] ^= 0x80u64 << 56;
+    permute(state);
+
+    #[repr(align(8))]
+    struct Out([u8; 32]);
+    let mut out = Out([0u8; 32]);
+    // SAFETY: `out` is 8-aligned and 32 bytes; RV64 is little-endian, so an aligned `u64`
+    // store writes the same bytes as `to_le_bytes`.
+    unsafe {
+        let o = out.0.as_mut_ptr().cast::<u64>();
+        o.write(state[0]);
+        o.add(1).write(state[1]);
+        o.add(2).write(state[2]);
+        o.add(3).write(state[3]);
+    }
+    out.0
 }
 
 /// Keccak-256 for the Pico zkVM guest via the permute syscall; provided so the guest binary can
@@ -1371,6 +1428,23 @@ mod tests {
             let data: Vec<u8> = (0..len).map(|i| (i * 13) as u8).collect();
             let sponge = keccak256_sponge(&data, keccak::f1600);
             assert_eq!(sponge, *alloy_primitives::utils::keccak256(&data), "len={len}");
+        }
+        // every start alignment x every length: the word-assembly path reads the input
+        // through aligned loads, so its head/tail handling depends on `ptr % 8`.
+        let backing: Vec<u8> = (0..1200usize).map(|i| (i * 31 + 5) as u8).collect();
+        let base = backing.as_ptr() as usize;
+        for skew in 0..8usize {
+            let start = (8 - (base & 7)) % 8 + skew; // absolute alignment `skew`
+            for len in 0..420usize {
+                let data = &backing[start..start + len];
+                assert_eq!(data.as_ptr() as usize % 8, skew);
+                let sponge = keccak256_sponge(data, keccak::f1600);
+                assert_eq!(
+                    sponge,
+                    *alloy_primitives::utils::keccak256(data),
+                    "skew={skew} len={len}"
+                );
+            }
         }
     }
 
