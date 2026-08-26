@@ -25,7 +25,20 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 US=$(printf '\037')
-export CARGO_ENCODED_RUSTFLAGS="-Cpasses=lower-atomic${US}-Clink-arg=-Ttext=0x00200800${US}-Clink-arg=--fatal-warnings${US}-Cpanic=abort${US}-Clink-arg=--wrap=memset"
+# `-tail-dup-size=12` raises LLVM's tail-duplication budget (`TailDuplicator`'s per-block
+# instruction cutoff) from the target default to 12. It is what lets the interpreter's
+# 256-way dispatch block (`lbu`/`slli`/`add`/`lw`/`ld`/`jr`) be copied into the ~150 opcode
+# arms instead of every arm ending in a jump back to a shared header, and it does the same
+# for merge blocks elsewhere in the guest. On its own: -10.3 M retired instructions on block
+# 24006677. It is also what keeps the dispatch block duplicated once `mload`/`mstore`/`sload`
+# are `#[inline(always)]` into the loop -- without it, inlining them pushes the block back
+# out of the budget and costs more than the inlining saves. Raising it to 30 buys nothing.
+#
+# Note that this is the *TailDuplicator* budget, not `-tail-dup-placement-threshold` /
+# `-tail-dup-placement-aggressive-threshold` / `-tail-dup-succ-size`: those were tried and
+# do nothing here (the dispatch block stays at one copy), and forcing duplication through
+# them was measured worse.
+export CARGO_ENCODED_RUSTFLAGS="-Cpasses=lower-atomic${US}-Clink-arg=-Ttext=0x00200800${US}-Clink-arg=--fatal-warnings${US}-Cpanic=abort${US}-Clink-arg=--wrap=memset${US}-Cllvm-args=-tail-dup-size=12"
 
 cargo +pico build --release \
     --target riscv64im-pico-zkvm-elf \
