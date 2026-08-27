@@ -194,8 +194,17 @@ fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoO
         precompile.into()
     });
 
-    // disable nonce check for replay
-    input.cfg_env.disable_nonce_check = true;
+    // The nonce check stays on, at revm's default. It costs nothing measurable: the sender's
+    // account is loaded before the transaction runs either way, so the check is one compare on
+    // a value already in a register -- measured across nine mainnet blocks, the difference is
+    // within codegen noise and lands on both sides of zero.
+    //
+    // For replaying a canonical block it is redundant -- a transaction whose nonce is wrong
+    // cannot be presented without also moving either the transactions root or the parent state
+    // root, and both are checked. It matters when the header is not known to be canonical:
+    // there, the root checks only say the input is self-consistent, and this is one of the few
+    // things left saying the transactions in it are ones the senders could actually have sent.
+    input.cfg_env.disable_nonce_check = false;
 
     EthEvmBuilder::new(db, input).precompiles(precompiles)
 }
