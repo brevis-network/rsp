@@ -21,8 +21,9 @@ use rsp_guest_mem as _;
 #[no_mangle]
 pub unsafe extern "C" fn native_keccak256(bytes: *const u8, len: usize, output: *mut u8) {
     let data = core::slice::from_raw_parts(bytes, len);
-    let hash = rsp_mpt::keccak256_zkvm(data);
-    core::ptr::copy_nonoverlapping(hash.as_ptr(), output, 32);
+    // Straight into alloy's buffer: going through a `[u8; 32]` return value cost a 32-byte
+    // byte-wise copy out of the sponge plus this one.
+    rsp_mpt::keccak256_zkvm_into(data, output);
 }
 
 pub fn main() {

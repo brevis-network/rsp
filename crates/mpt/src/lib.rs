@@ -22,6 +22,8 @@ pub use flat::{
 };
 #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
 pub use mpt::keccak256_zkvm;
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+pub use mpt::keccak256_zkvm_into;
 use mpt::{
     mpt_from_proof, parse_proof, proofs_to_tries, resolve_nodes, transition_proofs_to_tries,
     MptNode,

@@ -98,7 +98,38 @@ pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
     extern "C" {
         fn syscall_keccak_permute(state: *mut [u64; 25]);
     }
-    keccak256_sponge(data.as_ref(), |state| unsafe { syscall_keccak_permute(state) })
+    #[repr(align(8))]
+    struct Out([u8; 32]);
+    let mut out = Out([0u8; 32]);
+    // SAFETY: `out.0` is 32 writable, 8-aligned bytes.
+    unsafe {
+        keccak256_sponge_into(
+            data.as_ref(),
+            |state| syscall_keccak_permute(state),
+            out.0.as_mut_ptr(),
+        )
+    };
+    out.0
+}
+
+/// Keccak-256 straight into `out`, for the callers that already own the 32-byte destination.
+///
+/// Returning `[u8; 32]` costs the sponge 52 retired instructions per call: the type's
+/// alignment is 1, so LLVM writes the caller's slot with 28 `srli` + 32 `sb`, and keeping the
+/// four state words live across that is what makes the function save and restore twelve
+/// callee-saved registers. Handing the destination down instead lets the common case be four
+/// `sd`.
+///
+/// # Safety
+///
+/// `out` must point at 32 writable bytes.
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+pub unsafe fn keccak_into(data: &[u8], out: *mut u8) {
+    extern "C" {
+        fn syscall_keccak_permute(state: *mut [u64; 25]);
+    }
+    // SAFETY: forwarded from the caller.
+    unsafe { keccak256_sponge_into(data, |state| syscall_keccak_permute(state), out) }
 }
 
 /// Keccak-256 sponge (rate 136 bytes, Keccak padding 0x01/0x80) over a permute function.
@@ -116,20 +147,64 @@ pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
 #[inline]
 #[allow(dead_code)]
 pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) -> [u8; 32] {
+    #[repr(align(8))]
+    struct Out([u8; 32]);
+    let mut out = Out([0u8; 32]);
+    // SAFETY: `out.0` is 32 writable, 8-aligned bytes.
+    unsafe { keccak256_sponge_into(data, permute, out.0.as_mut_ptr()) };
+    out.0
+}
+
+/// The sponge itself; writes the 32-byte digest to `out`.
+///
+/// # Safety
+///
+/// `out` must point at 32 writable bytes.
+/// Deliberately out of line: it is entered from both `keccak` and `keccak_into`, and a second
+/// copy of a body this size costs more in register pressure than the call saves.
+#[inline(never)]
+#[allow(dead_code)]
+pub(crate) unsafe fn keccak256_sponge_into(
+    data: &[u8],
+    permute: impl Fn(&mut [u64; 25]),
+    out: *mut u8,
+) {
     const RATE: usize = 136;
     const RATE_WORDS: usize = RATE / 8;
 
     /// XOR the `k` little-endian `u64` words held in the `8 * k` bytes at `p` into `state[..k]`.
     ///
+    /// With `FIRST`, assign instead: the state is still all zeros when the first block is
+    /// absorbed, so the load and the xor of each word are dead - two instructions per word,
+    /// and up to 17 words per call.
+    ///
     /// # Safety
     /// `p` must point at `8 * k` readable bytes and `k` must be in `1..=RATE_WORDS`.
     #[inline]
-    unsafe fn xor_words(state: &mut [u64; 25], p: *const u8, k: usize) {
+    unsafe fn absorb_words<const FIRST: bool>(state: &mut [u64; 25], p: *const u8, k: usize) {
+        /// `state[i] ^= v`, or `state[i] = v` on the first block.
+        ///
+        /// # Safety
+        /// `i` must be less than 25.
+        #[inline(always)]
+        unsafe fn put<const FIRST: bool>(state: &mut [u64; 25], i: usize, v: u64) {
+            // SAFETY: caller guarantees `i < 25`.
+            let slot = unsafe { state.get_unchecked_mut(i) };
+            if FIRST {
+                // Volatile: a plain `state[i] = *src.add(i)` loop is exactly LLVM's memcpy
+                // idiom, and it turns the aligned first block into a `memcpy` libcall -
+                // measured at +2.5 M retired instructions, more than the assignment saves.
+                // SAFETY: `slot` is a live, aligned `u64`.
+                unsafe { core::ptr::write_volatile(slot, v) };
+            } else {
+                *slot ^= v;
+            }
+        }
         let off = p as usize & 7;
         if off == 0 {
             let q = p.cast::<u64>();
             for i in 0..k {
-                *state.get_unchecked_mut(i) ^= q.add(i).read();
+                put::<FIRST>(state, i, q.add(i).read());
             }
             return;
         }
@@ -149,17 +224,17 @@ pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) ->
         // `a[i]` spans bytes `[r + 8i, r + 8i + 8)`, so `a[..k - 1]` stays inside the region.
         let a = p.add(r).cast::<u64>();
         if k == 1 {
-            *state.get_unchecked_mut(0) ^= head | (tail << sl);
+            put::<FIRST>(state, 0, head | (tail << sl));
             return;
         }
         let mut prev = a.read();
-        *state.get_unchecked_mut(0) ^= head | (prev << sl);
+        put::<FIRST>(state, 0, head | (prev << sl));
         for i in 1..k - 1 {
             let cur = a.add(i).read();
-            *state.get_unchecked_mut(i) ^= (prev >> sr) | (cur << sl);
+            put::<FIRST>(state, i, (prev >> sr) | (cur << sl));
             prev = cur;
         }
-        *state.get_unchecked_mut(k - 1) ^= (prev >> sr) | (tail << sl);
+        put::<FIRST>(state, k - 1, (prev >> sr) | (tail << sl));
     }
 
     // `[0u64; 25]` is 200 bytes, which LLVM zeroes with a `memset` call — ~60 instructions,
@@ -177,7 +252,13 @@ pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) ->
     let nblocks = data.len() / RATE;
     for b in 0..nblocks {
         // SAFETY: block `b` is the `RATE` bytes at `p + b * RATE`, inside `data`.
-        unsafe { xor_words(state, p.add(b * RATE), RATE_WORDS) };
+        unsafe {
+            if b == 0 {
+                absorb_words::<true>(state, p, RATE_WORDS);
+            } else {
+                absorb_words::<false>(state, p.add(b * RATE), RATE_WORDS);
+            }
+        }
         permute(state);
     }
 
@@ -188,32 +269,59 @@ pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) ->
     // SAFETY: the remainder is the `rem` bytes at the end of `data`, and `full * 8 + t == rem`.
     unsafe {
         let q = p.add(nblocks * RATE);
+        // Untouched state when this is also the first block: assign rather than xor, and
+        // then `state[full]` is still zero so the padding word can be assigned too.
+        let first = nblocks == 0;
         if full != 0 {
-            xor_words(state, q, full);
+            if first {
+                absorb_words::<true>(state, q, full);
+            } else {
+                absorb_words::<false>(state, q, full);
+            }
         }
         let mut last = 1u64 << (8 * t);
         for j in 0..t {
             last |= (*q.add(full * 8 + j) as u64) << (8 * j);
         }
         // `full <= RATE_WORDS - 1` because `rem < RATE`.
-        *state.get_unchecked_mut(full) ^= last;
+        if first {
+            *state.get_unchecked_mut(full) = last;
+        } else {
+            *state.get_unchecked_mut(full) ^= last;
+        }
     }
     state[RATE_WORDS - 1] ^= 0x80u64 << 56;
     permute(state);
 
-    #[repr(align(8))]
-    struct Out([u8; 32]);
-    let mut out = Out([0u8; 32]);
-    // SAFETY: `out` is 8-aligned and 32 bytes; RV64 is little-endian, so an aligned `u64`
-    // store writes the same bytes as `to_le_bytes`.
+    // RV64 is little-endian, so an aligned `u64` store writes the same bytes as
+    // `to_le_bytes`. Digests land in a `B256`, whose alignment is 1 as far as the compiler is
+    // concerned but which is in practice a stack slot the backend has aligned; check at run
+    // time rather than pay 60 instructions of byte scatter for it.
+    // SAFETY: the caller guarantees 32 writable bytes at `out`.
     unsafe {
-        let o = out.0.as_mut_ptr().cast::<u64>();
-        o.write(state[0]);
-        o.add(1).write(state[1]);
-        o.add(2).write(state[2]);
-        o.add(3).write(state[3]);
+        if (out as usize).is_multiple_of(core::mem::align_of::<u64>()) {
+            let o = out.cast::<u64>();
+            o.write(state[0]);
+            o.add(1).write(state[1]);
+            o.add(2).write(state[2]);
+            o.add(3).write(state[3]);
+            return;
+        }
+        let mut i = 0;
+        while i < 4 {
+            let w = *state.get_unchecked(i);
+            let b = out.add(i * 8);
+            b.write(w as u8);
+            b.add(1).write((w >> 8) as u8);
+            b.add(2).write((w >> 16) as u8);
+            b.add(3).write((w >> 24) as u8);
+            b.add(4).write((w >> 32) as u8);
+            b.add(5).write((w >> 40) as u8);
+            b.add(6).write((w >> 48) as u8);
+            b.add(7).write((w >> 56) as u8);
+            i += 1;
+        }
     }
-    out.0
 }
 
 /// Keccak-256 for the Pico zkVM guest via the permute syscall; provided so the guest binary can
@@ -222,6 +330,17 @@ pub(crate) fn keccak256_sponge(data: &[u8], permute: impl Fn(&mut [u64; 25])) ->
 #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
 pub fn keccak256_zkvm(data: &[u8]) -> [u8; 32] {
     keccak(data)
+}
+
+/// Keccak-256 for the Pico zkVM guest, written straight into `out`. See [`keccak_into`].
+///
+/// # Safety
+///
+/// `out` must point at 32 writable bytes.
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+pub unsafe fn keccak256_zkvm_into(data: &[u8], out: *mut u8) {
+    // SAFETY: forwarded from the caller.
+    unsafe { keccak_into(data, out) }
 }
 
 /// Represents the root node of a sparse Merkle Patricia Trie.
