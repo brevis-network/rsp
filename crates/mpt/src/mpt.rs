@@ -95,21 +95,30 @@ pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
 #[inline]
 #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
 pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
-    extern "C" {
-        fn syscall_keccak_permute(state: *mut [u64; 25]);
-    }
     #[repr(align(8))]
     struct Out([u8; 32]);
     let mut out = Out([0u8; 32]);
     // SAFETY: `out.0` is 32 writable, 8-aligned bytes.
-    unsafe {
-        keccak256_sponge_into(
-            data.as_ref(),
-            |state| syscall_keccak_permute(state),
-            out.0.as_mut_ptr(),
-        )
-    };
+    unsafe { keccak256_sponge_into(data.as_ref(), permute_syscall, out.0.as_mut_ptr()) };
     out.0
+}
+
+/// The keccak permutation, as a *named* function.
+///
+/// `keccak256_sponge_into` takes the permutation as an `impl Fn`, so it is monomorphized once
+/// per closure type it is handed. `keccak` and `keccak_into` used to write out `|state|
+/// syscall_keccak_permute(state)` each -- two closures, two distinct types, and therefore two
+/// copies of the `#[inline(never)]` sponge in the ELF (they show up in the profile as two
+/// symbols, 12.21 M and 3.01 M retired instructions on mainnet block 24006677). A `fn` item
+/// has one type, so passing this collapses them into one.
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+#[inline(always)]
+fn permute_syscall(state: &mut [u64; 25]) {
+    extern "C" {
+        fn syscall_keccak_permute(state: *mut [u64; 25]);
+    }
+    // SAFETY: `state` is a live, aligned `[u64; 25]`, which is what the syscall expects.
+    unsafe { syscall_keccak_permute(state) }
 }
 
 /// Keccak-256 straight into `out`, for the callers that already own the 32-byte destination.
@@ -125,11 +134,8 @@ pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
 /// `out` must point at 32 writable bytes.
 #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
 pub unsafe fn keccak_into(data: &[u8], out: *mut u8) {
-    extern "C" {
-        fn syscall_keccak_permute(state: *mut [u64; 25]);
-    }
     // SAFETY: forwarded from the caller.
-    unsafe { keccak256_sponge_into(data, |state| syscall_keccak_permute(state), out) }
+    unsafe { keccak256_sponge_into(data, permute_syscall, out) }
 }
 
 /// Keccak-256 sponge (rate 136 bytes, Keccak padding 0x01/0x80) over a permute function.
@@ -202,6 +208,11 @@ pub(crate) unsafe fn keccak256_sponge_into(
         }
         let off = p as usize & 7;
         if off == 0 {
+            // Do NOT unroll this. The loop is `ld`, `sd`, two `addi` and a branch per word,
+            // and a four-at-a-time version with a tail ladder is fewer instructions on paper.
+            // Measured, it is worse by 240 K retired instructions on mainnet block 24006677:
+            // the bigger body stops `absorb_words` being inlined into the sponge, and the two
+            // out-of-line copies that appear then cost more than the addressing saves.
             let q = p.cast::<u64>();
             for i in 0..k {
                 put::<FIRST>(state, i, q.add(i).read());
@@ -249,29 +260,37 @@ pub(crate) unsafe fn keccak256_sponge_into(
         &mut *state.as_mut_ptr()
     };
     let p = data.as_ptr();
-    let nblocks = data.len() / RATE;
-    for b in 0..nblocks {
-        // SAFETY: block `b` is the `RATE` bytes at `p + b * RATE`, inside `data`.
-        unsafe {
-            if b == 0 {
-                absorb_words::<true>(state, p, RATE_WORDS);
-            } else {
-                absorb_words::<false>(state, p.add(b * RATE), RATE_WORDS);
+    // 99.5 % of the calls on a mainnet block hash fewer than `RATE` bytes -- every EVM topic,
+    // address and account hash -- so the division by 136 lives inside the branch. Left
+    // outside it costs those calls the four instructions that materialise the magic
+    // multiplier plus the `mulhu`/`srli`/`mul` that use it, for a quotient that is zero.
+    let mut absorbed = 0usize;
+    if data.len() >= RATE {
+        let nblocks = data.len() / RATE;
+        for b in 0..nblocks {
+            // SAFETY: block `b` is the `RATE` bytes at `p + b * RATE`, inside `data`.
+            unsafe {
+                if b == 0 {
+                    absorb_words::<true>(state, p, RATE_WORDS);
+                } else {
+                    absorb_words::<false>(state, p.add(b * RATE), RATE_WORDS);
+                }
             }
+            permute(state);
         }
-        permute(state);
+        absorbed = nblocks * RATE;
     }
 
     // Final (partial) block with padding; also covers empty input and exact multiples.
-    let rem = data.len() - nblocks * RATE; // 0..RATE
+    let rem = data.len() - absorbed; // 0..RATE
     let full = rem / 8;
     let t = rem & 7;
     // SAFETY: the remainder is the `rem` bytes at the end of `data`, and `full * 8 + t == rem`.
     unsafe {
-        let q = p.add(nblocks * RATE);
+        let q = p.add(absorbed);
         // Untouched state when this is also the first block: assign rather than xor, and
         // then `state[full]` is still zero so the padding word can be assigned too.
-        let first = nblocks == 0;
+        let first = absorbed == 0;
         if full != 0 {
             if first {
                 absorb_words::<true>(state, q, full);
@@ -321,6 +340,24 @@ pub(crate) unsafe fn keccak256_sponge_into(
             b.add(7).write((w >> 56) as u8);
             i += 1;
         }
+    }
+}
+
+/// Keccak-256 of `data` written into an existing `B256`.
+///
+/// The trie-verification pass hashes every node blob and then either compares the digest
+/// against a reference or stores it; going through a `[u8; 32]` return value costs it the
+/// 28 `srli` + 32 `sb` scatter described on [`keccak_into`].
+#[inline]
+pub(crate) fn keccak_into_b256(data: &[u8], out: &mut B256) {
+    #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+    // SAFETY: `out` is a live `B256`, i.e. 32 writable bytes.
+    unsafe {
+        keccak_into(data, out.0.as_mut_ptr())
+    };
+    #[cfg(not(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64")))]
+    {
+        *out = B256::from(keccak(data));
     }
 }
 
