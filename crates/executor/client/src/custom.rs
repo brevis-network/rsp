@@ -149,9 +149,6 @@ impl Crypto for CustomCrypto {
 }
 
 // create the evm builder
-// `precompile_cycle_report` is a hand-set cfg, not a Cargo feature: build with
-// `RUSTFLAGS=--cfg=precompile_cycle_report` to get the per-precompile cycle report back.
-#[allow(unexpected_cfgs)]
 fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoOpInspector> {
     #[allow(unused_mut)]
     let mut precompiles = PrecompilesMap::from_static(Precompiles::new(
@@ -166,9 +163,9 @@ fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoO
     // `lbu`s: measured at 3.41 M retired instructions on mainnet block 24006677 (0.71 % of the
     // guest) over 24,932 lookups.
     //
-    // Turn it back on when a per-precompile cycle report is actually wanted; it is a debugging
-    // aid, and it is not free.
-    #[cfg(all(target_os = "zkvm", precompile_cycle_report))]
+    // Behind the off-by-default `cycle-tracker` feature: build with
+    // `--features rsp-client-executor/cycle-tracker` when a run wants the report.
+    #[cfg(all(target_os = "zkvm", feature = "cycle-tracker"))]
     precompiles.map_precompiles(|address, p| {
         use alloy_evm::precompiles::Precompile;
         use reth_evm::precompiles::PrecompileInput;
