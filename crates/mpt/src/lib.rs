@@ -14,6 +14,10 @@ mod execution_witness;
 mod mpt;
 pub use mpt::Error;
 
+/// The logs bloom, hashed through the guest's own keccak (see module docs).
+pub mod bloom;
+pub use bloom::logs_bloom;
+
 /// Flat RLP wire format for the witness tries (see module docs).
 mod flat;
 pub use flat::{
