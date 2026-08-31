@@ -591,16 +591,95 @@ pub(crate) unsafe fn keccak256_sponge_into(
     let mut absorbed = 0usize;
     if data.len() >= RATE {
         let nblocks = data.len() / RATE;
-        for b in 0..nblocks {
-            // SAFETY: block `b` is the `RATE` bytes at `p + b * RATE`, inside `data`.
+        let off = p as usize & 7;
+        // `RATE` is 17 whole words, so every block of one input shares `p`'s alignment. When
+        // that alignment is not 8, absorbing each block on its own makes it pay two byte
+        // loops -- the `8 - off` bytes before its first fully-contained aligned word, and the
+        // `off` bytes after its last -- and that measured 855 K retired instructions over the
+        // 15,552 unaligned block absorbs on mainnet block 24006677 (66 % of the block
+        // absorbs; the long inputs are RLP node blobs at arbitrary offsets in the witness).
+        //
+        // The absorbed region is contiguous, so one shifted stream over it needs the leading
+        // byte loop once and no trailing one at all: the aligned word that supplies the end
+        // of block `b` is the one that supplies the start of block `b + 1`.
+        //
+        // The stream reads the aligned word at `p + r + 8 * (17 * nblocks - 1)`, whose last
+        // byte is at offset `RATE * nblocks + r - 1`; it therefore needs `r` bytes of input
+        // beyond the absorbed region, and `r <= 7`. Otherwise fall back per block.
+        let r = 8 - off;
+        if off != 0 && data.len() - nblocks * RATE >= r {
+            /// Absorb one block of 17 words from the shifted stream.
+            ///
+            /// `carry` holds the low `r` bytes of the next word -- the same position
+            /// `cur >> sr` leaves them in -- so word 0 of the input and every later word
+            /// share one formula.
+            ///
+            /// # Safety
+            ///
+            /// `a` must point at 17 readable, 8-aligned `u64`, and `sl + sr` must be 64 with
+            /// both below 64.
+            #[inline(always)]
+            unsafe fn absorb_shifted<const FIRST: bool>(
+                state: &mut [u64; 25],
+                a: *const u64,
+                carry: &mut u64,
+                sl: u32,
+                sr: u32,
+            ) {
+                let mut c = *carry;
+                // Constant trip count, so this is 17 loads and 17 stores at constant
+                // offsets, the same shape the per-block version already had.
+                for i in 0..RATE / 8 {
+                    // SAFETY: `a` has 17 readable aligned words; `i < 17 < 25`.
+                    let cur = unsafe { a.add(i).read() };
+                    let w = c | (cur << sl);
+                    c = cur >> sr;
+                    // SAFETY: `i < 25`.
+                    let slot = unsafe { state.get_unchecked_mut(i) };
+                    if FIRST {
+                        // Untouched state: assign. Volatile for the reason recorded on
+                        // `absorb_words` -- a plain store loop here is LLVM's memcpy idiom.
+                        // SAFETY: `slot` is a live, aligned `u64`.
+                        unsafe { core::ptr::write_volatile(slot, w) };
+                    } else {
+                        *slot ^= w;
+                    }
+                }
+                *carry = c;
+            }
+
+            let sl = (r * 8) as u32;
+            let sr = (off * 8) as u32;
+            // SAFETY: `p` has `RATE * nblocks + r` readable bytes by the guard above, so
+            // every aligned word `p + r + 8 * j` for `j < 17 * nblocks` is readable, and
+            // `p + j` for `j < r` is inside the input.
             unsafe {
-                if b == 0 {
-                    absorb_words::<true>(state, p, RATE_WORDS);
-                } else {
-                    absorb_words::<false>(state, p.add(b * RATE), RATE_WORDS);
+                let mut carry = 0u64;
+                for j in 0..r {
+                    carry |= u64::from(*p.add(j)) << (8 * j);
+                }
+                let mut a = p.add(r).cast::<u64>();
+                // `nblocks >= 1`, because `data.len() >= RATE`.
+                absorb_shifted::<true>(state, a, &mut carry, sl, sr);
+                permute(state);
+                for _ in 1..nblocks {
+                    a = a.add(RATE / 8);
+                    absorb_shifted::<false>(state, a, &mut carry, sl, sr);
+                    permute(state);
                 }
             }
-            permute(state);
+        } else {
+            for b in 0..nblocks {
+                // SAFETY: block `b` is the `RATE` bytes at `p + b * RATE`, inside `data`.
+                unsafe {
+                    if b == 0 {
+                        absorb_words::<true>(state, p, RATE_WORDS);
+                    } else {
+                        absorb_words::<false>(state, p.add(b * RATE), RATE_WORDS);
+                    }
+                }
+                permute(state);
+            }
         }
         absorbed = nblocks * RATE;
     }
