@@ -1633,10 +1633,27 @@ impl<'a> FlatTrieView<'a> {
         let mut pos = 0usize;
         let mut count = 0usize;
         for slot in 0..16usize {
-            if payload[pos] != alloy_rlp::EMPTY_STRING_CODE {
+            let b = payload[pos];
+            if b != alloy_rlp::EMPTY_STRING_CODE {
                 count += 1;
             }
-            pos += rlp_item_len(payload, pos)?;
+            // `rlp_item_len(payload, pos)` off the byte already in hand. Calling it re-reads
+            // and re-bounds-checks the same byte and threads the answer back through a
+            // `Result`; on block 24006677 this loop runs 29,760 times (1,860 branches x 16
+            // slots) and was 17 retired instructions an iteration.
+            //
+            // The three arms below are `rlp_header`'s single-byte-header cases with
+            // `payload_off - pos + len` already folded in, and they are what a branch's
+            // children actually are: `0x80` for an empty slot, `0xa0` + 32 for a digest
+            // reference, and a short list for an inlined node. The two multi-byte-length
+            // forms (`0xb8..=0xbf`, `0xf8..=0xff`) fall through to the general scanner, so
+            // this is the same function, not a narrower one.
+            pos += match b {
+                0x00..=0x7f => 1,
+                0x80..=0xb7 => 1 + (b - 0x80) as usize,
+                0xc0..=0xf7 => 1 + (b - 0xc0) as usize,
+                _ => rlp_item_len(payload, pos)?,
+            };
             bounds[slot + 1] = pos as u32;
         }
         bounds[17] = payload.len() as u32;
