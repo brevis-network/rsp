@@ -335,12 +335,47 @@ mod fast_receipts {
     use reth_trie::{HashBuilder, Nibbles};
     use std::vec::Vec;
 
+    /// The number of significant big-endian bytes of a non-zero `v`, i.e. `8 -
+    /// v.leading_zeros() / 8`.
+    ///
+    /// Written as a ladder rather than with `leading_zeros` because RV64IM has no
+    /// count-leading-zeros instruction: LLVM expands `u64::leading_zeros` into a ~23
+    /// instruction sequence, and this encoder asks for it about 40,000 times on mainnet
+    /// block 24006677 — 922 K retired instructions, 27 % of everything
+    /// `validate_block_post_execution` did. Every length it actually sees is a receipt or
+    /// log payload of at most a few tens of kilobytes, so the small cases are tested first
+    /// and the answer costs one or two compares.
+    ///
+    /// `v == 0` never reaches here: both callers below take their short-string/short-list
+    /// branch for anything under 56 (respectively 0x80).
+    #[inline(always)]
+    pub(super) fn be_len(v: u64) -> usize {
+        debug_assert!(v != 0);
+        if v < 0x100 {
+            1
+        } else if v < 0x1_0000 {
+            2
+        } else if v < 0x100_0000 {
+            3
+        } else if v < 0x1_0000_0000 {
+            4
+        } else if v < 0x100_0000_0000 {
+            5
+        } else if v < 0x1_0000_0000_0000 {
+            6
+        } else if v < 0x100_0000_0000_0000 {
+            7
+        } else {
+            8
+        }
+    }
+
     #[inline(always)]
     fn header_len(payload: usize) -> usize {
         if payload < 56 {
             1
         } else {
-            1 + (8 - (payload.leading_zeros() as usize / 8))
+            1 + be_len(payload as u64)
         }
     }
 
@@ -349,7 +384,7 @@ mod fast_receipts {
         if v < 0x80 {
             1
         } else {
-            1 + (8 - (v.leading_zeros() as usize / 8))
+            1 + be_len(v)
         }
     }
 
@@ -380,16 +415,36 @@ mod fast_receipts {
         *c = (*c).add(s.len());
     }
 
+    /// Append the `n` low-order bytes of `v`, most significant first.
+    ///
+    /// This replaces `let be = v.to_be_bytes(); pcp(c, &be[skip..])`, which on RV64IM is a
+    /// `swap_bytes` expansion (no byte-reverse instruction either), eight stores of the
+    /// result into a stack slot, and then a `memcpy` of the two or three bytes that are
+    /// actually wanted. `n` is 1..=8 and comes from [`be_len`], so this loop is short.
+    ///
+    /// # Safety
+    ///
+    /// `*c` must have room for `n` more bytes, and `n` must be at most 8.
+    #[inline(always)]
+    unsafe fn pbe(c: &mut *mut u8, v: u64, n: usize) {
+        debug_assert!(n >= 1 && n <= 8);
+        let mut i = n;
+        while i > 0 {
+            i -= 1;
+            // SAFETY: forwarded from the caller.
+            unsafe { pb(c, (v >> (8 * i)) as u8) };
+        }
+    }
+
     #[inline(always)]
     unsafe fn phdr(c: &mut *mut u8, list: bool, payload: usize) {
         let base: u8 = if list { 0xc0 } else { 0x80 };
         if payload < 56 {
             pb(c, base + payload as u8);
         } else {
-            let skip = (payload.leading_zeros() / 8) as usize;
-            let be = payload.to_be_bytes();
-            pb(c, base + 55 + (8 - skip) as u8);
-            pcp(c, &be[skip..]);
+            let n = be_len(payload as u64);
+            pb(c, base + 55 + n as u8);
+            pbe(c, payload as u64, n);
         }
     }
 
@@ -400,10 +455,9 @@ mod fast_receipts {
         } else if v < 0x80 {
             pb(c, v as u8);
         } else {
-            let skip = (v.leading_zeros() / 8) as usize;
-            let be = v.to_be_bytes();
-            pb(c, 0x80 + (8 - skip) as u8);
-            pcp(c, &be[skip..]);
+            let n = be_len(v);
+            pb(c, 0x80 + n as u8);
+            pbe(c, v, n);
         }
     }
 
@@ -509,6 +563,47 @@ mod fast_receipts {
 /// blocks and the header comparison do that). Its job is to **go red when alloy moves**.
 /// If you are here because it failed after a dependency bump, the fix is to bring
 /// `fast_receipts` back in line with `alloy_consensus`, not to relax the test.
+#[cfg(test)]
+mod fast_receipts_be_len {
+    /// `be_len` must agree with `8 - v.leading_zeros() / 8` for every non-zero `v`, since
+    /// that is literally the expression it replaced. Swept over both every power of two and
+    /// its neighbours (the ladder's boundaries) and a pseudo-random spread.
+    #[test]
+    fn be_len_matches_leading_zeros() {
+        fn reference(v: u64) -> usize {
+            8 - (v.leading_zeros() as usize / 8)
+        }
+        let mut boundaries = 0usize;
+        let mut spread = 0usize;
+        for bit in 0..64u32 {
+            for v in [1u64 << bit, (1u64 << bit) - 1, (1u64 << bit) + 1] {
+                if v == 0 {
+                    continue;
+                }
+                assert_eq!(super::fast_receipts::be_len(v), reference(v), "v={v:#x}");
+                boundaries += 1;
+            }
+        }
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..1000 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            for shift in 0..8 {
+                let v = x >> (shift * 8);
+                if v == 0 {
+                    continue;
+                }
+                assert_eq!(super::fast_receipts::be_len(v), reference(v), "v={v:#x}");
+                spread += 1;
+            }
+        }
+        // 64 bits x 3 neighbours, minus the one `(1 << 0) - 1 == 0` that is skipped: every
+        // ladder boundary is hit from both sides. The spread only has to be large; a few of
+        // its high shifts land on zero.
+        assert_eq!(boundaries, 191, "the boundary sweep did not run in full");
+        assert!(spread > 7900, "the random spread did not run in full: {spread}");
+    }
+}
+
 #[cfg(test)]
 mod fast_receipts_parity {
     use alloy_consensus::{proofs::calculate_receipt_root, ReceiptWithBloom, TxReceipt, TxType};
