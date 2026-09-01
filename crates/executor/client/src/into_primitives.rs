@@ -130,10 +130,7 @@ impl BlockValidator<ChainSpec> for EthPrimitives {
             receipts.last().map(|receipt| receipt.cumulative_gas_used()).unwrap_or(0);
         if block.header().gas_used() != cumulative_gas_used {
             return Err(ConsensusError::BlockGasUsed {
-                gas: GotExpected {
-                    got: cumulative_gas_used,
-                    expected: block.header().gas_used(),
-                },
+                gas: GotExpected { got: cumulative_gas_used, expected: block.header().gas_used() },
                 gas_spent_by_tx: gas_spent_by_transactions(receipts),
             });
         }
@@ -157,17 +154,13 @@ impl BlockValidator<ChainSpec> for EthPrimitives {
             let receipts_root = fast_receipts::receipts_root(&receipts_with_bloom);
             if receipts_root != block.header().receipts_root() {
                 return Err(ConsensusError::BodyReceiptRootDiff(
-                    GotExpected {
-                        got: receipts_root,
-                        expected: block.header().receipts_root(),
-                    }
-                    .into(),
+                    GotExpected { got: receipts_root, expected: block.header().receipts_root() }
+                        .into(),
                 ));
             }
             if logs_bloom != block.header().logs_bloom() {
                 return Err(ConsensusError::BodyBloomLogDiff(
-                    GotExpected { got: logs_bloom, expected: block.header().logs_bloom() }
-                        .into(),
+                    GotExpected { got: logs_bloom, expected: block.header().logs_bloom() }.into(),
                 ));
             }
         }
@@ -318,10 +311,20 @@ fn handle_custom_chains(
 ///
 /// The output is not trusted -- it is hashed into a trie root and compared against the
 /// header's `receipts_root`, so any encoding error makes the block *fail*, and cannot make a
-/// bad block pass. `encode_2718` additionally asserts that the bytes written equal the
-/// length computed, so a mismatch between the two halves is a panic rather than a short
-/// buffer. Verified by mutation: corrupting one byte of this encoder's output makes the
-/// guest reject block 24006677.
+/// bad block pass. Verified by mutation: corrupting one byte of this encoder's output makes
+/// the guest reject block 24006677.
+///
+/// That argument covers wrong *bytes*, not a wrong *length*. What keeps the length halves
+/// honest is that each writer has exactly one length twin -- `header_len`/`phdr`,
+/// `u64_len`/`pu64`, `bytes_len`/`pbytes`, `log_payload_len`/the per-log writer -- and
+/// `fast_receipts_parity` sweeps both together. `encode_2718`'s `assert_eq!(written, total)`
+/// is a real runtime assert, not a `debug_assert!`, so it survives into the guest -- but it
+/// runs after the cursor has moved, which decides what it can and cannot do. If the writers
+/// ran *past* `total` they have already written outside the reservation, since they go
+/// through a raw cursor into `out.as_mut_ptr()` behind nothing but `out.reserve(total)`; the
+/// assert reports that, it cannot prevent it. If they stopped *short* of `total` the assert
+/// precedes `set_len`, so those uninitialised bytes never become part of the `Vec`. That
+/// distinction is about memory safety; acceptance is covered by the root comparison above.
 ///
 /// `adjust_index_for_rlp` is `alloy_consensus::proofs::ordered_trie_root_with_encoder`'s
 /// index ordering, kept identical on purpose.
@@ -472,7 +475,7 @@ mod fast_receipts {
         }
     }
 
-    pub fn receipts_root(items: &[ReceiptWithBloom<&Receipt>]) -> B256 {
+    pub(super) fn receipts_root(items: &[ReceiptWithBloom<&Receipt>]) -> B256 {
         if items.is_empty() {
             return alloy_consensus::constants::EMPTY_ROOT_HASH;
         }
@@ -535,13 +538,22 @@ mod fast_receipts_parity {
         }
     }
 
+    /// Every `TxType` there is. Listed rather than matched on `i % 5` so that the round trip
+    /// below is exhaustive: a variant added upstream fails to compile here, which is the
+    /// tripwire `every_tx_type_matches_alloy` is supposed to be. A `_ =>` arm would have let
+    /// a new type slip through as a wrong root on mainnet instead. Being `#[cfg(test)]`, it
+    /// fires on `cargo test`, not on a plain build of the guest.
+    const ALL_TX_TYPES: [TxType; 5] =
+        [TxType::Legacy, TxType::Eip2930, TxType::Eip1559, TxType::Eip4844, TxType::Eip7702];
+
     fn tx_type(i: usize) -> TxType {
-        match i % 5 {
-            0 => TxType::Legacy,
-            1 => TxType::Eip2930,
-            2 => TxType::Eip1559,
-            3 => TxType::Eip4844,
-            _ => TxType::Eip7702,
+        let ty = ALL_TX_TYPES[i % ALL_TX_TYPES.len()];
+        match ty {
+            TxType::Legacy |
+            TxType::Eip2930 |
+            TxType::Eip1559 |
+            TxType::Eip4844 |
+            TxType::Eip7702 => ty,
         }
     }
 
@@ -585,29 +597,33 @@ mod fast_receipts_parity {
             _ => rng.next(),
         };
 
-        Receipt {
-            tx_type: tx_type(i),
-            success: i % 3 != 0,
-            cumulative_gas_used,
-            logs,
-        }
+        Receipt { tx_type: tx_type(i), success: i % 3 != 0, cumulative_gas_used, logs }
     }
 
     /// The root over a block's worth of receipts must equal alloy's, receipt for receipt.
     ///
-    /// This cannot go vacuous: `checked` counts the roots actually compared and is asserted
-    /// against the number of iterations, and every block below has at least one receipt.
+    /// The guards at the bottom are on what the generator actually produced: that logs were
+    /// produced at all, that some receipt carried none (RLP's empty list), every `TxType`,
+    /// the two extremes of the topic list, and two of RLP's string forms -- the single byte
+    /// below `0x80` and the long form at 56. Anything counting iterations would prove
+    /// nothing, the bounds being constants: such a count holds however empty the receipts
+    /// are. Not guarded, and worth knowing: the two-byte length header, and the five
+    /// `cumulative_gas_used` shapes `receipt` draws from.
     #[test]
     fn receipts_root_matches_alloy() {
         let mut rng = Rng(0x5DEE_CE66_D000_0001);
-        let mut checked = 0usize;
+        let mut types_seen = [0usize; ALL_TX_TYPES.len()];
+        let mut topics_seen = [0usize; 5];
+        let mut short_data = 0usize; // a one-byte log payload below 0x80: its own RLP form
+        let mut long_data = 0usize; // >= 56 bytes: the long-form string header
+        let mut n_logs = 0usize; // drawn per receipt, so this is not a loop-bound count
+        let mut empty_log_lists = 0usize;
 
         // Block sizes chosen around `adjust_index_for_rlp`'s two edges: the `i == 0x7f`
         // case and the `i + 1 == len` case only differ once the block is long enough.
         for &n in &[1usize, 2, 3, 16, 127, 128, 129, 200] {
             for round in 0..4 {
-                let receipts: Vec<Receipt> =
-                    (0..n).map(|i| receipt(&mut rng, i + round)).collect();
+                let receipts: Vec<Receipt> = (0..n).map(|i| receipt(&mut rng, i + round)).collect();
                 let with_bloom: Vec<ReceiptWithBloom<&Receipt>> = receipts
                     .iter()
                     .map(|r| ReceiptWithBloom::new(r, TxReceipt::bloom(r)))
@@ -619,11 +635,36 @@ mod fast_receipts_parity {
                     ours, theirs,
                     "receipts root diverged from alloy at n={n} round={round}"
                 );
-                checked += 1;
+
+                for r in &receipts {
+                    types_seen[r.tx_type as usize] += 1;
+                    n_logs += r.logs.len();
+                    if r.logs.is_empty() {
+                        empty_log_lists += 1;
+                    }
+                    for log in &r.logs {
+                        topics_seen[log.topics().len()] += 1;
+                        let d = log.data.data.as_ref();
+                        if d.len() == 1 && d[0] < 0x80 {
+                            short_data += 1;
+                        }
+                        if d.len() >= 56 {
+                            long_data += 1;
+                        }
+                    }
+                }
             }
         }
 
-        assert_eq!(checked, 8 * 4, "the sweep did not run what it claims to");
+        assert!(n_logs > 1000, "only {n_logs} logs were generated");
+        assert!(empty_log_lists > 0, "no receipt with an empty log list was generated");
+        for (ty, &n) in types_seen.iter().enumerate() {
+            assert!(n > 0, "no receipt of tx type {ty} was generated");
+        }
+        assert!(topics_seen[0] > 0, "no log with zero topics was generated");
+        assert!(topics_seen[4] > 0, "no log with four topics was generated");
+        assert!(short_data > 0, "no single-byte log payload below 0x80 was generated");
+        assert!(long_data > 0, "no log payload in RLP's long-string form was generated");
     }
 
     /// The empty case, which `receipts_root` short-circuits.
