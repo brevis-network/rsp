@@ -488,15 +488,8 @@ impl<'a> FlatTrieView<'a> {
                     let slot = top.slot;
                     top.item_pos = item_end as u32;
                     top.slot += 1;
-                    // A 32-byte slice equality is a `memcmp` libcall on this target -- the
-                    // backend never expands one inline, see `rsp-guest-mem` -- and this one
-                    // runs once per digest reference walked past, 34,593 times on mainnet
-                    // block 24006677: 14 % of every memcmp the guest makes, and all but a
-                    // handful answer "no". Both sides are keccak output, so one byte settles
-                    // 255 of every 256 of them.
                     if !is_list
                         && payload_len == 32
-                        && bytes[payload_off] == hash[0]
                         && bytes[payload_off..item_end] == hash[..]
                     {
                         let idx = view.nodes.len() as u32;
