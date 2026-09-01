@@ -489,3 +489,164 @@ mod fast_receipts {
         hb.root()
     }
 }
+
+/// Parity between [`fast_receipts`] and the alloy encoder it replaced.
+///
+/// # Why this test exists
+///
+/// `fast_receipts` is a *fork* of consensus logic: `calculate_receipt_root` and the
+/// `Encodable2718` impl for `ReceiptWithBloom` used to come from alloy, and now a copy of
+/// that encoding lives here. Everything else in this crate that could go wrong fails
+/// loudly the first time it runs. This does not: it stays correct right up until upstream
+/// changes the encoding -- a new transaction type, a field added to a receipt -- at which
+/// point alloy gets updated and this copy silently does not. The failure then is a
+/// receipts-root mismatch on every block, and nothing points at this file.
+///
+/// So the test's job is not to check that the encoder is right today (the nine benchmark
+/// blocks and the header comparison do that). Its job is to **go red when alloy moves**.
+/// If you are here because it failed after a dependency bump, the fix is to bring
+/// `fast_receipts` back in line with `alloy_consensus`, not to relax the test.
+#[cfg(test)]
+mod fast_receipts_parity {
+    use alloy_consensus::{proofs::calculate_receipt_root, ReceiptWithBloom, TxReceipt, TxType};
+    use alloy_primitives::{Address, Bytes, Log, LogData, B256};
+    use reth_ethereum_primitives::Receipt;
+
+    /// A tiny deterministic PRNG, so a failure is reproducible from the seed alone.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            // xorshift64*
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        fn bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| self.next() as u8).collect()
+        }
+    }
+
+    fn tx_type(i: usize) -> TxType {
+        match i % 5 {
+            0 => TxType::Legacy,
+            1 => TxType::Eip2930,
+            2 => TxType::Eip1559,
+            3 => TxType::Eip4844,
+            _ => TxType::Eip7702,
+        }
+    }
+
+    /// One receipt, drawn to hit the places where RLP changes shape rather than uniformly:
+    /// the single-byte-string case, the empty string, the 55/56-byte header boundary, and
+    /// the u64 lengths either side of 0x80.
+    fn receipt(rng: &mut Rng, i: usize) -> Receipt {
+        let n_logs = rng.below(4);
+        let logs = (0..n_logs)
+            .map(|_| {
+                let n_topics = rng.below(5);
+                let topics: Vec<B256> =
+                    (0..n_topics).map(|_| B256::from_slice(&rng.bytes(32))).collect();
+                // Lengths that straddle every RLP boundary that matters here.
+                let data_len = match rng.below(6) {
+                    0 => 0,
+                    1 => 1,
+                    2 => 55,
+                    3 => 56,
+                    4 => 256,
+                    _ => rng.below(300),
+                };
+                let mut data = rng.bytes(data_len);
+                // The single-byte-below-0x80 case is its own RLP form; make sure it occurs.
+                if data_len == 1 && i % 2 == 0 {
+                    data[0] = 0x7f;
+                }
+                Log {
+                    address: Address::from_slice(&rng.bytes(20)),
+                    data: LogData::new_unchecked(topics, Bytes::from(data)),
+                }
+            })
+            .collect();
+
+        let cumulative_gas_used = match rng.below(6) {
+            0 => 0,
+            1 => 1,
+            2 => 0x7f,
+            3 => 0x80,
+            4 => u64::MAX,
+            _ => rng.next(),
+        };
+
+        Receipt {
+            tx_type: tx_type(i),
+            success: i % 3 != 0,
+            cumulative_gas_used,
+            logs,
+        }
+    }
+
+    /// The root over a block's worth of receipts must equal alloy's, receipt for receipt.
+    ///
+    /// This cannot go vacuous: `checked` counts the roots actually compared and is asserted
+    /// against the number of iterations, and every block below has at least one receipt.
+    #[test]
+    fn receipts_root_matches_alloy() {
+        let mut rng = Rng(0x5DEE_CE66_D000_0001);
+        let mut checked = 0usize;
+
+        // Block sizes chosen around `adjust_index_for_rlp`'s two edges: the `i == 0x7f`
+        // case and the `i + 1 == len` case only differ once the block is long enough.
+        for &n in &[1usize, 2, 3, 16, 127, 128, 129, 200] {
+            for round in 0..4 {
+                let receipts: Vec<Receipt> =
+                    (0..n).map(|i| receipt(&mut rng, i + round)).collect();
+                let with_bloom: Vec<ReceiptWithBloom<&Receipt>> = receipts
+                    .iter()
+                    .map(|r| ReceiptWithBloom::new(r, TxReceipt::bloom(r)))
+                    .collect();
+
+                let ours = super::fast_receipts::receipts_root(&with_bloom);
+                let theirs = calculate_receipt_root(&with_bloom);
+                assert_eq!(
+                    ours, theirs,
+                    "receipts root diverged from alloy at n={n} round={round}"
+                );
+                checked += 1;
+            }
+        }
+
+        assert_eq!(checked, 8 * 4, "the sweep did not run what it claims to");
+    }
+
+    /// The empty case, which `receipts_root` short-circuits.
+    #[test]
+    fn empty_receipts_root_matches_alloy() {
+        let empty: Vec<ReceiptWithBloom<&Receipt>> = Vec::new();
+        assert_eq!(super::fast_receipts::receipts_root(&empty), calculate_receipt_root(&empty));
+    }
+
+    /// Every transaction type on its own, so a new variant upstream shows up here as a
+    /// compile error on `tx_type` or a mismatch, rather than as a wrong root on one block.
+    #[test]
+    fn every_tx_type_matches_alloy() {
+        let mut rng = Rng(0x1234_5678_9ABC_DEF1);
+        for i in 0..5 {
+            let r = Receipt { tx_type: tx_type(i), ..receipt(&mut rng, i) };
+            let with_bloom = vec![ReceiptWithBloom::new(&r, TxReceipt::bloom(&r))];
+            assert_eq!(
+                super::fast_receipts::receipts_root(&with_bloom),
+                calculate_receipt_root(&with_bloom),
+                "tx type {:?} diverged from alloy",
+                tx_type(i)
+            );
+        }
+    }
+}
