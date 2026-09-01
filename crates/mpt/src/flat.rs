@@ -1607,54 +1607,96 @@ impl<'a> FlatTrieView<'a> {
         payload: &'a [u8],
         changes: &[Change<'_>],
     ) -> Result<Out, Error> {
-        // one scan for the 17 item boundaries (16 children + the always-empty value item)
+        // `changes` sorted by leading nibble is a precondition, not an optimisation.
+        //
+        // The old shape (`for slot in 0..16` with an inner run scan) relied on it too -- on
+        // unsorted input its `idx` stalls and every later change is silently dropped -- but
+        // it was bounded by the 0..16 loop. This one steps over `changes`' runs directly, so
+        // unsorted input can produce more than 16 groups and overrun `touched`, which is a
+        // bounds panic rather than a wrong answer. Both behaviours are fail-closed (this is
+        // the post-state root, compared against the header immediately afterwards, not the
+        // witness authentication in `parse_and_verify`), but neither is a contract, so the
+        // contract is written here.
+        //
+        // `debug_assert` rather than `assert`: the only caller is `delta_root`, which sorts
+        // (`list.sort_unstable_by`) three lines before calling in, and the guest builds with
+        // debug assertions off, so this costs it nothing.
+        debug_assert!(
+            changes.windows(2).all(|w| w[0].0[0] <= w[1].0[0]),
+            "apply_branch requires `changes` sorted by leading nibble"
+        );
+
+        // One scan for the 16 child-item boundaries, which also counts the branch's original
+        // children: an empty slot is exactly the one-byte `0x80` item, so its first byte is
+        // the whole test and the count comes for free here instead of in a second pass.
         let mut bounds = [0u32; 18];
         let mut pos = 0usize;
-        for b in bounds.iter_mut().take(17).skip(1) {
+        let mut count = 0usize;
+        for slot in 0..16usize {
+            if payload[pos] != alloy_rlp::EMPTY_STRING_CODE {
+                count += 1;
+            }
             pos += rlp_item_len(payload, pos)?;
-            *b = pos as u32;
+            bounds[slot + 1] = pos as u32;
         }
         bounds[17] = payload.len() as u32;
 
-        // rebuild only the changed slots (changes are sorted by leading nibble)
+        // Rebuild only the changed slots. `changes` is sorted by leading nibble (the same
+        // property the `for slot in 0..16` walk this replaces relied on), so stepping over
+        // its runs visits exactly the changed slots -- 1.18 of 16 per branch on mainnet
+        // block 24006677 -- and records them in order for the splice below.
         let mut rebuilt: [Option<Out>; 16] = Default::default();
         let mut changed = [false; 16];
+        let mut touched = [0u8; 16];
+        let mut ntouched = 0usize;
+        // `payload_len` as a delta against the original child region, so the unchanged slots
+        // are never revisited: `bounds[16]` is the length of all 16 original child items.
+        let mut delta = 0isize;
         let mut idx = 0usize;
-        for slot in 0..16usize {
+        while idx < changes.len() {
+            let slot = changes[idx].0[0] as usize;
             let start = idx;
             while idx < changes.len() && changes[idx].0[0] == slot as u8 {
                 idx += 1;
             }
-            if start == idx {
-                continue;
-            }
             changed[slot] = true;
-            let item = &payload[bounds[slot] as usize..bounds[slot + 1] as usize];
+            touched[ntouched] = slot as u8;
+            ntouched += 1;
+            let lo = bounds[slot] as usize;
+            let hi = bounds[slot + 1] as usize;
+            let was_non_empty = payload[lo] != alloy_rlp::EMPTY_STRING_CODE;
+            let item = &payload[lo..hi];
             let group: Vec<Change<'_>> =
                 changes[start..idx].iter().map(|(k, v)| (&k[1..], *v)).collect();
             let out = match parse_ref(item)? {
                 FlatRef::Empty => Self::apply_empty(&group),
                 r => self.apply_src(self.child_src(src, r, slot as u32)?, &group)?,
             };
+            let new_len = match &out {
+                Out::Enc(enc) if enc.len() < 32 => enc.len(),
+                Out::Enc(_) => 33,
+                Out::Empty => 1,
+            };
+            delta += new_len as isize - (hi - lo) as isize;
+            count = count - usize::from(was_non_empty)
+                + usize::from(matches!(out, Out::Enc(_)));
             rebuilt[slot] = Some(out);
         }
 
-        // count children after the change set
-        let mut count = 0usize;
-        let mut last = 0usize;
-        for slot in 0..16usize {
-            let non_empty = if changed[slot] {
-                matches!(rebuilt[slot], Some(Out::Enc(_)))
-            } else {
-                payload[bounds[slot] as usize] != alloy_rlp::EMPTY_STRING_CODE
-            };
-            if non_empty {
-                count += 1;
-                last = slot;
-            }
-        }
-
         if count <= 1 {
+            // Rare (12 of 1,860 branches on block 24006677); find the survivor by a scan
+            // rather than tracking a running maximum through the deletes above.
+            let mut last = 0usize;
+            for slot in 0..16usize {
+                let non_empty = if changed[slot] {
+                    matches!(rebuilt[slot], Some(Out::Enc(_)))
+                } else {
+                    payload[bounds[slot] as usize] != alloy_rlp::EMPTY_STRING_CODE
+                };
+                if non_empty {
+                    last = slot;
+                }
+            }
             // rare: fall back to the slot-based collapse handling
             let mut slots: [Slot<'a>; 16] = Default::default();
             if count == 1 {
@@ -1669,27 +1711,13 @@ impl<'a> FlatTrieView<'a> {
         }
 
         // splice: copy maximal runs of unchanged original items verbatim, insert new items
-        let mut payload_len = 0usize;
-        for slot in 0..16usize {
-            payload_len += if changed[slot] {
-                match &rebuilt[slot] {
-                    Some(Out::Enc(enc)) if enc.len() < 32 => enc.len(),
-                    Some(Out::Enc(_)) => 33,
-                    _ => 1,
-                }
-            } else {
-                (bounds[slot + 1] - bounds[slot]) as usize
-            };
-        }
-        payload_len += 1; // value item
+        let payload_len = (bounds[16] as isize + delta) as usize + 1; // + the value item
 
         let mut out = Vec::with_capacity(payload_len + 4);
         list_header_into(&mut out, payload_len);
         let mut run_start = 0usize;
-        for slot in 0..16usize {
-            if !changed[slot] {
-                continue; // extend the current run
-            }
+        for t in 0..ntouched {
+            let slot = touched[t] as usize;
             out.extend_from_slice(&payload[run_start..bounds[slot] as usize]);
             match &rebuilt[slot] {
                 Some(Out::Enc(enc)) => ref_item_into(&mut out, enc),
