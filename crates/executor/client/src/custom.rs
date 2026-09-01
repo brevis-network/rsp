@@ -155,7 +155,17 @@ fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoO
         PrecompileSpecId::from_spec_id(input.cfg_env.spec),
     ));
 
-    #[cfg(target_os = "zkvm")]
+    // Wrapping every precompile in a cycle-tracker turns `PrecompilesMap` from `Builtin` --
+    // where a lookup is one index into a `Vec` keyed by the short address -- into `Dynamic`,
+    // whose lookup is a `HashMap<Address, DynPrecompile>` probe with alloy's default (foldhash)
+    // hasher. That probe runs once per *call frame*, not once per precompile call, and on a
+    // target with no misaligned scalar loads foldhash reassembles the 20-byte key out of
+    // `lbu`s: measured at 3.41 M retired instructions on mainnet block 24006677 (0.71 % of the
+    // guest) over 24,932 lookups.
+    //
+    // Behind the off-by-default `cycle-tracker` feature: build with
+    // `--features rsp-client-executor/cycle-tracker` when a run wants the report.
+    #[cfg(all(target_os = "zkvm", feature = "cycle-tracker"))]
     precompiles.map_precompiles(|address, p| {
         use alloy_evm::precompiles::Precompile;
         use reth_evm::precompiles::PrecompileInput;

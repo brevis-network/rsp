@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     mpt::{
-        keccak, node_from_digest, node_with_cached_reference, prefix_nibs, to_nibs, Error,
+        keccak, keccak_into_b256, node_from_digest, node_with_cached_reference, prefix_nibs, to_nibs,
+        Error,
         MptNode, MptNodeData, MptNodeReference, EMPTY_ROOT,
     },
     EthereumState,
@@ -450,7 +451,7 @@ impl<'a> FlatTrieView<'a> {
             }
             _ => {}
         }
-        view.root_hash = B256::from(keccak(root_blob));
+        keccak_into_b256(root_blob, &mut view.root_hash);
         view.push_node(0, root_len, &root)?;
         view.hashes.push(view.root_hash);
 
@@ -468,7 +469,12 @@ impl<'a> FlatTrieView<'a> {
                 return Err(Error::FlatTrie("truncated node blob"));
             }
             let blob = &bytes[pos..pos + len];
-            let hash = keccak(blob);
+            // 8-aligned so the digest lands as four `sd`; see `keccak_into_b256`.
+            #[repr(align(8))]
+            struct Digest(B256);
+            let mut digest = Digest(B256::ZERO);
+            keccak_into_b256(blob, &mut digest.0);
+            let hash = digest.0;
 
             // Find the next pending digest reference matching this blob's hash. Non-matching
             // references we walk past are pruned subtrees and stay EDGE_PRUNED.
@@ -501,7 +507,7 @@ impl<'a> FlatTrieView<'a> {
             }
             let this_idx = view.nodes.len() as u32;
             view.push_node(pos, len, &node)?;
-            view.hashes.push(B256::from(hash));
+            view.hashes.push(hash);
             let _ = node_idx;
             if let Some(entry) = FrontierEntry::new(this_idx, pos as u32, &node, bytes)? {
                 frontier.push(entry);

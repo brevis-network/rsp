@@ -61,6 +61,10 @@ bincode = "1.3.3"
 
 [features]
 default = ["sha3-keccak"]
+# Wraps every precompile in a cycle-tracker so a run can report their cost. Off by
+# default: the wrapper is what turns `PrecompilesMap` from `Builtin` into `Dynamic`,
+# and that costs 3.04 M retired guest instructions on block 24006677 (0.71 %).
+cycle-tracker = []
 sha3-keccak = ["alloy-primitives/sha3-keccak", "rsp-mpt/sha3-keccak"]
 native-keccak = ["alloy-primitives/native-keccak", "rsp-mpt/native-keccak"]
 optimism = [
