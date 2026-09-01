@@ -71,8 +71,9 @@ fn digest_prefix(bytes: &[u8]) -> u64 {
     // raw pointer, so LLVM cannot see that and would keep four `sd` of zero.
     let mut d = core::mem::MaybeUninit::<Digest>::uninit();
     let p = d.as_mut_ptr().cast::<u8>();
-    // SAFETY: `p` is 32 writable, 8-aligned bytes, which is `keccak_into`'s contract; it
-    // writes all 32, so the read below is of initialized memory.
+    // SAFETY: `p` is 32 writable bytes, which is `keccak_into`'s whole contract -- it handles
+    // an unaligned destination itself. The 8-alignment is for the `ld` below, not for the
+    // callee. `keccak_into` writes all 32 bytes, so that read is of initialized memory.
     unsafe {
         crate::mpt::keccak_into(bytes, p);
         p.cast::<u64>().read()

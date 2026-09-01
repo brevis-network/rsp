@@ -151,13 +151,13 @@ pub(crate) const RATE: usize = 136;
 /// them through machinery they never use, and the measured cost of that is mostly not the
 /// branches:
 ///
-/// * It saves and restores twelve callee-saved registers, 26 instructions per call, because
-///   the multi-block absorb keeps seventeen state words live across the permute.
-/// * The final block's padding word is read-modify-written (`ld`, `xor`, `sd`) and the
-///   `0x80` terminator likewise, because either may land on a word an earlier block already
-///   filled. On a single block both words are known to be zero, so both are plain stores.
-/// * The block count, the 136-byte reciprocal and the multi-block loop's induction
-///   variables are all materialised before the length is tested.
+/// * It saves and restores twelve callee-saved registers, 26 instructions per call, because the
+///   multi-block absorb keeps seventeen state words live across the permute.
+/// * The final block's padding word is read-modify-written (`ld`, `xor`, `sd`) and the `0x80`
+///   terminator likewise, because either may land on a word an earlier block already filled. On a
+///   single block both words are known to be zero, so both are plain stores.
+/// * The block count, the 136-byte reciprocal and the multi-block loop's induction variables are
+///   all materialised before the length is tested.
 ///
 /// The length test lives here rather than in the inlined wrappers on purpose. Split at the
 /// call sites it costs the two instructions of the test at each of the 66 of them plus the
@@ -169,11 +169,7 @@ pub(crate) const RATE: usize = 136;
 /// `out` must point at 32 writable bytes.
 #[inline(never)]
 #[allow(dead_code)]
-pub(crate) unsafe fn keccak256_into(
-    data: &[u8],
-    permute: impl Fn(&mut [u64; 25]),
-    out: *mut u8,
-) {
+pub(crate) unsafe fn keccak256_into(data: &[u8], permute: impl Fn(&mut [u64; 25]), out: *mut u8) {
     if data.len() >= RATE {
         // SAFETY: forwarded from the caller.
         return unsafe { keccak256_sponge_into(data, permute, out) };
@@ -501,7 +497,6 @@ pub(crate) unsafe fn keccak256_sponge_into(
     permute: impl Fn(&mut [u64; 25]),
     out: *mut u8,
 ) {
-
     /// XOR the `k` little-endian `u64` words held in the `8 * k` bytes at `p` into `state[..k]`.
     ///
     /// With `FIRST`, assign instead: the state is still all zeros when the first block is
@@ -1956,7 +1951,10 @@ fn add_orphaned_leafs(
 
 /// Creates an MPT node with a pre-computed reference cache. The caller must guarantee that
 /// `reference` is the reference of `data` as encoded.
-pub(crate) fn node_with_cached_reference(data: MptNodeData, reference: MptNodeReference) -> MptNode {
+pub(crate) fn node_with_cached_reference(
+    data: MptNodeData,
+    reference: MptNodeReference,
+) -> MptNode {
     MptNode { data, cached_reference: Mutex::new(Some(reference)) }
 }
 
@@ -2044,6 +2042,73 @@ mod tests {
         }
         // Guard against the sweep silently collapsing: 8 alignments x 136 lengths.
         assert_eq!(lens_seen, 8 * RATE, "the alignment x length sweep did not run in full");
+    }
+
+    /// `keccak256_into` is what the guest actually calls, and it hands anything at or above
+    /// the rate to the general sponge. The sweep above stops one byte short of that hand-off,
+    /// which leaves the single-block path's `full <= 16` premise resting on an untested
+    /// comparison: were it ever to admit a 136-byte input, the `_ =>` arm of `fill_block`
+    /// would absorb 128 bytes and pad there, silently. Cross the boundary in both directions.
+    #[test]
+    pub fn test_keccak_into_crosses_the_rate_boundary() {
+        let backing: Vec<u8> = (0..3 * RATE + 16).map(|i| (i * 23 + 7) as u8).collect();
+        let base = backing.as_ptr() as usize;
+        let mut lens_seen = 0usize;
+        for skew in 0..8usize {
+            let start = (8 - (base & 7)) % 8 + skew; // absolute alignment `skew`
+            for len in RATE - 8..2 * RATE + 8 {
+                let data = &backing[start..start + len];
+                assert_eq!(data.as_ptr() as usize % 8, skew);
+                assert_eq!(
+                    keccak256_block(data, keccak::f1600),
+                    *alloy_primitives::utils::keccak256(data),
+                    "skew={skew} len={len}"
+                );
+                lens_seen += 1;
+            }
+        }
+        assert_eq!(lens_seen, 8 * (RATE + 16), "the rate-boundary sweep did not run in full");
+    }
+
+    /// Two digest destinations are align-1 as far as the compiler is concerned -- the `B256`
+    /// `keccak_into_b256` writes through, and the raw out-pointer alloy hands
+    /// `native_keccak256` -- so `squeeze_into` chooses between four `sd` and a byte scatter
+    /// at run time. (`digest_prefix` and the guest's own `keccak` deliberately pass an
+    /// `#[repr(align(8))]` slot and always take the wide arm.) Every test helper declares
+    /// that alignment too, so the scatter was unreached; drive it directly.
+    ///
+    /// Note what a host test cannot settle: x86 and aarch64 tolerate the misaligned `u64`
+    /// store that RV64 traps on, so inverting the alignment predicate keeps this green. What
+    /// is pinned here is the scatter's arithmetic, not the choice between the two arms.
+    #[test]
+    pub fn test_keccak_into_unaligned_destination() {
+        #[repr(align(8))]
+        struct Out([u8; 40]);
+        let backing: Vec<u8> = (0..600usize).map(|i| (i * 17 + 3) as u8).collect();
+        let mut checked = 0usize;
+        for off in 1..8usize {
+            for len in [0usize, 1, 20, 32, 135, 136, 137, 271, 272, 400] {
+                let data = &backing[..len];
+                let mut out = Out([0u8; 40]);
+                assert_ne!((out.0.as_ptr() as usize + off) % 8, 0);
+                // SAFETY: `out.0[off..off + 32]` is 32 writable bytes.
+                unsafe { keccak256_into(data, keccak::f1600, out.0.as_mut_ptr().add(off)) };
+                assert_eq!(
+                    &out.0[off..off + 32],
+                    &*alloy_primitives::utils::keccak256(data),
+                    "off={off} len={len}"
+                );
+                // The buffer has room either side, so a write outside the 32 bytes lands in
+                // it rather than in the assertion above.
+                assert!(
+                    out.0[..off].iter().all(|&b| b == 0) &&
+                        out.0[off + 32..].iter().all(|&b| b == 0),
+                    "squeeze_into wrote outside its 32 bytes: off={off} len={len}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 7 * 10, "the unaligned-destination sweep did not run in full");
     }
 
     /// `to_nibs` and `prefix_nibs` write into reserved capacity rather than pushing, so the
