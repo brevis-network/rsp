@@ -1607,23 +1607,37 @@ impl<'a> FlatTrieView<'a> {
         payload: &'a [u8],
         changes: &[Change<'_>],
     ) -> Result<Out, Error> {
-        // `changes` sorted by leading nibble is a precondition, not an optimisation.
+        // `changes` sorted is a precondition, not an optimisation, and it is the *whole* key
+        // that has to be ordered, not just the leading nibble: the group handed to the
+        // recursive call is `changes[start..idx]` with `&k[1..]`, so the same requirement
+        // applies again at every depth. Everything that reaches here comes through
+        // `delta_root`, which sorts with `sort_unstable_by(|a, b| a.0.cmp(b.0))`, and the
+        // recursion only ever strips a shared prefix, which preserves that order -- the
+        // assertion below just says so.
         //
-        // The old shape (`for slot in 0..16` with an inner run scan) relied on it too -- on
-        // unsorted input its `idx` stalls and every later change is silently dropped -- but
-        // it was bounded by the 0..16 loop. This one steps over `changes`' runs directly, so
-        // unsorted input can produce more than 16 groups and overrun `touched`, which is a
-        // bounds panic rather than a wrong answer. Both behaviours are fail-closed (this is
-        // the post-state root, compared against the header immediately afterwards, not the
-        // witness authentication in `parse_and_verify`), but neither is a contract, so the
-        // contract is written here.
+        // What a violation costs. The old shape (`for slot in 0..16` with an inner run scan)
+        // relied on ordering too, and dropped later changes silently, but was bounded by its
+        // `0..16` loop. This one steps over `changes`' runs directly, so a list with more than
+        // 16 runs overruns `touched`, and one whose runs are merely out of order walks off the
+        // end of a slot in the splice. Both panic.
         //
-        // `debug_assert` rather than `assert`: the only caller is `delta_root`, which sorts
-        // (`list.sort_unstable_by`) three lines before calling in, and the guest builds with
-        // debug assertions off, so this costs it nothing.
+        // But not every violation does. Revisiting a slot runs the `count` update below a
+        // second time for it, and `count - 1 + 1` starting from 0 passes through `usize::MAX`
+        // with overflow checks off and lands back on 0. That reaches the `count <= 1` collapse
+        // path holding a `rebuilt` array that has lost a slot -- and that path never reads
+        // `touched`, so it returns a wrong root with no panic. Rare, but enough that "a bounds
+        // panic rather than a wrong answer" is not a claim this can make.
+        //
+        // Neither outcome is a soundness problem for the caller -- this is the post-state
+        // root, compared against the header immediately afterwards, not the witness
+        // authentication in `parse_and_verify` -- but a silently wrong root is a worse failure
+        // mode than a panic, which is why the contract is now written as what the code needs.
+        //
+        // `debug_assert` rather than `assert`: `delta_root` sorts just before handing the list
+        // in, and the guest builds with debug assertions off, so this costs it nothing.
         debug_assert!(
-            changes.windows(2).all(|w| w[0].0[0] <= w[1].0[0]),
-            "apply_branch requires `changes` sorted by leading nibble"
+            changes.windows(2).all(|w| w[0].0 <= w[1].0),
+            "apply_branch requires `changes` sorted by key, not merely by leading nibble"
         );
 
         // One scan for the 16 child-item boundaries, which also counts the branch's original
@@ -1658,10 +1672,9 @@ impl<'a> FlatTrieView<'a> {
         }
         bounds[17] = payload.len() as u32;
 
-        // Rebuild only the changed slots. `changes` is sorted by leading nibble (the same
-        // property the `for slot in 0..16` walk this replaces relied on), so stepping over
-        // its runs visits exactly the changed slots -- 1.18 of 16 per branch on mainnet
-        // block 24006677 -- and records them in order for the splice below.
+        // Rebuild only the changed slots. `changes` is sorted (see the precondition above),
+        // so stepping over its runs visits exactly the changed slots -- 1.18 of 16 per branch
+        // on mainnet block 24006677 -- and records them in order for the splice below.
         let mut rebuilt: [Option<Out>; 16] = Default::default();
         let mut changed = [false; 16];
         let mut touched = [0u8; 16];
