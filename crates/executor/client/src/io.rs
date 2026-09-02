@@ -1,7 +1,7 @@
 use std::iter::once;
 
 use alloy_consensus::{Block, BlockHeader, Header};
-use alloy_primitives::map::HashMap;
+use alloy_primitives::map::{B256Map, HashMap};
 use alloy_rlp::Decodable;
 use itertools::Itertools;
 use reth_errors::ProviderError;
@@ -68,7 +68,10 @@ impl<P: NodePrimitives> ClientExecutorInput<'_, P> {
 
     /// Parses and verifies the witness tries against the parent state root; see
     /// [`WitnessInput::verified_views`].
-    pub fn verified_views(&self) -> Result<FlatStateViews<'_>, ClientError> {
+    #[allow(clippy::type_complexity)]
+    pub fn verified_views(
+        &self,
+    ) -> Result<(FlatStateViews<'_>, B256Map<Option<WitnessedAccount>>), ClientError> {
         <Self as WitnessInput>::verified_views(self)
     }
 
@@ -77,7 +80,7 @@ impl<P: NodePrimitives> ClientExecutorInput<'_, P> {
     pub fn witness_aux(
         &self,
         sealed_headers: &[SealedHeader],
-    ) -> Result<(HashMap<u64, B256>, HashMap<B256, &Bytecode>), ClientError> {
+    ) -> Result<(HashMap<u64, B256>, B256Map<&Bytecode>), ClientError> {
         <Self as WitnessInput>::witness_aux(self, sealed_headers)
     }
 
@@ -132,20 +135,41 @@ impl From<Header> for CommittedHeader {
     }
 }
 
+/// The fields of a witnessed account that [`TrieDB::basic_ref`] hands back, small and `Copy`.
+///
+/// `AccountInfo` itself carries an `Option<Bytecode>`, so caching it would make every hit
+/// clone a `Bytes` handle it never uses.
+#[derive(Debug, Clone, Copy)]
+pub struct WitnessedAccount {
+    nonce: u64,
+    balance: U256,
+    code_hash: B256,
+}
+
 #[derive(Debug)]
 pub struct TrieDB<'a> {
     views: &'a FlatStateViews<'a>,
+    /// Accounts already read out of the state trie by [`WitnessInput::verified_views`], which
+    /// walks to one per witnessed storage trie to bind its root. `basic_ref` is called for the
+    /// same set (250 accounts and 250 storage tries on mainnet block 24006677), and a walk
+    /// costs ~1,460 retired instructions against ~40 for this lookup. A miss simply falls
+    /// through to the trie, so the two sets need not agree.
+    accounts: B256Map<Option<WitnessedAccount>>,
     block_hashes: HashMap<u64, B256>,
-    bytecode_by_hash: HashMap<B256, &'a Bytecode>,
+    /// Keyed by the code hash, so the map's hasher must not re-hash it: `B256Map`'s
+    /// `FbBuildHasher<32>` reads eight bytes of the (already uniformly distributed) digest,
+    /// where the default `foldhash` builder runs its whole 32-byte mixing chain per lookup.
+    bytecode_by_hash: B256Map<&'a Bytecode>,
 }
 
 impl<'a> TrieDB<'a> {
     pub fn new(
         views: &'a FlatStateViews<'a>,
+        accounts: B256Map<Option<WitnessedAccount>>,
         block_hashes: HashMap<u64, B256>,
-        bytecode_by_hash: HashMap<B256, &'a Bytecode>,
+        bytecode_by_hash: B256Map<&'a Bytecode>,
     ) -> Self {
-        Self { views, block_hashes, bytecode_by_hash }
+        Self { views, accounts, block_hashes, bytecode_by_hash }
     }
 }
 
@@ -156,6 +180,15 @@ impl DatabaseRef for TrieDB<'_> {
     /// Get basic account information.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let hashed_address = keccak256(address);
+
+        if let Some(cached) = self.accounts.get(&hashed_address) {
+            return Ok(cached.map(|a| AccountInfo {
+                balance: a.balance,
+                nonce: a.nonce,
+                code_hash: a.code_hash,
+                code: None,
+            }));
+        }
 
         let account_in_trie =
             self.views.state.get(hashed_address.as_slice()).expect("Can get from flat MPT");
@@ -227,13 +260,19 @@ pub trait WitnessInput {
     /// implementing this trait causes a zkVM run to cost over 5M cycles more. To avoid this, define
     /// a method inside the type that calls this trait method instead.
     #[inline(always)]
-    fn verified_views(&self) -> Result<FlatStateViews<'_>, ClientError> {
+    #[allow(clippy::type_complexity)]
+    fn verified_views(
+        &self,
+    ) -> Result<(FlatStateViews<'_>, B256Map<Option<WitnessedAccount>>), ClientError> {
         let views = self.state().views()?;
 
         if self.state_anchor() != views.state.root_hash {
             return Err(ClientError::MismatchedStateRoot);
         }
 
+        // Every walk below reads exactly the row `basic_ref` will want later, so keep it.
+        let mut accounts: B256Map<Option<WitnessedAccount>> =
+            B256Map::with_capacity_and_hasher(views.storage.len(), Default::default());
         for (hashed_address, storage_view) in views.storage.iter() {
             let account = views
                 .state
@@ -245,9 +284,17 @@ pub trait WitnessInput {
             if storage_root != storage_view.root_hash {
                 return Err(ClientError::MismatchedStorageRoot);
             }
+            accounts.insert(
+                *hashed_address,
+                account.map(|a| WitnessedAccount {
+                    nonce: a.nonce,
+                    balance: a.balance,
+                    code_hash: a.code_hash,
+                }),
+            );
         }
 
-        Ok(views)
+        Ok((views, accounts))
     }
 
     /// Verifies the account bytecodes and the ancestor header chain, returning the block hash
@@ -257,9 +304,9 @@ pub trait WitnessInput {
     fn witness_aux(
         &self,
         sealed_headers: &[SealedHeader],
-    ) -> Result<(HashMap<u64, B256>, HashMap<B256, &Bytecode>), ClientError> {
+    ) -> Result<(HashMap<u64, B256>, B256Map<&Bytecode>), ClientError> {
         let bytecodes_by_hash =
-            self.bytecodes().map(|code| (code.hash_slow(), code)).collect::<HashMap<_, _>>();
+            self.bytecodes().map(|code| (code.hash_slow(), code)).collect::<B256Map<_>>();
 
         // Verify and build block hashes
         let mut block_hashes: HashMap<u64, B256> = HashMap::with_hasher(Default::default());

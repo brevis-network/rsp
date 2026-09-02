@@ -569,11 +569,31 @@ pub(crate) unsafe fn keccak256_sponge_into(
 
     // `[0u64; 25]` is 200 bytes, which LLVM zeroes with a `memset` call — ~60 instructions,
     // paid once per hash. Volatile stores keep it as 25 `sd`.
+    //
+    // Only the capacity (words 17..25) has to be zeroed up front on the multi-block path: the
+    // first block is absorbed with `FIRST`, which *assigns* all `RATE_WORDS == 17` rate words
+    // (both `absorb_words::<true>` and `absorb_shifted::<true>` write every one of them), so
+    // the zeros the rate would have held are overwritten before anything reads them. That is
+    // 17 `sd` saved on each of the 4,439 multi-block hashes of mainnet block 24006677.
+    //
+    // The single-block entry (`data.len() < RATE`) still needs all 25: it absorbs only
+    // `full <= 16` words and then reads `state[full]` and `state[RATE_WORDS - 1]`. Note that
+    // in the guest that path is unreachable -- `keccak256_into` handles short inputs itself
+    // and only tail-calls here with `data.len() >= RATE` -- but `keccak256_sponge` (the
+    // parity test helper) enters here directly with any length.
+    let multi = data.len() >= RATE;
     let mut state = core::mem::MaybeUninit::<[u64; 25]>::uninit();
-    // SAFETY: the 25 in-bounds writes initialize every word of the array.
+    // SAFETY: the writes below initialize words 17..25 always and words 0..17 either here or,
+    // when `multi`, in the `FIRST` absorb of block 0 further down; every word of the array is
+    // written before it is read.
     let state = unsafe {
         let q = state.as_mut_ptr().cast::<u64>();
-        for i in 0..25 {
+        if !multi {
+            for i in 0..RATE_WORDS {
+                q.add(i).write_volatile(0);
+            }
+        }
+        for i in RATE_WORDS..25 {
             q.add(i).write_volatile(0);
         }
         &mut *state.as_mut_ptr()
@@ -584,7 +604,7 @@ pub(crate) unsafe fn keccak256_sponge_into(
     // outside it costs those calls the four instructions that materialise the magic
     // multiplier plus the `mulhu`/`srli`/`mul` that use it, for a quotient that is zero.
     let mut absorbed = 0usize;
-    if data.len() >= RATE {
+    if multi {
         let nblocks = data.len() / RATE;
         let off = p as usize & 7;
         // `RATE` is 17 whole words, so every block of one input shares `p`'s alignment. When

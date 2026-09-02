@@ -30,10 +30,46 @@ const WORD: usize = core::mem::size_of::<usize>();
 /// with three size tests was measured at **+1.29 M** retired instructions on block 24006677.
 /// That is the third independent attempt to speed this function up and the third negative
 /// one; the loop below is at its floor and the win, if there is one, is in *not calling* it.
+///
+/// The obvious spelling of that, `((x ^ y).trailing_zeros() / 8) * 8`, costs 20 instructions on
+/// RV64IM, which has no count-trailing-zeros: LLVM expands `cttz.i64` into
+/// `(d & -d) * DEBRUIJN >> 58` plus a 64-entry table load. Measured on block 24006677 that tail
+/// runs 67,910 times out of `memcmp`'s 105,382 calls -- 1.36 M retired instructions, 40 % of
+/// `memcmp`. The exact ctz is never needed to *get there*, though: the callers compare digests,
+/// `U256` limbs and address words, so once two words are known to differ the *lowest* byte
+/// differs with probability 255/256. Testing that byte first and leaving the other seven to an
+/// unrolled ladder brings the common case to six instructions, and the returned value is
+/// bit-identical to what the shift spelling produced.
 #[inline(always)]
 fn word_diff(x: usize, y: usize) -> i32 {
-    let shift = ((x ^ y).trailing_zeros() / 8) * 8;
-    i32::from((x >> shift) as u8) - i32::from((y >> shift) as u8)
+    // Spelled out rather than looped or split out. Two other shapes were measured on block
+    // 24006677 and both gave most of the win back:
+    //   * bytes 1..8 in a `#[cold] #[inline(never)]` helper: -0.49 M against this shape's -1.01 M,
+    //     because the call makes `memcmp` save `ra` -- two instructions in the prologue and two in
+    //     every epilogue, on all 105,382 calls;
+    //   * a `while i < WORD` loop: -0.03 M, because the extra counter pushed `compare_bytes` past
+    //     LLVM's inlining threshold and `memcmp` became an eight-instruction thunk. `compare_bytes`
+    //     carries `#[inline(always)]` now so that cannot come back.
+    macro_rules! byte_step {
+        ($k:expr) => {{
+            let xb = (x >> ($k * 8)) as u8;
+            let yb = (y >> ($k * 8)) as u8;
+            if xb != yb {
+                return i32::from(xb) - i32::from(yb);
+            }
+        }};
+    }
+    byte_step!(0);
+    byte_step!(1);
+    byte_step!(2);
+    byte_step!(3);
+    byte_step!(4);
+    byte_step!(5);
+    byte_step!(6);
+    byte_step!(7);
+    // Unreachable for the only caller, which has already found the two words unequal.
+    // Returning 0 keeps the function total instead of adding a panic path to `memcmp`.
+    0
 }
 
 /// Compares `n` bytes at `a` and `b` with C `memcmp` semantics, reading a word at a time when
@@ -42,6 +78,7 @@ fn word_diff(x: usize, y: usize) -> i32 {
 /// # Safety
 ///
 /// `a` and `b` must be valid for reads of `n` bytes.
+#[inline(always)]
 pub unsafe fn compare_bytes(mut a: *const u8, mut b: *const u8, mut n: usize) -> i32 {
     if (a as usize) % WORD == (b as usize) % WORD {
         while (a as usize) % WORD != 0 && n > 0 {
@@ -191,7 +228,7 @@ mod c_exports {
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_bytes, set_bytes};
+    use super::{compare_bytes, set_bytes, word_diff};
 
     fn reference(a: &[u8], b: &[u8]) -> i32 {
         for (x, y) in core::iter::zip(a, b) {
@@ -200,6 +237,75 @@ mod tests {
             }
         }
         0
+    }
+
+    /// `word_diff` against the definition it replaced, over every non-empty subset of the
+    /// eight byte positions and both directions of the difference.
+    ///
+    /// The old spelling is written out here rather than referenced so the test stays a
+    /// comparison against an independent implementation.
+    ///
+    /// The sweep covers every non-empty subset of the eight byte positions, not just one
+    /// differing byte at a time. That is the difference between pinning the ladder and
+    /// pinning nothing: with exactly one byte differing, "the lowest differing byte decides"
+    /// and "the highest differing byte decides" agree on every case, so an earlier version of
+    /// this test stayed green when the whole ladder was reversed. `discriminating` counts the
+    /// cases where the two rules disagree, which only a multi-byte difference can produce, so
+    /// it is a guard the generated data has to earn rather than a constant.
+    #[test]
+    fn word_diff_matches_the_shift_spelling() {
+        fn old(x: usize, y: usize) -> i32 {
+            let shift = ((x ^ y).trailing_zeros() / 8) * 8;
+            i32::from((x >> shift) as u8) - i32::from((y >> shift) as u8)
+        }
+
+        // "The highest differing byte decides" -- the rule the ladder must *not* implement.
+        fn highest(x: usize, y: usize) -> i32 {
+            let shift = (usize::BITS - 1 - (x ^ y).leading_zeros()) / 8 * 8;
+            i32::from((x >> shift) as u8) - i32::from((y >> shift) as u8)
+        }
+
+        let mut discriminating = 0usize;
+        for fill in [
+            0x0000_0000_0000_0000u64,
+            0xffff_ffff_ffff_ffff,
+            0x0f1e_2d3c_4b5a_6978,
+            0x8080_8080_8080_8080,
+        ] {
+            for mask in 1u32..=0xff {
+                for delta in [0x01u64, 0xa5] {
+                    // Flip `delta` into every byte position named by `mask`, so differences
+                    // of one through eight bytes are all covered.
+                    // A different amount per position, so the bytes at the lowest and the
+                    // highest differing positions rarely hold the same value -- otherwise the
+                    // two rules coincide numerically even where the positions differ, and the
+                    // sweep discriminates far less than its size suggests.
+                    let mut d = 0u64;
+                    for pos in 0..8usize {
+                        if mask & (1 << pos) != 0 {
+                            let b = (delta as u8).wrapping_mul(pos as u8 * 2 + 1) | 1;
+                            d |= u64::from(b) << (pos * 8);
+                        }
+                    }
+                    let x = fill as usize;
+                    let y = (fill ^ d) as usize;
+                    assert_ne!(x, y, "mask={mask:#x} delta={delta:#x}");
+                    let got = word_diff(x, y);
+                    assert_eq!(got, old(x, y), "mask={mask:#x} delta={delta:#x} fill={fill:#x}");
+                    assert_ne!(got, 0);
+                    // and the mirror, so both signs are covered
+                    assert_eq!(word_diff(y, x), old(y, x));
+                    if got != highest(x, y) {
+                        discriminating += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            discriminating > 900,
+            "only {discriminating} cases distinguish the lowest differing byte from the \
+             highest; the sweep cannot see the ladder's order"
+        );
     }
 
     #[test]
