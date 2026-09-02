@@ -547,22 +547,7 @@ mod fast_receipts {
     }
 }
 
-/// Parity between [`fast_receipts`] and the alloy encoder it replaced.
-///
-/// # Why this test exists
-///
-/// `fast_receipts` is a *fork* of consensus logic: `calculate_receipt_root` and the
-/// `Encodable2718` impl for `ReceiptWithBloom` used to come from alloy, and now a copy of
-/// that encoding lives here. Everything else in this crate that could go wrong fails
-/// loudly the first time it runs. This does not: it stays correct right up until upstream
-/// changes the encoding -- a new transaction type, a field added to a receipt -- at which
-/// point alloy gets updated and this copy silently does not. The failure then is a
-/// receipts-root mismatch on every block, and nothing points at this file.
-///
-/// So the test's job is not to check that the encoder is right today (the nine benchmark
-/// blocks and the header comparison do that). Its job is to **go red when alloy moves**.
-/// If you are here because it failed after a dependency bump, the fix is to bring
-/// `fast_receipts` back in line with `alloy_consensus`, not to relax the test.
+/// `be_len`, the length ladder that replaced `8 - v.leading_zeros() / 8`.
 #[cfg(test)]
 mod fast_receipts_be_len {
     /// `be_len` must agree with `8 - v.leading_zeros() / 8` for every non-zero `v`, since
@@ -604,6 +589,22 @@ mod fast_receipts_be_len {
     }
 }
 
+/// Parity between [`fast_receipts`] and the alloy encoder it replaced.
+///
+/// # Why this test exists
+///
+/// `fast_receipts` is a *fork* of consensus logic: `calculate_receipt_root` and the
+/// `Encodable2718` impl for `ReceiptWithBloom` used to come from alloy, and now a copy of
+/// that encoding lives here. Everything else in this crate that could go wrong fails
+/// loudly the first time it runs. This does not: it stays correct right up until upstream
+/// changes the encoding -- a new transaction type, a field added to a receipt -- at which
+/// point alloy gets updated and this copy silently does not. The failure then is a
+/// receipts-root mismatch on every block, and nothing points at this file.
+///
+/// So the test's job is not to check that the encoder is right today (the nine benchmark
+/// blocks and the header comparison do that). Its job is to **go red when alloy moves**.
+/// If you are here because it failed after a dependency bump, the fix is to bring
+/// `fast_receipts` back in line with `alloy_consensus`, not to relax the test.
 #[cfg(test)]
 mod fast_receipts_parity {
     use alloy_consensus::{proofs::calculate_receipt_root, ReceiptWithBloom, TxReceipt, TxType};

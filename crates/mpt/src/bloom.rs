@@ -175,9 +175,15 @@ impl MemoTable {
     ) -> u64 {
         let p = bytes.as_ptr();
         if !(p as usize).is_multiple_of(8) {
-            // The word loads below need an 8-aligned probe. Both call sites are 8-aligned in
-            // practice (`Log` has alignment 8 and its `address` is at offset 0; topics are a
-            // 32-byte stride inside a `Vec`), so this is a safety net, not a path that runs.
+            // The word loads below need an 8-aligned probe, and the two call sites differ.
+            // A topic comes from a `Vec<B256>`, and `B256` is `[u8; 32]` with alignment 1:
+            // the vector asks the allocator for align 1, and the guest's allocator is a bump
+            // allocator that honours the request exactly, with no minimum, so a topic probe
+            // can genuinely land misaligned and end up here -- losing the memo, not
+            // correctness. An address sits inside a `Vec<Log>`, which on the alloy in use is
+            // 8-aligned with an 80-byte stride and `address` at offset 56, so those come in
+            // aligned; but `Log` is `repr(Rust)` and nothing pins that, which is the other
+            // reason this fallback is not dead code.
             return compute(bytes);
         }
         // SAFETY: `p` is 8-aligned and `bytes` is `N` readable bytes, `N` in {20, 32} by the
