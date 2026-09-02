@@ -44,12 +44,12 @@ const WORD: usize = core::mem::size_of::<usize>();
 fn word_diff(x: usize, y: usize) -> i32 {
     // Spelled out rather than looped or split out. Two other shapes were measured on block
     // 24006677 and both gave most of the win back:
-    //   * bytes 1..8 in a `#[cold] #[inline(never)]` helper: -0.49 M against this shape's
-    //     -1.01 M, because the call makes `memcmp` save `ra` -- two instructions in the
-    //     prologue and two in every epilogue, on all 105,382 calls;
-    //   * a `while i < WORD` loop: -0.03 M, because the extra counter pushed `compare_bytes`
-    //     past LLVM's inlining threshold and `memcmp` became an eight-instruction thunk.
-    //     `compare_bytes` carries `#[inline(always)]` now so that cannot come back.
+    //   * bytes 1..8 in a `#[cold] #[inline(never)]` helper: -0.49 M against this shape's -1.01 M,
+    //     because the call makes `memcmp` save `ra` -- two instructions in the prologue and two in
+    //     every epilogue, on all 105,382 calls;
+    //   * a `while i < WORD` loop: -0.03 M, because the extra counter pushed `compare_bytes` past
+    //     LLVM's inlining threshold and `memcmp` became an eight-instruction thunk. `compare_bytes`
+    //     carries `#[inline(always)]` now so that cannot come back.
     macro_rules! byte_step {
         ($k:expr) => {{
             let xb = (x >> ($k * 8)) as u8;

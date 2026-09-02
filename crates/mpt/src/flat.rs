@@ -1695,8 +1695,7 @@ impl<'a> FlatTrieView<'a> {
                 Out::Empty => 1,
             };
             delta += new_len as isize - (hi - lo) as isize;
-            count = count - usize::from(was_non_empty)
-                + usize::from(matches!(out, Out::Enc(_)));
+            count = count - usize::from(was_non_empty) + usize::from(matches!(out, Out::Enc(_)));
             rebuilt[slot] = Some(out);
         }
 

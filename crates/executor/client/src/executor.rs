@@ -58,8 +58,7 @@ where
         let (views, accounts, block_hashes, bytecodes_by_hash) =
             profile_report!(INIT_WITNESS_DB, {
                 let (views, accounts) = input.verified_views().unwrap();
-                let (block_hashes, bytecodes_by_hash) =
-                    input.witness_aux(&sealed_headers).unwrap();
+                let (block_hashes, bytecodes_by_hash) = input.witness_aux(&sealed_headers).unwrap();
                 (views, accounts, block_hashes, bytecodes_by_hash)
             });
         let db = WrapDatabaseRef(TrieDB::new(&views, accounts, block_hashes, bytecodes_by_hash));

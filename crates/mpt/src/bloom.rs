@@ -159,9 +159,7 @@ impl MemoTable {
             // 8-aligned, so the `u32` read is aligned; four `lbu` and a shift/or chain
             // become one `lwu`. Nothing past byte 20 is touched.
             // SAFETY: `p` is 8-aligned with 20 readable bytes.
-            unsafe {
-                (q.read(), q.add(1).read(), u64::from(p.add(16).cast::<u32>().read()), 0)
-            }
+            unsafe { (q.read(), q.add(1).read(), u64::from(p.add(16).cast::<u32>().read()), 0) }
         }
     }
 
@@ -191,11 +189,11 @@ impl MemoTable {
         // One or-reduced xor rather than `e.key == [w0, w1, w2, w3]`: array equality lowers
         // to a `bcmp` libcall on `riscv64im-pico-zkvm-elf` (no unaligned scalar access, so
         // LLVM never expands it inline), and that libcall cost more than the hash it saved.
-        let diff = (e.key[0] ^ w0)
-            | (e.key[1] ^ w1)
-            | (e.key[2] ^ w2)
-            | (e.key[3] ^ w3)
-            | (e.len ^ N as u64);
+        let diff = (e.key[0] ^ w0) |
+            (e.key[1] ^ w1) |
+            (e.key[2] ^ w2) |
+            (e.key[3] ^ w3) |
+            (e.len ^ N as u64);
         if diff == 0 {
             return e.val;
         }
@@ -478,7 +476,6 @@ mod tests {
         assert_eq!(calls.get() - before, 1, "an empty slot must not match an all-zero key");
     }
 
-
     /// `ops_from_digest` + `apply_ops` must set exactly the bits `Bloom::m3_2048` sets, for
     /// every digest shape. Swept over random digests plus the boundary values of the 11-bit
     /// index (0 and 0x7FF in each of the three positions).
@@ -504,11 +501,11 @@ mod tests {
         assert_eq!(checked, 400, "the ops sweep did not run in full");
         // And directly on the packing: a digest whose first six bytes are all zero sets bit 0
         // three times (byte 255, mask 1); all-ones sets bit 0x7FF three times (byte 0, 0x80).
-        assert_eq!(ops_from_digest(0), (255) | (1 << 8) | (255 << 16) | (1 << 24) | (255 << 32) | (1 << 40));
         assert_eq!(
-            ops_from_digest(u64::MAX),
-            (0x80 << 8) | (0x80 << 24) | (0x80 << 40)
+            ops_from_digest(0),
+            (255) | (1 << 8) | (255 << 16) | (1 << 24) | (255 << 32) | (1 << 40)
         );
+        assert_eq!(ops_from_digest(u64::MAX), (0x80 << 8) | (0x80 << 24) | (0x80 << 40));
     }
     /// `load_words` must be the identity on the bytes it packs, for both shapes the guest
     /// uses, so that "equal words" really is "equal bytes".
