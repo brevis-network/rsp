@@ -239,14 +239,19 @@ mod tests {
         0
     }
 
-    /// `word_diff` against the definition it replaced, for every differing-byte position in a
-    /// word and both directions of the difference.
+    /// `word_diff` against the definition it replaced, over every non-empty subset of the
+    /// eight byte positions and both directions of the difference.
     ///
     /// The old spelling is written out here rather than referenced so the test stays a
-    /// comparison against an independent implementation. The case counter and the
-    /// `high_path` counter are asserted so the test cannot pass by exercising nothing: 8
-    /// positions x 2 directions x 4 fill patterns = 64 cases, 56 of which must walk past byte 0
-    /// into the unrolled ladder.
+    /// comparison against an independent implementation.
+    ///
+    /// The sweep covers every non-empty subset of the eight byte positions, not just one
+    /// differing byte at a time. That is the difference between pinning the ladder and
+    /// pinning nothing: with exactly one byte differing, "the lowest differing byte decides"
+    /// and "the highest differing byte decides" agree on every case, so an earlier version of
+    /// this test stayed green when the whole ladder was reversed. `discriminating` counts the
+    /// cases where the two rules disagree, which only a multi-byte difference can produce, so
+    /// it is a guard the generated data has to earn rather than a constant.
     #[test]
     fn word_diff_matches_the_shift_spelling() {
         fn old(x: usize, y: usize) -> i32 {
@@ -254,30 +259,53 @@ mod tests {
             i32::from((x >> shift) as u8) - i32::from((y >> shift) as u8)
         }
 
-        let mut cases = 0usize;
-        let mut high_path = 0usize;
-        for fill in [0x0000_0000_0000_0000u64, 0xffff_ffff_ffff_ffff, 0x0f1e_2d3c_4b5a_6978, 0x8080_8080_8080_8080] {
-            for pos in 0..8usize {
+        // "The highest differing byte decides" -- the rule the ladder must *not* implement.
+        fn highest(x: usize, y: usize) -> i32 {
+            let shift = (usize::BITS - 1 - (x ^ y).leading_zeros()) / 8 * 8;
+            i32::from((x >> shift) as u8) - i32::from((y >> shift) as u8)
+        }
+
+        let mut discriminating = 0usize;
+        for fill in [
+            0x0000_0000_0000_0000u64,
+            0xffff_ffff_ffff_ffff,
+            0x0f1e_2d3c_4b5a_6978,
+            0x8080_8080_8080_8080,
+        ] {
+            for mask in 1u32..=0xff {
                 for delta in [0x01u64, 0xa5] {
+                    // Flip `delta` into every byte position named by `mask`, so differences
+                    // of one through eight bytes are all covered.
+                    // A different amount per position, so the bytes at the lowest and the
+                    // highest differing positions rarely hold the same value -- otherwise the
+                    // two rules coincide numerically even where the positions differ, and the
+                    // sweep discriminates far less than its size suggests.
+                    let mut d = 0u64;
+                    for pos in 0..8usize {
+                        if mask & (1 << pos) != 0 {
+                            let b = (delta as u8).wrapping_mul(pos as u8 * 2 + 1) | 1;
+                            d |= u64::from(b) << (pos * 8);
+                        }
+                    }
                     let x = fill as usize;
-                    // Flip only bytes at or above `pos` is wrong -- the contract is that the
-                    // *lowest* differing byte decides, so change exactly one byte.
-                    let y = (fill ^ (delta << (pos * 8))) as usize;
-                    assert_ne!(x, y, "pos={pos} delta={delta:#x}");
+                    let y = (fill ^ d) as usize;
+                    assert_ne!(x, y, "mask={mask:#x} delta={delta:#x}");
                     let got = word_diff(x, y);
-                    assert_eq!(got, old(x, y), "pos={pos} delta={delta:#x} fill={fill:#x}");
+                    assert_eq!(got, old(x, y), "mask={mask:#x} delta={delta:#x} fill={fill:#x}");
                     assert_ne!(got, 0);
                     // and the mirror, so both signs are covered
                     assert_eq!(word_diff(y, x), old(y, x));
-                    cases += 1;
-                    if pos != 0 {
-                        high_path += 1;
+                    if got != highest(x, y) {
+                        discriminating += 1;
                     }
                 }
             }
         }
-        assert_eq!(cases, 64, "the loop nest stopped covering what it claims to");
-        assert_eq!(high_path, 56, "the out-of-line ladder was not exercised");
+        assert!(
+            discriminating > 900,
+            "only {discriminating} cases distinguish the lowest differing byte from the \
+             highest; the sweep cannot see the ladder's order"
+        );
     }
 
     #[test]
