@@ -146,7 +146,7 @@ async fn run_e2e<C, CS, N>(
 
     // Execute the host.
     let client_input = host_executor
-        .execute(block_number, &provider, genesis.clone(), custom_beneficiary, false)
+        .execute(block_number, &provider, genesis.clone(), custom_beneficiary, false, &None)
         .await
         .expect("failed to execute host");
 
@@ -157,5 +157,5 @@ async fn run_e2e<C, CS, N>(
     let buffer = bincode::serialize(&client_input).unwrap();
 
     // Load the client input from a buffer.
-    let _: ClientExecutorInput<C::Primitives> = bincode::deserialize(&buffer).unwrap();
+    let _: ClientExecutorInput<'_, C::Primitives> = bincode::deserialize(&buffer).unwrap();
 }
