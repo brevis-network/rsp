@@ -169,6 +169,13 @@ pub unsafe fn set_bytes(dst: *mut u8, c: u8, n: usize) {
     }
 
     let words = n / WORD;
+    // The head fixup above is what makes these stores aligned, and on this target that is a
+    // correctness requirement, not a preference: `riscv64im-pico-zkvm-elf` has no misaligned
+    // scalar access. Nothing on the host notices if it goes away -- `ptr::write` is not
+    // covered by rustc's debug misaligned-pointer check (the *read* in `compare_bytes` is,
+    // which is why that one is caught), and x86/ARM perform the unaligned store anyway with
+    // identical results. Setting `head = 0` leaves every test in this crate green.
+    debug_assert!(d as usize % WORD == 0, "set_bytes word stores must be aligned");
     let mut p = d.cast::<usize>();
     let mut k = words;
     while k >= 4 {
