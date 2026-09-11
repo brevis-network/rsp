@@ -218,3 +218,41 @@ fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoO
 
     EthEvmBuilder::new(db, input).precompiles(precompiles)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::database::EmptyDB;
+
+    /// The transaction nonce check must be **on**.
+    ///
+    /// This is one line of configuration with a history: `evm_builder` set
+    /// `disable_nonce_check = true` from `a005ee4` until `adca0d2`, and it was not inherited from
+    /// anywhere -- revm's default is `false`, upstream `succinctlabs/rsp` never sets it, and
+    /// upstream's `custom.rs` does not contain the line at all. It arrived inside a 95-insertion
+    /// "sync upstream" change and nothing noticed for months.
+    ///
+    /// For replaying a canonical block the check is redundant: a transaction whose nonce is wrong
+    /// moves either the transactions root or the parent state root, and both are checked. It
+    /// matters when the header is *not* known to be canonical, where the root checks only
+    /// establish that the input is self-consistent.
+    ///
+    /// Asserted through the public factory rather than on `evm_builder` directly, so it covers
+    /// what callers actually get.
+    #[test]
+    fn the_transaction_nonce_check_is_on() {
+        let db: EmptyDB = EmptyDB::default();
+        let evm = CustomEvmFactory::new(None).create_evm(db, EvmEnv::default());
+        assert!(!evm.ctx().cfg.disable_nonce_check, "disable_nonce_check was turned back on");
+    }
+
+    /// And that revm's default is what the line above relies on. The sibling `CfgEnv` escape
+    /// hatches (`disable_balance_check`, `disable_eip3607`, `disable_base_fee`, ...) are all
+    /// behind revm `optional_*` features that this workspace does not enable, so they cannot be
+    /// set at all; `disable_nonce_check` is the one that is always present, which is why it has
+    /// to be written out rather than left to the default.
+    #[test]
+    fn revm_default_leaves_the_nonce_check_on() {
+        assert!(!CfgEnv::<SpecId>::default().disable_nonce_check);
+    }
+}

@@ -893,7 +893,7 @@ mod tests {
     use reth_trie::{HashedPostState, HashedStorage, TrieAccount};
 
     use super::*;
-    use crate::mpt::KECCAK_EMPTY;
+    use crate::mpt::{MptNodeReference, KECCAK_EMPTY};
 
     fn keccak_trie(n: usize) -> MptNode {
         let mut trie = MptNode::default();
@@ -1165,6 +1165,90 @@ mod tests {
             .map(|(k, v)| (B256::from(*k), v.map(|v| alloy_rlp::encode(v))))
             .collect();
         assert_eq!(view.delta_root(&changes).unwrap(), full.hash());
+    }
+
+    /// A trie whose branch children are **inline** nodes rather than 32-byte digests.
+    ///
+    /// Every `keccak_trie` key is a hash, so its leaves sit two to five nibbles deep and carry
+    /// ~30 bytes of remaining path; each one encodes well over 32 bytes and therefore enters its
+    /// parent as `0xa0` + a digest. So `apply_branch`'s bounds scan only ever sees the
+    /// short-string form, and the short-*list* arm that decodes an inlined child's length never
+    /// runs. Instrumenting the four arms over the whole crate's tests gave `[0, 4864, 0, 0]`, and
+    /// a mutation of that arm consequently survived every test here.
+    ///
+    /// Keys sharing a 60-nibble prefix fix that: the branch lands at nibble 60, so each leaf has
+    /// three nibbles of path (two compact bytes) and a one-byte value, encoding to six bytes --
+    /// under the 32-byte inlining threshold.
+    ///
+    /// The other two arms stay at zero on purpose, and that is not a gap. A branch child is an
+    /// empty string, a 32-byte digest or an inlined node, so it can never be a lone byte below
+    /// `0x80` (`0x00..=0x7f`), and it can never need a multi-byte length header
+    /// (`0xb8..=0xbf`/`0xf8..=0xff`): a >55-byte string is not a child shape, and an inline node
+    /// is by definition under 32 bytes. Both arms exist only because `rlp_item_len` has them.
+    fn inline_child_trie() -> (MptNode, Vec<[u8; 32]>) {
+        let mut trie = MptNode::default();
+        let mut keys = Vec::new();
+        for i in 0..16usize {
+            let mut k = [0xABu8; 32];
+            // Nibble 60 is the high nibble of byte 30, and that is what the branch splits on.
+            k[30] = (i as u8) << 4;
+            k[31] = i as u8;
+            trie.insert_rlp(&k, 0u8).unwrap();
+            keys.push(k);
+        }
+        (trie, keys)
+    }
+
+    #[test]
+    fn delta_root_parity_with_inline_children() {
+        let (trie, keys) = inline_child_trie();
+
+        // The premise of the test, asserted rather than assumed: the children of the branch this
+        // exercises really are inlined. `MptNodeReference::Bytes` is exactly "this node entered
+        // its parent verbatim because its encoding is under 32 bytes"; `Digest` is the other
+        // case. If a future change to the leaf encoding pushes these over the threshold, this
+        // fails here instead of silently going back to covering nothing.
+        let MptNodeData::Extension(_, inner) = trie.as_data() else {
+            panic!("expected a 60-nibble extension at the root")
+        };
+        let MptNodeData::Branch(children) = inner.as_data() else {
+            panic!("expected a branch under the extension")
+        };
+        let inlined = children
+            .iter()
+            .flatten()
+            .filter(|c| matches!(c.reference(), MptNodeReference::Bytes(_)))
+            .count();
+        assert_eq!(inlined, 16, "every child of this branch should be inlined");
+
+        let bytes = flatten_trie(&trie);
+        let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
+        assert_eq!(view.root_hash, trie.hash());
+        for k in &keys {
+            assert_eq!(view.get(k).unwrap(), trie.get(k).unwrap());
+        }
+
+        // Mixed batch over that branch: updates, deletes and an insert, so the rebuild has
+        // several changed slots and the splice walks inline items.
+        let mut ops: Vec<([u8; 32], Option<u64>)> = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            if i % 3 == 0 {
+                ops.push((*k, Some(7)));
+            } else if i % 3 == 1 {
+                ops.push((*k, None));
+            }
+        }
+        let mut fresh = [0xABu8; 32];
+        fresh[30] = 0x51;
+        fresh[31] = 0x99;
+        ops.push((fresh, Some(3)));
+        delta_parity_case(&trie, &ops);
+
+        // And one where the branch collapses to a single survivor.
+        let mut all_but_one: Vec<([u8; 32], Option<u64>)> =
+            keys.iter().skip(1).map(|k| (*k, None)).collect();
+        all_but_one.push((keys[0], Some(9)));
+        delta_parity_case(&trie, &all_but_one);
     }
 
     #[test]
