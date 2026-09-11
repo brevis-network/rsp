@@ -1706,11 +1706,14 @@ impl<'a> FlatTrieView<'a> {
         // end of a slot in the splice. Both panic.
         //
         // But not every violation does. Revisiting a slot runs the `count` update below a
-        // second time for it, and `count - 1 + 1` starting from 0 passes through `usize::MAX`
-        // with overflow checks off and lands back on 0. That reaches the `count <= 1` collapse
-        // path holding a `rebuilt` array that has lost a slot -- and that path never reads
-        // `touched`, so it returns a wrong root with no panic. Rare, but enough that "a bounds
-        // panic rather than a wrong answer" is not a claim this can make.
+        // second time for it, which can leave `count` anywhere at or below 1 -- including 0 by
+        // way of `count - 1 + 1` wrapping through `usize::MAX` with overflow checks off, but
+        // landing on 1 by ordinary arithmetic is the commoner route: over a 4,000-case sweep of
+        // unsorted lists, 53 of the 64 revisits that reached the gate arrived with `count == 1`
+        // and only 11 with `count == 0`. Either way it reaches the `count <= 1` collapse path
+        // holding a `rebuilt` array that has lost a slot -- and that path never reads `touched`,
+        // so it returns a wrong root with no panic. Rare, but enough that "a bounds panic rather
+        // than a wrong answer" is not a claim this can make.
         //
         // Neither outcome is a soundness problem for the caller -- this is the post-state
         // root, compared against the header immediately afterwards, not the witness
@@ -1773,6 +1776,20 @@ impl<'a> FlatTrieView<'a> {
             while idx < changes.len() && changes[idx].0[0] == slot as u8 {
                 idx += 1;
             }
+            // The precondition above, as a guard that survives into the guest. One compare
+            // per *run* -- 1.18 per branch on mainnet block 24006677, not one per slot --
+            // which is why this can afford to be an `assert!` where the full
+            // `changes.windows(2)` test above cannot: that one is O(changes) at every depth
+            // of the recursion.
+            //
+            // It covers both failure modes the note above describes: more than 16 runs
+            // overrunning `touched`, and a revisited slot running the `count` update twice
+            // and reaching the `count <= 1` collapse path with a `rebuilt` array that has
+            // lost a slot -- the one that returns a wrong root without panicking.
+            assert!(
+                ntouched == 0 || slot > touched[ntouched - 1] as usize,
+                "apply_branch requires `changes` sorted by key"
+            );
             changed[slot] = true;
             touched[ntouched] = slot as u8;
             ntouched += 1;

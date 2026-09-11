@@ -47,4 +47,25 @@ cargo +pico build --release \
 
 mkdir -p elf
 cp target/riscv64im-pico-zkvm-elf/release/reth-pico elf/riscv64im-pico-zkvm-elf
+
+# Assert the `--wrap=memset` above actually took, because losing it is otherwise silent:
+# `cargo pico build` still succeeds, still produces a *correct* guest, and just costs ~7 M
+# retired instructions a block. That is the failure this script's header warns about, and
+# until now nothing checked for it.
+#
+# `llvm-nm` comes with the pico toolchain, so this needs nothing installed. With the flag,
+# `rsp-guest-mem`'s `__wrap_memset` is in the symbol table and every `memset` call site has
+# been redirected to it; without it, the symbol is absent and `compiler_builtins`' `memset`
+# is what runs. `memcmp`/`bcmp` need no check -- they are picked up by defining the symbols.
+NM="$(rustc +pico --print sysroot)/lib/rustlib/$(rustc +pico -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+if [ -x "$NM" ]; then
+    if ! "$NM" elf/riscv64im-pico-zkvm-elf | grep -q '__wrap_memset'; then
+        echo "ERROR: __wrap_memset is not in the ELF, so --wrap=memset was dropped." >&2
+        echo "       The guest is correct but ~7 M retired instructions a block slower." >&2
+        exit 1
+    fi
+else
+    echo "warning: llvm-nm not found at $NM; skipped the --wrap=memset check" >&2
+fi
+
 echo "guest ELF: $(pwd)/elf/riscv64im-pico-zkvm-elf"
