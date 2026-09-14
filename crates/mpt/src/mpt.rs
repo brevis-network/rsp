@@ -663,6 +663,17 @@ pub(crate) unsafe fn keccak256_sponge_into(
                 *carry = c;
             }
 
+            // The guard above is a *memory-safety* guard, not a correctness one, and no test
+            // can see the difference: the stream's last aligned word reaches `r - 1` bytes
+            // past the absorbed region, but those bytes only ever land in `carry`, which is
+            // dead after the final block. So the digest is right either way, and removing
+            // the `data.len() - nblocks * RATE >= r` half of the condition leaves the whole
+            // 8-alignment x 420-length sweep green while reading out of bounds. This says
+            // what the guard is for, in a form the tests do check.
+            debug_assert!(
+                data.len() >= nblocks * RATE + r,
+                "the shifted stream reads r bytes past the absorbed region"
+            );
             let sl = (r * 8) as u32;
             let sr = (off * 8) as u32;
             // SAFETY: `p` has `RATE * nblocks + r` readable bytes by the guard above, so
