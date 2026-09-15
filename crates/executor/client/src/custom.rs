@@ -2,7 +2,7 @@
 //!
 //! Originally from: https://github.com/paradigmxyz/alphanet/blob/main/crates/node/src/evm.rs.
 //!
-//! The [CustomEvmConfig] type implements the [ConfigureEvm] and [ConfigureEvmEnv] traits,
+//! The `CustomEvmConfig` type implements reth's `ConfigureEvm` and `ConfigureEvmEnv` traits,
 //! configuring the custom CustomEvmConfig precompiles and instructions.
 
 use alloy_evm::{eth::EthEvmBuilder, EthEvm};

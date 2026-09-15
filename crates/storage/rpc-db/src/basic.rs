@@ -22,7 +22,7 @@ use tracing::debug;
 
 use crate::{error::RpcDbError, RpcDb};
 
-/// A database that fetches data from a [Provider] over a [Transport].
+/// A database that fetches data from an alloy `Provider` over a `Transport`.
 #[derive(Debug, Clone)]
 pub struct BasicRpcDb<P, N> {
     /// The provider which fetches data.

@@ -752,7 +752,8 @@ impl<'a> FlatTrieView<'a> {
         }
     }
 
-    /// Materializes a sparse [`MptNode`] overlay containing the full paths for every key in
+    /// Materializes a sparse `MptNode` overlay (the module-private node graph) containing the
+    /// full paths for every key in
     /// `keys` (`(hashed_key, is_delete)`); everything off-path stays a digest stub. For delete
     /// keys, the remaining sibling of any 2-child branch on the path is materialized one level
     /// deep so that branch-collapse during `delete()` sees its real shape.

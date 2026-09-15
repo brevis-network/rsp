@@ -775,6 +775,111 @@ mod fast_receipts_parity {
         assert!(long_data > 0, "no log payload in RLP's long-string form was generated");
     }
 
+    /// The two ladders the block corpus never climbs: RLP's **long-form length header above
+    /// two bytes**, and **three-byte `rlp(index)` trie keys**.
+    ///
+    /// Both are mainnet-reachable and neither was covered. The generator above tops out at a
+    /// 300-byte log payload and a 200-receipt block, so -- measured independently from the
+    /// encoder side and the generator side, both landing on `max_logs_list_payload = 1199` --
+    /// nothing ever produced a payload near the 65,536 threshold where `header_len` goes to
+    /// four bytes, and nothing produced a block with 256 receipts, where the trie key goes to
+    /// three. A 64 KB log costs about 524 K gas, which is one transaction; blocks with more
+    /// than 256 transactions are routine.
+    ///
+    /// What that left unguarded: two one-token, length-preserving mutants of the ladder change
+    /// six receipts roots and leave the rest of the suite green. The code is correct there
+    /// today. Nothing was holding it.
+    ///
+    /// The assertions at the bottom are on what was actually produced, not on loop counts: a
+    /// count would hold however short the payloads were, which is precisely how this gap
+    /// survived.
+    #[test]
+    fn receipts_root_over_long_payloads_and_large_blocks() {
+        let mut rng = Rng(0x0BAD_C0DE_1234_5678);
+        let mut max_payload = 0usize;
+        let mut max_receipts = 0usize;
+
+        // (a) One log per receipt, with a data length sitting on each rung of `header_len`'s
+        // ladder and on both sides of it. 55/56 is the short-to-long edge, 255/256 is where
+        // the length needs two bytes, 65,535/65,536 is where it needs three -- the rung the
+        // corpus never reaches.
+        for &len in &[
+            0usize, 1, 55, 56, 57, 254, 255, 256, 257, 1_000, 65_534, 65_535, 65_536, 65_537,
+            70_000,
+        ] {
+            let topics: Vec<B256> = (0..3).map(|_| B256::from_slice(&rng.bytes(32))).collect();
+            let log = Log {
+                address: Address::from_slice(&rng.bytes(20)),
+                data: LogData::new_unchecked(topics, Bytes::from(rng.bytes(len))),
+            };
+            max_payload = max_payload.max(len);
+            for (i, &ty) in ALL_TX_TYPES.iter().enumerate() {
+                let r = Receipt {
+                    tx_type: ty,
+                    success: i % 2 == 0,
+                    cumulative_gas_used: 21_000 * (i as u64 + 1),
+                    logs: std::vec![log.clone()],
+                };
+                let with_bloom = std::vec![ReceiptWithBloom::new(&r, TxReceipt::bloom(&r))];
+                assert_eq!(
+                    super::fast_receipts::receipts_root(&with_bloom),
+                    calculate_receipt_root(&with_bloom),
+                    "receipts root diverged at log data length {len}, tx type {ty:?}"
+                );
+            }
+        }
+
+        // ... and the same lengths in a block, so the *receipt* payload -- not just the log's
+        // -- crosses the rung too.
+        for &len in &[56usize, 300, 65_536] {
+            let receipts: Vec<Receipt> = (0..4usize)
+                .map(|i| {
+                    let topics: Vec<B256> =
+                        (0..(i % 5)).map(|_| B256::from_slice(&rng.bytes(32))).collect();
+                    Receipt {
+                        tx_type: tx_type(i),
+                        success: true,
+                        cumulative_gas_used: 1_000_000 * (i as u64 + 1),
+                        logs: std::vec![Log {
+                            address: Address::from_slice(&rng.bytes(20)),
+                            data: LogData::new_unchecked(topics, Bytes::from(rng.bytes(len))),
+                        }],
+                    }
+                })
+                .collect();
+            let with_bloom: Vec<ReceiptWithBloom<&Receipt>> =
+                receipts.iter().map(|r| ReceiptWithBloom::new(r, TxReceipt::bloom(r))).collect();
+            assert_eq!(
+                super::fast_receipts::receipts_root(&with_bloom),
+                calculate_receipt_root(&with_bloom),
+                "receipts root diverged for a block of 64 KB logs at length {len}"
+            );
+        }
+
+        // (b) Block sizes across the trie-key ladder. `rlp(index)` is one byte below 0x80,
+        // two up to 0xff, and **three** from 0x100 -- which needs 256 receipts.
+        for &n in &[127usize, 128, 129, 254, 255, 256, 257, 300, 512] {
+            let receipts: Vec<Receipt> = (0..n).map(|i| receipt(&mut rng, i)).collect();
+            let with_bloom: Vec<ReceiptWithBloom<&Receipt>> =
+                receipts.iter().map(|r| ReceiptWithBloom::new(r, TxReceipt::bloom(r))).collect();
+            max_receipts = max_receipts.max(n);
+            assert_eq!(
+                super::fast_receipts::receipts_root(&with_bloom),
+                calculate_receipt_root(&with_bloom),
+                "receipts root diverged for a block of {n} receipts"
+            );
+        }
+
+        assert!(
+            max_payload >= 65_536,
+            "the long-form header above two length bytes was not reached ({max_payload})"
+        );
+        assert!(
+            max_receipts >= 256,
+            "three-byte rlp(index) trie keys were not reached ({max_receipts})"
+        );
+    }
+
     /// The empty case, which `receipts_root` short-circuits.
     #[test]
     fn empty_receipts_root_matches_alloy() {

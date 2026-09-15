@@ -7,7 +7,7 @@ use revm::database::{states::bundle_state::BundleRetention, State};
 
 use crate::custom::OpCodeTrackingInspector;
 
-/// A generic block executor that uses a [`BlockExecutionStrategy`] to
+/// A generic block executor that uses reth's `BlockExecutionStrategy` to
 /// execute blocks.
 #[allow(missing_debug_implementations, dead_code)]
 pub struct OpCodesTrackingBlockExecutor<C, DB> {

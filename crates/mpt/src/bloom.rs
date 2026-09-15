@@ -10,12 +10,12 @@
 //! What alloy's version costs on top of those hashes is 238.8 retired instructions per log,
 //! and none of it is the bloom arithmetic:
 //!
-//! * `Bloom::accrue_raw_log(address: Address, ..)` takes the address **by value**. `Address`
-//!   is `[u8; 20]` with alignment 1, so the copy into the callee's slot is 20 `lbu` plus 20
-//!   `sb`. Hashing it straight out of the `Log` needs no copy at all.
-//! * `m3_2048` goes through `keccak256(bytes) -> B256`. `B256` is alignment 1 too, so the
-//!   digest is written to the caller's slot with a 28-`srli`/32-`sb` scatter — and then only
-//!   its first six bytes are ever read.
+//! * `Bloom::accrue_raw_log(address: Address, ..)` takes the address **by value**. `Address` is
+//!   `[u8; 20]` with alignment 1, so the copy into the callee's slot is 20 `lbu` plus 20 `sb`.
+//!   Hashing it straight out of the `Log` needs no copy at all.
+//! * `m3_2048` goes through `keccak256(bytes) -> B256`. `B256` is alignment 1 too, so the digest is
+//!   written to the caller's slot with a 28-`srli`/32-`sb` scatter — and then only its first six
+//!   bytes are ever read.
 //!
 //! This module reads those six bytes as one aligned `u64` out of a slot it owns, and the bit
 //! arithmetic is byte-for-byte alloy's (see [`m3_2048`]). `bloom_parity` checks that against
@@ -123,10 +123,17 @@ struct MemoEntry {
 /// remembered.
 ///
 /// A hit requires the stored key to equal the probe *byte for byte* (`len` included), so a
-/// slot collision costs a rehash and can never produce a wrong digest. That is what keeps
-/// this sound: the bloom feeds both the receipts root and the header comparison, so a wrong
-/// digest would not silently pass — but it would break correct blocks, and no hash-only
-/// fingerprint is used here.
+/// slot collision costs a rehash and can never produce a wrong digest. **That exact compare is
+/// the whole soundness argument, and it must stay exact.**
+///
+/// The sentence this replaces said a wrong digest "would not silently pass" because the bloom
+/// feeds the receipts root and the header comparison. That is the mistake `executor.rs:118`
+/// makes elsewhere: the logs bloom and the receipts root are *prover-supplied wire fields*, so
+/// the comparison says the input is self-consistent, not that it is a canonical block. Under
+/// the real trust model, replacing the five-term compare with a 64-bit fingerprint is a
+/// birthday search over attacker-chosen topics -- roughly 2^32 work to find two topics that
+/// share a slot and a fingerprint, after which the memo answers one with the other's digest
+/// and the prover writes the matching bloom into the header.
 #[repr(C)]
 #[allow(dead_code)]
 struct MemoTable {
@@ -305,10 +312,7 @@ mod tests {
                         let address = Address::from_slice(&rng.bytes(20));
                         let topics: Vec<B256> =
                             (0..n_topics).map(|_| B256::from_slice(&rng.bytes(32))).collect();
-                        Log {
-                            address,
-                            data: LogData::new_unchecked(topics, rng.bytes(13).into()),
-                        }
+                        Log { address, data: LogData::new_unchecked(topics, rng.bytes(13).into()) }
                     })
                     .collect();
                 let mut expected = Bloom::ZERO;

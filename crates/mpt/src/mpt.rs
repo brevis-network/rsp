@@ -756,7 +756,8 @@ pub(crate) unsafe fn keccak256_sponge_into(
 ///
 /// The trie-verification pass hashes every node blob and then either compares the digest
 /// against a reference or stores it; going through a `[u8; 32]` return value costs it the
-/// 28 `srli` + 32 `sb` scatter described on [`keccak_into`].
+/// 28 `srli` + 32 `sb` scatter described on `keccak_into` (guest-only, so rustdoc cannot
+/// resolve it from a host build).
 #[inline]
 pub(crate) fn keccak_into_b256(data: &[u8], out: &mut B256) {
     #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
