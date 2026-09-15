@@ -84,6 +84,18 @@ impl<P: NodePrimitives> ClientExecutorInput<'_, P> {
         <Self as WitnessInput>::witness_aux(self, sealed_headers)
     }
 
+    /// A digest over every wire field that changes execution and is invisible in the committed
+    /// header. See [`CommittedHeader`].
+    ///
+    /// Domain-separated and length-delimited by bincode's own framing: the three values are
+    /// serialised as one tuple, so no two different configurations share an encoding.
+    pub fn config_digest(&self) -> B256 {
+        let encoded =
+            bincode::serialize(&(&self.genesis, &self.custom_beneficiary, self.opcode_tracking))
+                .expect("the configuration is serializable");
+        keccak256(encoded)
+    }
+
     /// Converts any borrowed wire bytes into owned buffers.
     pub fn into_owned(self) -> ClientExecutorInput<'static, P> {
         ClientExecutorInput {
@@ -121,17 +133,56 @@ impl<P: NodePrimitives> WitnessInput for ClientExecutorInput<'_, P> {
     }
 }
 
-// The headed committed at the end of execution
+/// What the guest commits at the end of execution: the derived header, **and a digest of the
+/// wire fields that change execution but are invisible in it**.
+///
+/// # Why the second field exists
+///
+/// The header alone does not identify the statement being proved. `executor.rs` compares the
+/// recomputed state root against `input.current_block.header().state_root()` -- a
+/// prover-supplied wire field -- and then puts the *computed* root into the header it commits;
+/// every other field is copied verbatim from the prover's block header. So the header says
+/// "this input is self-consistent", not "this is mainnet block N". A verifier that pins the
+/// full header hash against a canonical block closes most of that, but three wire fields
+/// change execution and leave **no trace in the header at all**:
+///
+/// * [`ClientExecutorInput::genesis`] becomes the entire `ChainSpec` -- chain id, every hardfork
+///   activation, blob params. Executed: the same `chainId: 1` with the fork ladder lowered flips
+///   all five forks, PRAGUE gas 23605 against ISTANBUL 21705, with the difference landing in the
+///   beneficiary's balance. Sharper still, `chainId 59144` reaches `handle_custom_chains`, which
+///   turns `ConsensusError::ExtraDataExceedsMax` and `TheMergeDifficultyIsNotZero` into `Ok(())` --
+///   a wire field that switches off two consensus rejection conditions.
+/// * [`ClientExecutorInput::custom_beneficiary`] overwrites `block_env.beneficiary` for the whole
+///   block (and changes EIP-3651 warming and `COINBASE`), while the committed header takes
+///   `beneficiary` from the block header. Executed: the entire 21,000,000,000,000 wei tip moves to
+///   an address of the prover's choosing, and nothing compares the two.
+/// * [`ClientExecutorInput::opcode_tracking`] selects a different execution path (an inspector
+///   frame, which also disables the dispatch loop's `JUMPDEST` fusion).
+///
+/// Committing a digest of the three makes the proof say which configuration it ran under. It
+/// does not decide what a verifier should *accept* -- that is an integration policy, and it is
+/// the question this fixes the tree so it can be asked: a verifier can now pin the digest to
+/// the one value its chain is supposed to use.
+///
+/// # Compatibility
+///
+/// This changes the public values the guest commits, and therefore the verifier contract.
+/// There is no way to bind these fields without doing that, since by construction they leave
+/// no trace anywhere else.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommittedHeader {
     #[serde_as(as = "alloy_consensus::serde_bincode_compat::Header")]
     pub header: Header,
+    /// `keccak256` of the bincode encoding of `(genesis, custom_beneficiary, opcode_tracking)`;
+    /// see [`ClientExecutorInput::config_digest`].
+    pub config_digest: B256,
 }
 
-impl From<Header> for CommittedHeader {
-    fn from(header: Header) -> Self {
-        CommittedHeader { header }
+impl CommittedHeader {
+    /// Builds the committed value from a derived header and the configuration it ran under.
+    pub fn new(header: Header, config_digest: B256) -> Self {
+        Self { header, config_digest }
     }
 }
 
@@ -335,64 +386,79 @@ pub trait WitnessInput {
 
 /// Compact wire format for account bytecodes.
 ///
-/// revm's `Bytecode` serde round-trips the jumpdest table through `bitvec`, which bincode
-/// decodes element-wise (~1.85M cycles for a mainnet block's contracts). Ship the raw code
-/// bytes and the raw jump-table words instead and rebuild the analyzed bytecode with two
-/// memcpys per contract. Non-legacy variants (EIP-7702) fall back to their normal encoding.
+/// # What is on the wire, and why it is only this
+///
+/// Exactly the bytes the code hash covers, and nothing else. `witness_aux` keys this vector by
+/// `Bytecode::hash_slow()` and `TrieDB::code_by_hash_ref` looks a contract up by the
+/// `code_hash` in its (authenticated) account row, so a bytecode is only ever selected if it
+/// hashes to what the state trie says. That makes the *hashed preimage* self-authenticating --
+/// and it makes everything outside the preimage free for the prover to choose.
+///
+/// The previous format shipped four independent fields -- `code`, `original_len`,
+/// `jump_bit_len`, `jump_table` -- and `hash_slow()` covers only `code[..original_len]`. Three
+/// of the four were therefore unconstrained, and `LegacyAnalyzedBytecode::new`'s asserts
+/// checked internal consistency, never the properties `analyze_legacy` guarantees. Executed
+/// against the real wire path, under one unchanged `code_hash`:
+///
+/// * a **forged jump table** turns an `InvalidJump` halt into `SUCCESS` with `storage[0] = 42`;
+/// * a **one-byte edit to the padding** (`0x00` -> `0x55`, outside the digest) takes a transaction
+///   from gas 21006 / storage 0 to gas 43106 / storage 42, and with one jump-table bit becomes
+///   arbitrary-length attacker code under a legitimate contract's hash;
+/// * the **variant tag** is prover-chosen, and the same bytes hash identically under either --
+///   re-tagging six bytes from `LegacyAnalyzed` to `Eip7702` turned a `Stop` into `InvalidJump` at
+///   the same gas;
+/// * `Eip7702`'s `delegated_address` is a *sibling* field of `raw` and `original_byte_slice()`
+///   returns only `raw`, so it is outside the digest too: same hash, gas 21000 -> 43106, and
+///   `EOA.storage[0] = 42`.
+///
+/// So: ship the preimage, derive the rest. [`Bytecode::new_raw_checked`] is the derivation --
+/// it picks the variant from the leading bytes and runs revm's own `analyze_legacy` for the
+/// legacy case, which is where the jump table and the padding come from. Every field of the
+/// resulting `Bytecode` is then a function of bytes the code hash commits to.
+///
+/// This is also the same constructor the host used to build the value in the first place
+/// (`rpc-db`'s `Bytecode::new_raw(code)`), so the round trip is exact by construction and the
+/// guest cannot reject a bytecode the host accepted.
+///
+/// # What it costs
+///
+/// The format exists because revm's `Bytecode` serde round-trips the jumpdest table through
+/// `bitvec`, which bincode decodes element-wise (~1.85 M cycles for a mainnet block's
+/// contracts). That cost is still avoided -- nothing bitvec-shaped is on the wire. What
+/// replaces the two memcpys is one `analyze_legacy` scan per contract, a linear walk with a
+/// `PUSH` skip. The witness also gets smaller by one bit per code byte.
+///
+/// Verifying a supplied table instead of deriving one would need the same scan (the walk is
+/// what distinguishes a `JUMPDEST` from a `PUSH` immediate), so there is no cheaper sound
+/// option -- only a more complicated one.
 mod wire_bytecodes {
     use std::borrow::Cow;
 
-    use revm::{bytecode::LegacyAnalyzedBytecode, state::Bytecode};
+    use revm::{primitives::Bytes, state::Bytecode};
     use rsp_mpt::serde_cow_bytes;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
+    /// One contract's *original* bytes -- the exact preimage of its code hash.
     #[derive(Serialize, Deserialize)]
-    enum WireBytecode<'a> {
-        Legacy {
-            #[serde(with = "serde_cow_bytes", borrow)]
-            code: Cow<'a, [u8]>,
-            original_len: u64,
-            jump_bit_len: u64,
-            #[serde(with = "serde_cow_bytes", borrow)]
-            jump_table: Cow<'a, [u8]>,
-        },
-        Other(Bytecode),
-    }
+    struct WireBytecode<'a>(#[serde(with = "serde_cow_bytes", borrow)] Cow<'a, [u8]>);
 
     pub(super) fn serialize<S: Serializer>(v: &[Bytecode], s: S) -> Result<S::Ok, S::Error> {
-        let wire: Vec<WireBytecode<'_>> = v
-            .iter()
-            .map(|b| match b {
-                Bytecode::LegacyAnalyzed(a) => WireBytecode::Legacy {
-                    code: Cow::Borrowed(a.bytecode().as_ref()),
-                    original_len: a.original_len() as u64,
-                    jump_bit_len: a.jump_table().len() as u64,
-                    jump_table: Cow::Borrowed(a.jump_table().as_slice()),
-                },
-                other => WireBytecode::Other(other.clone()),
-            })
-            .collect();
+        let wire: Vec<WireBytecode<'_>> =
+            v.iter().map(|b| WireBytecode(Cow::Borrowed(b.original_byte_slice()))).collect();
         wire.serialize(s)
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Bytecode>, D::Error> {
         let wire: Vec<WireBytecode<'de>> = Vec::deserialize(d)?;
-        Ok(wire
-            .into_iter()
-            .map(|w| match w {
-                WireBytecode::Legacy { code, original_len, jump_bit_len, jump_table } => {
-                    Bytecode::LegacyAnalyzed(LegacyAnalyzedBytecode::new(
-                        code.into_owned().into(),
-                        original_len as usize,
-                        revm::bytecode::JumpTable::from_bytes(
-                            jump_table.into_owned().into(),
-                            jump_bit_len as usize,
-                        ),
-                    ))
-                }
-                WireBytecode::Other(b) => b,
+        wire.into_iter()
+            .map(|WireBytecode(code)| {
+                // Fail closed on a malformed EIP-7702 designator (`0xef01` followed by
+                // anything but a version byte and 20 address bytes). The host builds these
+                // with the panicking `Bytecode::new_raw`, so nothing it can produce lands
+                // here.
+                Bytecode::new_raw_checked(Bytes::from(code.into_owned())).map_err(D::Error::custom)
             })
-            .collect())
+            .collect()
     }
 
     #[cfg(test)]
@@ -400,7 +466,21 @@ mod wire_bytecodes {
         use bincode::Options;
 
         use super::*;
-        use revm_primitives::bytes;
+        use revm_primitives::{bytes, keccak256, Address};
+
+        fn roundtrip(codes: &[Bytecode]) -> Vec<Bytecode> {
+            let mut buf = Vec::new();
+            let mut ser = bincode::Serializer::new(
+                &mut buf,
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
+            );
+            serialize(codes, &mut ser).unwrap();
+            let mut de = bincode::Deserializer::from_slice(
+                &buf,
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
+            );
+            deserialize(&mut de).unwrap()
+        }
 
         #[test]
         fn wire_bytecode_roundtrip() {
@@ -409,23 +489,69 @@ mod wire_bytecodes {
                 Bytecode::new_raw(bytes!("6001600255005b600056")),
                 Bytecode::new_raw(bytes!("5b5b5b5b")),
                 Bytecode::default(),
+                // Trailing PUSH with a truncated immediate: the shape whose padding was the
+                // widest of the three memory-safety consequences.
+                Bytecode::new_raw(bytes!("60017f")),
+                Bytecode::new_eip7702(Address::repeat_byte(0xab)),
             ];
+            let back = roundtrip(&codes);
+            assert_eq!(codes, back);
+        }
+
+        /// Everything the guest executes has to be a function of the bytes the code hash
+        /// commits to -- that is the whole property, and it is what the four-field format did
+        /// not have.
+        ///
+        /// Checked structurally rather than by example: the wire form *is* the preimage, so
+        /// two values with the same hash deserialise to the same `Bytecode`, byte for byte,
+        /// jump table and padding and variant tag included. There is nothing left on the wire
+        /// to vary while holding the hash fixed.
+        #[test]
+        fn everything_executed_is_derived_from_the_hashed_preimage() {
+            let codes = vec![
+                Bytecode::new_raw(bytes!("5b600056")),
+                Bytecode::new_raw(bytes!("60017f")),
+                Bytecode::new_eip7702(Address::repeat_byte(0x11)),
+                Bytecode::default(),
+            ];
+            for code in &codes {
+                let back = roundtrip(std::slice::from_ref(code));
+                let back = &back[0];
+                assert_eq!(back.hash_slow(), code.hash_slow());
+                // The preimage is the only thing that crossed the wire, and it determines:
+                assert_eq!(back.original_byte_slice(), code.original_byte_slice());
+                assert_eq!(back.bytes_ref(), code.bytes_ref(), "padding");
+                assert_eq!(back.legacy_jump_table(), code.legacy_jump_table(), "jump table");
+                assert_eq!(back.is_eip7702(), code.is_eip7702(), "variant tag");
+                assert_eq!(back, code);
+                // ... and the digest really is over the executed preimage.
+                if !code.is_empty() {
+                    assert_eq!(code.hash_slow(), keccak256(back.original_byte_slice()));
+                }
+            }
+        }
+
+        /// A `0xef01`-prefixed blob that is not a well-formed delegation designator is refused
+        /// rather than executed. `Eip7702Bytecode` carries no analysis padding, so a truncated
+        /// `PUSH` inside one over-reads and the bytes land on the EVM stack.
+        #[test]
+        fn a_malformed_7702_designator_is_refused() {
             let mut buf = Vec::new();
             let mut ser = bincode::Serializer::new(
                 &mut buf,
-                bincode::options()
-                    .with_fixint_encoding()
-                    .allow_trailing_bytes(),
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
             );
-            serialize(&codes, &mut ser).unwrap();
+            // Hand-build the wire form: `0xef01` plus a version byte and *nineteen* address
+            // bytes, one short of a designator.
+            let mut raw = vec![0xef, 0x01, 0x00];
+            raw.extend_from_slice(&[0x11u8; 19]);
+            let wire = vec![WireBytecode(Cow::Owned(raw))];
+            wire.serialize(&mut ser).unwrap();
             let mut de = bincode::Deserializer::from_slice(
                 &buf,
-                bincode::options()
-                    .with_fixint_encoding()
-                    .allow_trailing_bytes(),
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
             );
-            let back = deserialize(&mut de).unwrap();
-            assert_eq!(codes, back);
+            assert!(deserialize(&mut de).is_err());
         }
     }
 }
@@ -462,5 +588,62 @@ impl<P: NodePrimitives> From<LegacyClientExecutorInput<P>> for ClientExecutorInp
             custom_beneficiary: legacy.custom_beneficiary,
             opcode_tracking: legacy.opcode_tracking,
         }
+    }
+}
+
+#[cfg(test)]
+mod committed_header_tests {
+    use super::*;
+    use revm_primitives::address;
+
+    fn input() -> EthClientExecutorInput<'static> {
+        EthClientExecutorInput {
+            current_block: Default::default(),
+            ancestor_headers: vec![Default::default()],
+            parent_state: rsp_mpt::FlatEthereumState {
+                state_nodes: std::borrow::Cow::Owned(Vec::new()),
+                storage_tries: Vec::new(),
+            },
+            bytecodes: vec![],
+            genesis: Genesis::Mainnet,
+            custom_beneficiary: None,
+            opcode_tracking: false,
+        }
+    }
+
+    /// Each of the three wire fields the committed header cannot show must move the digest.
+    ///
+    /// This is the property that makes the commitment say *which chain's rules ran*. Before
+    /// it, `genesis` could be swapped for one whose fork ladder is lowered -- or, at
+    /// `chainId 59144`, one that routes through `handle_custom_chains` and turns two consensus
+    /// rejection conditions into `Ok(())` -- and the committed header would be identical.
+    #[test]
+    fn the_config_digest_separates_every_field_it_covers() {
+        let base = input().config_digest();
+
+        let mut g = input();
+        g.genesis = Genesis::Sepolia;
+        assert_ne!(g.config_digest(), base, "genesis");
+
+        let mut g = input();
+        g.genesis = Genesis::Linea;
+        assert_ne!(g.config_digest(), base, "genesis (the custom-chain escape hatch)");
+
+        let mut b = input();
+        b.custom_beneficiary = Some(address!("00000000000000000000000000000000cafebabe"));
+        assert_ne!(b.config_digest(), base, "custom_beneficiary");
+
+        let mut b2 = input();
+        b2.custom_beneficiary = Some(address!("00000000000000000000000000000000cafebabf"));
+        assert_ne!(b2.config_digest(), b.config_digest(), "custom_beneficiary value");
+
+        let mut t = input();
+        t.opcode_tracking = true;
+        assert_ne!(t.config_digest(), base, "opcode_tracking");
+
+        // And it is a function of those fields only -- nothing else in the input perturbs it.
+        let mut unrelated = input();
+        unrelated.ancestor_headers = vec![Default::default(), Default::default()];
+        assert_eq!(unrelated.config_digest(), base);
     }
 }

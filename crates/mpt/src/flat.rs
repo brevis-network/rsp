@@ -16,16 +16,18 @@
 
 use std::borrow::Cow;
 
-use alloy_primitives::{map::{B256Map, HashMap}, B256};
+use alloy_primitives::{
+    map::{B256Map, HashMap},
+    B256,
+};
 use alloy_rlp::Encodable;
 use reth_trie::HashedPostState;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     mpt::{
-        keccak, keccak_into_b256, node_from_digest, node_with_cached_reference, prefix_nibs, to_nibs,
-        Error,
-        MptNode, MptNodeData, MptNodeReference, EMPTY_ROOT,
+        keccak, keccak_into_b256, node_from_digest, node_with_cached_reference, prefix_nibs,
+        to_nibs, Error, MptNode, MptNodeData, MptNodeReference, EMPTY_ROOT,
     },
     EthereumState,
 };
@@ -231,10 +233,18 @@ enum FlatRef<'a> {
 enum FlatNode<'a> {
     Null,
     Digest(&'a [u8]),
-    Leaf { prefix: &'a [u8], value: &'a [u8] },
-    Extension { prefix: &'a [u8], child: FlatRef<'a> },
+    Leaf {
+        prefix: &'a [u8],
+        value: &'a [u8],
+    },
+    Extension {
+        prefix: &'a [u8],
+        child: FlatRef<'a>,
+    },
     /// Payload region of the 17-item list.
-    Branch { payload: &'a [u8] },
+    Branch {
+        payload: &'a [u8],
+    },
 }
 
 /// Parses one node blob (`bytes` must be exactly the node's RLP encoding).
@@ -445,7 +455,12 @@ impl<'a> FlatTrieView<'a> {
                     return Err(Error::FlatTrie("data after digest root"));
                 }
                 view.root_hash = B256::from_slice(d);
-                view.nodes.push(NodeRec { off: 0, len: root_len as u32, edge_start: 0, kind: KIND_DIGEST });
+                view.nodes.push(NodeRec {
+                    off: 0,
+                    len: root_len as u32,
+                    edge_start: 0,
+                    kind: KIND_DIGEST,
+                });
                 view.hashes.push(view.root_hash);
                 return Ok(view);
             }
@@ -483,15 +498,13 @@ impl<'a> FlatTrieView<'a> {
                     return Err(Error::FlatTrie("blob does not attach to the trie"));
                 };
                 while top.item_pos < top.items_end && top.slot < top.nslots {
-                    let (payload_off, payload_len, is_list) = rlp_header(bytes, top.item_pos as usize)?;
+                    let (payload_off, payload_len, is_list) =
+                        rlp_header(bytes, top.item_pos as usize)?;
                     let item_end = payload_off + payload_len;
                     let slot = top.slot;
                     top.item_pos = item_end as u32;
                     top.slot += 1;
-                    if !is_list
-                        && payload_len == 32
-                        && bytes[payload_off..item_end] == hash[..]
-                    {
+                    if !is_list && payload_len == 32 && bytes[payload_off..item_end] == hash[..] {
                         let idx = view.nodes.len() as u32;
                         let rec = view.nodes[top.node_idx as usize];
                         view.edges[rec.edge_start as usize + slot as usize] = idx;
@@ -590,8 +603,15 @@ impl<'a> FlatTrieView<'a> {
     }
 
     /// Retrieves the value for `key` (full key bytes, e.g. a 32-byte hashed key), walking the
-    /// raw blobs without allocating. Returns `None` for absent keys *and* for keys that resolve
-    /// into pruned subtrees (matching this fork's `MptNode::get_internal` behavior).
+    /// raw blobs without allocating.
+    ///
+    /// Returns `None` for a key the witness proves absent, and **`Err(NodeNotResolved)` for a
+    /// key whose path leaves the witnessed region** -- a subtree the prover declined to
+    /// encode, represented by its digest. Those two are different answers and must not be
+    /// confused: the digest keeps the root hash correct, so `parse_and_verify` and the anchor
+    /// check both pass, and reporting "absent" for the second makes omission a way to make an
+    /// account or a slot read as zero. See the matching arm in `MptNode::get_internal` for
+    /// what that buys an attacker and why the write path was never exposed to it.
     pub fn get(&self, key: &[u8]) -> Result<Option<&'a [u8]>, Error> {
         if self.is_empty() {
             return Ok(None);
@@ -603,10 +623,13 @@ impl<'a> FlatTrieView<'a> {
         let mut pos = 0usize; // nibble cursor
 
         loop {
-            let node =
-                if inline { parse_node(blob)? } else { self.parse_indexed(node_idx)? };
+            let node = if inline { parse_node(blob)? } else { self.parse_indexed(node_idx)? };
             match node {
-                FlatNode::Null | FlatNode::Digest(_) => return Ok(None),
+                FlatNode::Null => return Ok(None),
+                // The root itself is a digest: the whole trie is outside the witness.
+                FlatNode::Digest(d) => {
+                    return Err(Error::NodeNotResolved(B256::from_slice(d)));
+                }
                 FlatNode::Leaf { prefix, value } => {
                     return Ok(match match_prefix(prefix, key, pos) {
                         Some(p) if p == nkey => Some(value),
@@ -628,10 +651,12 @@ impl<'a> FlatTrieView<'a> {
                             if inline {
                                 return Err(Error::FlatTrie("digest ref inside inline node"));
                             }
-                            let edge = self.edges
-                                [self.nodes[node_idx as usize].edge_start as usize];
+                            let edge =
+                                self.edges[self.nodes[node_idx as usize].edge_start as usize];
                             if edge == EDGE_PRUNED {
-                                return Ok(None);
+                                // Not "absent": unwitnessed. See the note on `get`.
+                                let FlatRef::Digest(d) = child else { unreachable!() };
+                                return Err(Error::NodeNotResolved(B256::from_slice(d)));
                             }
                             node_idx = edge;
                             blob = self.blob(edge);
@@ -666,13 +691,15 @@ impl<'a> FlatTrieView<'a> {
                             blob = b;
                             inline = true;
                         }
-                        FlatRef::Digest(_) => {
+                        FlatRef::Digest(d) => {
                             if inline {
                                 return Err(Error::FlatTrie("digest ref inside inline node"));
                             }
-                            // Not inline: the edge was EDGE_PRUNED (else the fast path took it),
-                            // so this digest child is a pruned subtree — absent from the witness.
-                            return Ok(None);
+                            // Not inline: the edge was EDGE_PRUNED (else the fast path took
+                            // it), so this digest child is a subtree the witness does not
+                            // cover. See the note on `get`: that is not the same answer as
+                            // "absent" and must not be reported as one.
+                            return Err(Error::NodeNotResolved(B256::from_slice(d)));
                         }
                     }
                 }
@@ -707,9 +734,7 @@ impl<'a> FlatTrieView<'a> {
         let data = match node {
             FlatNode::Null => return Ok(MptNode::default()),
             FlatNode::Digest(d) => return Ok(MptNodeData::Digest(B256::from_slice(d)).into()),
-            FlatNode::Leaf { prefix, value } => {
-                MptNodeData::Leaf(prefix.to_vec(), value.to_vec())
-            }
+            FlatNode::Leaf { prefix, value } => MptNodeData::Leaf(prefix.to_vec(), value.to_vec()),
             FlatNode::Extension { prefix, child } => {
                 let pn = prefix_nibs(prefix);
                 let remaining: Vec<(&[u8], bool)> = keys
@@ -802,8 +827,8 @@ impl<'a> FlatTrieView<'a> {
             FlatRef::Digest(_) => match parent {
                 Src::Inline(_) => Err(Error::FlatTrie("digest ref inside inline node")),
                 Src::Node(idx) => {
-                    let edge = self.edges
-                        [self.nodes[idx as usize].edge_start as usize + slot as usize];
+                    let edge =
+                        self.edges[self.nodes[idx as usize].edge_start as usize + slot as usize];
                     if edge == EDGE_PRUNED || edge == EDGE_INLINE {
                         return Err(Error::FlatTrie("descend into pruned subtree"));
                     }
@@ -863,7 +888,10 @@ impl FlatStateViews<'_> {
     /// effectively-changed accounts/slots are materialized, untouched storage tries become
     /// digest stubs. Running the existing `update()` + `state_root()` on the overlay with the
     /// returned (filtered) post state yields the exact post-state root.
-    pub fn materialize_overlay(&self, post_state: &HashedPostState) -> Result<EthereumState, Error> {
+    pub fn materialize_overlay(
+        &self,
+        post_state: &HashedPostState,
+    ) -> Result<EthereumState, Error> {
         let account_keys: Vec<(B256, bool)> =
             post_state.accounts.iter().map(|(k, a)| (*k, a.is_none())).collect();
         let state_trie = self.state.materialize(&account_keys)?;
@@ -934,16 +962,22 @@ mod tests {
         assert_eq!(view.get(b"c").unwrap(), None);
     }
 
+    /// A pruned subtree verifies, and every key whose path enters it is **refused**, not
+    /// reported absent.
+    ///
+    /// The two answers used to be the same one (`Ok(None)`), which is the fail-open half of
+    /// the witness format: the digest keeps the root hash right, so verification and the
+    /// anchor check both pass, and "the prover declined to encode this" arrives at the EVM as
+    /// "this account does not exist". The flat view and the node graph must agree on refusing
+    /// it, because the node graph is the oracle the differential harness compares against.
     #[test]
     fn flat_pruned_subtree() {
-        // prune one subtree to a digest; the view must verify and treat it as absent
         let trie = keccak_trie(64);
         let MptNodeData::Branch(children) = trie.as_data().clone() else {
             panic!("expected branch root")
         };
         let mut pruned_children = children;
-        let victim =
-            pruned_children.iter_mut().flatten().next().expect("at least one child");
+        let victim = pruned_children.iter_mut().flatten().next().expect("at least one child");
         **victim = node_from_digest(victim.hash());
         let pruned: MptNode = MptNodeData::Branch(pruned_children).into();
         assert_eq!(pruned.hash(), trie.hash());
@@ -955,11 +989,23 @@ mod tests {
         let mut pruned_hits = 0;
         for i in 0..64usize {
             let key = keccak(i.to_be_bytes());
-            let got = view.get(&key).unwrap();
-            let expected = pruned.get(&key).unwrap();
-            assert_eq!(got, expected);
-            if expected.is_none() {
-                pruned_hits += 1;
+            match pruned.get(&key) {
+                Ok(expected) => {
+                    // Inside the witness: the two paths must agree value for value, and the
+                    // key must actually be there (these are all keys of the trie).
+                    assert_eq!(view.get(&key).unwrap(), expected, "key {i}");
+                    assert!(expected.is_some(), "key {i} vanished from the witnessed part");
+                }
+                Err(Error::NodeNotResolved(_)) => {
+                    pruned_hits += 1;
+                    assert!(
+                        matches!(view.get(&key), Err(Error::NodeNotResolved(_))),
+                        "key {i} descends into the pruned subtree; the flat view reported \
+                         {:?} instead of refusing it",
+                        view.get(&key)
+                    );
+                }
+                Err(e) => panic!("unexpected error for key {i}: {e:?}"),
             }
         }
         assert!(pruned_hits > 0, "the pruned subtree should hide some keys");
@@ -977,7 +1023,12 @@ mod tests {
         let bytes = flatten_trie(&digest_root);
         let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
         assert_eq!(view.root_hash, B256::repeat_byte(0x42));
-        assert_eq!(view.get(&keccak(b"x")).unwrap(), None);
+        // A digest root is a trie that is entirely outside the witness: it answers nothing.
+        // (`Ok(None)` here would say every account in the world is non-existent.)
+        assert!(matches!(
+            view.get(&keccak(b"x")),
+            Err(Error::NodeNotResolved(d)) if d == B256::repeat_byte(0x42)
+        ));
     }
 
     #[test]
@@ -1077,9 +1128,7 @@ mod tests {
         let addr_a = B256::from(keccak(b"account-a"));
         let addr_b = B256::from(keccak(b"account-b"));
         let addr_c = B256::from(keccak(b"account-c")); // new account
-        for (addr, storage, bal) in
-            [(addr_a, &storage_a, 100u64), (addr_b, &storage_b, 200u64)]
-        {
+        for (addr, storage, bal) in [(addr_a, &storage_a, 100u64), (addr_b, &storage_b, 200u64)] {
             let account = TrieAccount {
                 nonce: 1,
                 balance: U256::from(bal),
@@ -1109,9 +1158,7 @@ mod tests {
         let mut storage_changes = HashedStorage::new(false);
         storage_changes.storage.insert(B256::from(keccak(0usize.to_be_bytes())), U256::ZERO);
         storage_changes.storage.insert(B256::from(keccak(1usize.to_be_bytes())), U256::from(42));
-        storage_changes
-            .storage
-            .insert(B256::from(keccak(200usize.to_be_bytes())), U256::from(43));
+        storage_changes.storage.insert(B256::from(keccak(200usize.to_be_bytes())), U256::from(43));
         post.accounts.insert(
             addr_a,
             Some(Account { nonce: 2, balance: U256::from(111), bytecode_hash: None }),
@@ -1142,6 +1189,179 @@ mod tests {
         assert_eq!(views.post_state_root(&post).unwrap(), expected_root);
     }
 
+    /// An account whose storage trie is **not** in the witness must not have its storage
+    /// silently wiped by `post_state_root`.
+    ///
+    /// The reachable shape is the cheapest transaction there is: a plain value transfer to a
+    /// contract. The account is touched, so it appears in `post_state.accounts`; no storage
+    /// slot is read, so `storage_ref`'s `expect` never fires and nothing else notices that the
+    /// witness carries no storage trie for it. `post_state_root` then rewrote that account's
+    /// row with `storage_root = EMPTY_ROOT` -- the whole contract's storage gone, and a
+    /// post-state root computed as if it were.
+    ///
+    /// Both arms are covered: an account with a storage *change* and no witnessed trie must be
+    /// refused outright, and an account with no change must keep the root it had.
+    #[test]
+    fn post_state_root_does_not_wipe_an_unwitnessed_storage_trie() {
+        let mut storage = MptNode::default();
+        for i in 0..40usize {
+            storage.insert_rlp(&keccak(i.to_be_bytes()), U256::from(i + 3)).unwrap();
+        }
+        let storage_root = storage.hash();
+        assert_ne!(storage_root, EMPTY_ROOT);
+
+        let contract = B256::from(keccak(b"contract"));
+        let eoa = B256::from(keccak(b"eoa"));
+        let mut state_trie = MptNode::default();
+        state_trie
+            .insert_rlp(
+                contract.as_slice(),
+                TrieAccount {
+                    nonce: 1,
+                    balance: U256::from(100),
+                    storage_root,
+                    code_hash: B256::repeat_byte(0xcd),
+                },
+            )
+            .unwrap();
+        state_trie
+            .insert_rlp(
+                eoa.as_slice(),
+                TrieAccount {
+                    nonce: 7,
+                    balance: U256::from(500),
+                    storage_root: EMPTY_ROOT,
+                    code_hash: KECCAK_EMPTY,
+                },
+            )
+            .unwrap();
+        for i in 0..30usize {
+            state_trie
+                .insert_rlp(
+                    &keccak((2000 + i).to_be_bytes()),
+                    TrieAccount {
+                        nonce: i as u64,
+                        balance: U256::from(i),
+                        storage_root: EMPTY_ROOT,
+                        code_hash: KECCAK_EMPTY,
+                    },
+                )
+                .unwrap();
+        }
+
+        // The witness carries the state trie and *no* storage trie -- which is exactly what a
+        // value transfer needs, and exactly what an attacker would ship.
+        let flat = FlatEthereumState {
+            state_nodes: Cow::Owned(flatten_trie(&state_trie)),
+            storage_tries: std::vec::Vec::new(),
+        };
+        let views = flat.views().unwrap();
+        assert_eq!(views.state.root_hash, state_trie.hash());
+
+        // (a) balance moves, storage untouched: the row keeps its storage root.
+        let mut post = HashedPostState::default();
+        post.accounts.insert(
+            contract,
+            Some(Account { nonce: 1, balance: U256::from(101), bytecode_hash: None }),
+        );
+        post.accounts
+            .insert(eoa, Some(Account { nonce: 8, balance: U256::from(499), bytecode_hash: None }));
+
+        // `HashedPostState`'s `Account` carries `bytecode_hash: Option<B256>`, and
+        // `get_bytecode_hash()` answers `KECCAK_EMPTY` for `None`, so the rewritten rows take
+        // that. What this test pins is the *storage* root, which is orthogonal.
+        let mut expected = state_trie.clone();
+        expected
+            .insert_rlp(
+                contract.as_slice(),
+                TrieAccount {
+                    nonce: 1,
+                    balance: U256::from(101),
+                    storage_root,
+                    code_hash: KECCAK_EMPTY,
+                },
+            )
+            .unwrap();
+        expected
+            .insert_rlp(
+                eoa.as_slice(),
+                TrieAccount {
+                    nonce: 8,
+                    balance: U256::from(499),
+                    storage_root: EMPTY_ROOT,
+                    code_hash: KECCAK_EMPTY,
+                },
+            )
+            .unwrap();
+
+        // `post_state.accounts` carries no code hash, so compare against the same shape the
+        // computation produces rather than re-deriving it: what this pins is that the
+        // *storage* root survives, which the `bytecode_hash: None` rows preserve.
+        let got = views.post_state_root(&post).unwrap();
+        assert_ne!(
+            got,
+            {
+                // The wiped answer, i.e. what the pre-image computed.
+                let mut wiped = state_trie.clone();
+                wiped
+                    .insert_rlp(
+                        contract.as_slice(),
+                        TrieAccount {
+                            nonce: 1,
+                            balance: U256::from(101),
+                            storage_root: EMPTY_ROOT,
+                            code_hash: KECCAK_EMPTY,
+                        },
+                    )
+                    .unwrap();
+                wiped
+                    .insert_rlp(
+                        eoa.as_slice(),
+                        TrieAccount {
+                            nonce: 8,
+                            balance: U256::from(499),
+                            storage_root: EMPTY_ROOT,
+                            code_hash: KECCAK_EMPTY,
+                        },
+                    )
+                    .unwrap();
+                wiped.hash()
+            },
+            "the contract's storage was wiped from the post-state root"
+        );
+        assert_eq!(got, expected.hash());
+
+        // (b) a storage *change* with no witnessed trie cannot be computed at all.
+        let mut post_with_storage = post.clone();
+        let mut changes = HashedStorage::new(false);
+        changes.storage.insert(B256::from(keccak(0usize.to_be_bytes())), U256::from(9));
+        post_with_storage.storages.insert(contract, changes);
+        assert!(
+            matches!(
+                views.post_state_root(&post_with_storage),
+                Err(Error::FlatTrie("no witnessed storage trie for a modified account"))
+            ),
+            "a modified account with no witnessed storage trie must be refused"
+        );
+
+        // (c) ... unless the account really had none, or the storage is wiped, both of which
+        // stay computable.
+        let mut post_eoa = HashedPostState::default();
+        post_eoa
+            .accounts
+            .insert(eoa, Some(Account { nonce: 8, balance: U256::from(499), bytecode_hash: None }));
+        let mut eoa_changes = HashedStorage::new(false);
+        eoa_changes.storage.insert(B256::from(keccak(1usize.to_be_bytes())), U256::from(4));
+        post_eoa.storages.insert(eoa, eoa_changes);
+        assert!(views.post_state_root(&post_eoa).is_ok());
+
+        let mut post_wiped = post.clone();
+        let mut wiped_changes = HashedStorage::new(true);
+        wiped_changes.storage.insert(B256::from(keccak(0usize.to_be_bytes())), U256::from(9));
+        post_wiped.storages.insert(contract, wiped_changes);
+        assert!(views.post_state_root(&post_wiped).is_ok());
+    }
+
     /// Applies ops to a graph trie (reference) and via delta_root; roots must agree.
     fn delta_parity_case(trie: &MptNode, ops: &[([u8; 32], Option<u64>)]) {
         let bytes = flatten_trie(trie);
@@ -1160,10 +1380,8 @@ mod tests {
             }
         }
 
-        let changes: Vec<(B256, Option<Vec<u8>>)> = ops
-            .iter()
-            .map(|(k, v)| (B256::from(*k), v.map(|v| alloy_rlp::encode(v))))
-            .collect();
+        let changes: Vec<(B256, Option<Vec<u8>>)> =
+            ops.iter().map(|(k, v)| (B256::from(*k), v.map(|v| alloy_rlp::encode(v)))).collect();
         assert_eq!(view.delta_root(&changes).unwrap(), full.hash());
     }
 
@@ -1313,10 +1531,7 @@ mod tests {
                 let existing = x % 2 == 0;
                 let idx = if existing { (x >> 8) as usize % n } else { n + j };
                 let delete = (x >> 16) % 3 == 0;
-                ops.push((
-                    keccak(idx.to_be_bytes()),
-                    if delete { None } else { Some(x >> 24) },
-                ));
+                ops.push((keccak(idx.to_be_bytes()), if delete { None } else { Some(x >> 24) }));
             }
             // dedup by key (last op wins), mirroring HashedPostState semantics
             let mut seen = std::collections::HashMap::new();
@@ -1467,7 +1682,6 @@ fn enc_ext(nibs: &[u8], child_item: &[u8]) -> Vec<u8> {
     out
 }
 
-
 /// Builds a subtree from scratch out of sorted, distinct (nibbles, value) leaves.
 fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
     match kvs {
@@ -1496,8 +1710,8 @@ fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
             let payload_len: usize = outs
                 .iter()
                 .map(|o| o.as_ref().map_or(1, |e| if e.len() < 32 { e.len() } else { 33 }))
-                .sum::<usize>()
-                + 1;
+                .sum::<usize>() +
+                1;
             let mut branch = Vec::with_capacity(payload_len + 4);
             list_header_into(&mut branch, payload_len);
             for out in &outs {
@@ -1914,8 +2128,8 @@ impl<'a> FlatTrieView<'a> {
                             }
                         }
                     })
-                    .sum::<usize>()
-                    + 1;
+                    .sum::<usize>() +
+                    1;
                 let mut out = Vec::with_capacity(payload_len + 4);
                 list_header_into(&mut out, payload_len);
                 for slot in slots.iter() {
@@ -1992,6 +2206,32 @@ impl<'a> FlatTrieView<'a> {
 }
 
 impl FlatStateViews<'_> {
+    /// The storage root an account had *before* this block, read out of the already-verified
+    /// state trie.
+    ///
+    /// Only reached for an account with no entry in `self.storage`. `materialize_overlay`
+    /// builds `storage_tries` from `self.storage` alone, so a missing entry and an entry for
+    /// an empty trie were indistinguishable -- both answered `EMPTY_ROOT`, which rewrites the
+    /// account's row with its storage **wiped**. That is reachable by a plain value transfer
+    /// to a contract with non-empty storage: the transfer touches the account but makes no
+    /// storage access, so `storage_ref`'s `expect` never fires and nothing else notices.
+    ///
+    /// The state trie is anchored to the parent header's root, so its answer is authenticated;
+    /// an account that did not exist has `EMPTY_ROOT`, and a key whose path leaves the witness
+    /// is an error rather than an absence (see [`FlatTrieView::get`]).
+    ///
+    /// The cost is one state-trie walk per touched account with no witnessed storage trie --
+    /// mostly EOAs and the beneficiary. Measured against the alternative of carrying the root
+    /// through `verified_views`: that map is built only for accounts that *do* have a storage
+    /// trie, which is exactly the set this is not.
+    fn prior_storage_root(&self, hashed_address: &B256) -> Result<B256, Error> {
+        use alloy_rlp::Decodable;
+        Ok(match self.state.get(hashed_address.as_slice())? {
+            Some(mut bytes) => reth_trie::TrieAccount::decode(&mut bytes)?.storage_root,
+            None => FLAT_EMPTY_ROOT,
+        })
+    }
+
     /// Computes the post-state root for `post_state` directly from the verified blobs, without
     /// building any intermediate trie: storage-trie delta roots feed updated account rows into
     /// the state-trie delta.
@@ -2014,14 +2254,32 @@ impl FlatStateViews<'_> {
                                 .collect();
                             match self.storage.get(hashed_address) {
                                 Some(view) if !st.wiped => view.delta_root(&slot_changes)?,
-                                _ => FlatTrieView::empty_delta_root(&slot_changes)?,
+                                // `wiped` is legitimate -- a destroyed or freshly created
+                                // account starts from the empty trie.
+                                Some(_) => FlatTrieView::empty_delta_root(&slot_changes)?,
+                                None if st.wiped => FlatTrieView::empty_delta_root(&slot_changes)?,
+                                // No witnessed trie and not wiped: the delta can only be
+                                // applied to the empty trie, which is the right answer exactly
+                                // when the account had no storage. Anything else is a witness
+                                // that does not cover what the block changed, and computing a
+                                // root from it would silently drop the account's storage.
+                                None => {
+                                    if self.prior_storage_root(hashed_address)? == FLAT_EMPTY_ROOT {
+                                        FlatTrieView::empty_delta_root(&slot_changes)?
+                                    } else {
+                                        return Err(Error::FlatTrie(
+                                            "no witnessed storage trie for a modified account",
+                                        ));
+                                    }
+                                }
                             }
                         }
-                        None => self
-                            .storage
-                            .get(hashed_address)
-                            .map(|v| v.root_hash)
-                            .unwrap_or(FLAT_EMPTY_ROOT),
+                        // Unchanged storage: the row keeps the root it already had. Taking
+                        // `EMPTY_ROOT` when there is no witnessed trie wipes it instead.
+                        None => match self.storage.get(hashed_address) {
+                            Some(v) => v.root_hash,
+                            None => self.prior_storage_root(hashed_address)?,
+                        },
                     };
                     let trie_account = reth_trie::TrieAccount {
                         nonce: account.nonce,

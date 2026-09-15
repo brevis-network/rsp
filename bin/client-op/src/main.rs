@@ -17,8 +17,9 @@ pub fn main() {
 
     // Execute the block.
     let executor = OpClientExecutor::optimism(Arc::new((&input.genesis).try_into().unwrap()));
-    let header = executor.execute(input).expect("failed to execute client");
+    let committed = executor.execute(input).expect("failed to execute client");
 
-    // Commit the block hash.
-    sp1_zkvm::io::commit::<CommittedHeader>(&header.into());
+    // Commit the derived header together with the digest of the configuration it ran under;
+    // see `CommittedHeader`.
+    sp1_zkvm::io::commit::<CommittedHeader>(&committed);
 }

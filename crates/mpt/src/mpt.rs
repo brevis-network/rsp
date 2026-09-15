@@ -1271,7 +1271,25 @@ impl MptNode {
                     Ok(None)
                 }
             }
-            MptNodeData::Digest(_digest) => Ok(None),
+            // A digest stub is a subtree the witness *declined to encode*. Its content is
+            // still bound -- the digest keeps the root hash right, so `parse_and_verify` and
+            // the anchor check both pass -- but its *presence* is not: answering `Ok(None)`
+            // here reports "this key is absent" for a key the witness simply does not cover,
+            // and the two are indistinguishable to every caller.
+            //
+            // That is fail-open. Omit an account's blobs and it reads back as non-existent:
+            // `BALANCE == 0`, `EXTCODEHASH`/`EXTCODESIZE` of 0, and a zero-value `CALL` that
+            // runs no code and returns success. Writes through a pruned path do fail closed,
+            // which is why the digest-*root* arm was safe, but a read-only divergence has no
+            // backstop -- a `require(paused == 0)` read out of a pruned subtree leaves
+            // `post_state.storages` without an entry, so `post_state_root` takes its `None`
+            // arm and uses the correct stored root.
+            //
+            // `c269c19` (PR #4, 2025-09-24) turned this arm from `Err(NodeNotResolved)` into
+            // `Ok(None)`, and `mpt::tests::test_partial` -- which asserts exactly this -- has
+            // failed ever since. It was recorded as a pre-existing failure to skip; it is the
+            // defect, and the test was right.
+            MptNodeData::Digest(digest) => Err(Error::NodeNotResolved(*digest)),
         }
     }
 

@@ -38,7 +38,11 @@ fn main() {
         converted = EthClientExecutorInput::from(legacy);
         let bytes = bincode::serialize(&converted).expect("failed to serialize converted input");
         std::fs::write(out, &bytes).expect("failed to write converted input");
-        info!("converted legacy input ({} bytes) -> flat input ({} bytes)", input_data.len(), bytes.len());
+        info!(
+            "converted legacy input ({} bytes) -> flat input ({} bytes)",
+            input_data.len(),
+            bytes.len()
+        );
         converted.clone()
     } else {
         bincode::deserialize(&input_data).expect("failed to deserialize input")
@@ -51,6 +55,9 @@ fn main() {
         Arc::new((&input.genesis).try_into().unwrap()),
         input.custom_beneficiary,
     );
-    let header = executor.execute(input).expect("failed to execute client");
-    info!("execution success gas_used = {}", header.gas_used);
+    let committed = executor.execute(input).expect("failed to execute client");
+    info!(
+        "execution success gas_used = {} config_digest = {}",
+        committed.header.gas_used, committed.config_digest
+    );
 }

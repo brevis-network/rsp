@@ -39,8 +39,9 @@ pub fn main() {
         Arc::new((&input.genesis).try_into().unwrap()),
         input.custom_beneficiary,
     );
-    let header = executor.execute(input).expect("failed to execute client");
+    let committed = executor.execute(input).expect("failed to execute client");
 
-    // Commit the block header.
-    pico_sdk::io::commit::<CommittedHeader>(&header.into());
+    // Commit the derived header together with the digest of the configuration it ran under;
+    // see `CommittedHeader` for why the header alone does not identify the statement.
+    pico_sdk::io::commit::<CommittedHeader>(&committed);
 }

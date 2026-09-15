@@ -54,7 +54,9 @@ alloy-rpc-types.workspace = true
 # op
 op-alloy-network = { workspace = true, optional = true }
 op-alloy-rpc-types = { workspace = true, optional = true }
-
+# `config_digest` hashes a bincode encoding of the three wire fields the committed header
+# cannot show, so this is no longer dev-only.
+bincode = "1.3.3"
 
 [dev-dependencies]
 bincode = "1.3.3"

@@ -2,7 +2,7 @@ use crate::{
     custom::{CustomCrypto, CustomEvmFactory},
     error::ClientError,
     into_primitives::FromInput,
-    io::{ClientExecutorInput, TrieDB, WitnessInput},
+    io::{ClientExecutorInput, CommittedHeader, TrieDB, WitnessInput},
     tracking::OpCodesTrackingBlockExecutor,
     BlockValidator,
 };
@@ -48,10 +48,18 @@ where
     C: ConfigureEvm,
     C::Primitives: FromInput + BlockValidator<CS>,
 {
+    /// Executes the block and returns the value the guest commits.
+    ///
+    /// Returns a [`CommittedHeader`] rather than a bare `Header` so that the configuration
+    /// digest cannot be left off by a caller: the three wire fields it covers -- `genesis`,
+    /// `custom_beneficiary` and `opcode_tracking` -- change execution and appear nowhere in
+    /// the header, so a commitment without it does not say which chain's rules ran. See
+    /// [`CommittedHeader`].
     pub fn execute(
         &self,
         input: ClientExecutorInput<'_, C::Primitives>,
-    ) -> Result<Header, ClientError> {
+    ) -> Result<CommittedHeader, ClientError> {
+        let config_digest = input.config_digest();
         let sealed_headers = input.sealed_headers().collect::<Vec<_>>();
 
         // Initialize the witnessed database with verified storage proofs.
@@ -145,7 +153,7 @@ where
             requests_hash: input.current_block.header().requests_hash(),
         };
 
-        Ok(header)
+        Ok(CommittedHeader::new(header, config_digest))
     }
 }
 
