@@ -1709,8 +1709,24 @@ mod tests {
         delta_parity_case(&empty, &ops);
     }
 
+    /// The randomized half of the delta-root differential, with a coverage guard.
+    ///
+    /// This was the only unguarded sweep in the campaign, and it is on the central output-path
+    /// rewrite -- so "30 seeds passed" was the whole claim, and 30 seeds that all produced,
+    /// say, pure updates on a fat trie would have passed identically. The tallies below say
+    /// what the generator actually produced, and every one of them is a shape with its own arm
+    /// in `apply_src`: an insert of a key the trie does not have, a delete that removes a leaf,
+    /// a delete that *collapses* a branch to one child, a no-op delete of an absent key, and a
+    /// batch that empties the trie outright.
     #[test]
     fn delta_root_randomized_parity() {
+        let mut inserts = 0usize;
+        let mut updates = 0usize;
+        let mut deletes = 0usize;
+        let mut absent_deletes = 0usize;
+        let mut collapses = 0usize;
+        let mut batch_sizes = (usize::MAX, 0usize);
+
         // sweep many pseudo-random op batches against the graph implementation
         for seed in 0u64..30 {
             let n = 20 + (seed as usize * 13) % 200;
@@ -1731,8 +1747,47 @@ mod tests {
                 seen.insert(k, v);
             }
             let ops: Vec<([u8; 32], Option<u64>)> = seen.into_iter().collect();
+
+            // Classify against the trie this batch is applied to, before applying it.
+            batch_sizes = (batch_sizes.0.min(ops.len()), batch_sizes.1.max(ops.len()));
+            let mut after = trie.clone();
+            for (k, v) in &ops {
+                let present = trie.get(k).unwrap().is_some();
+                match (v, present) {
+                    (Some(_), true) => updates += 1,
+                    (Some(_), false) => inserts += 1,
+                    (None, true) => deletes += 1,
+                    (None, false) => absent_deletes += 1,
+                }
+                match v {
+                    Some(v) => {
+                        after.insert_rlp(k, *v).unwrap();
+                    }
+                    None => {
+                        after.delete(k).unwrap();
+                    }
+                }
+            }
+            // A branch collapse shows up as the trie getting *shallower* while keys were
+            // removed -- the arm that rebuilds a one-child branch as an extension or a leaf.
+            if deletes > 0 && after.hash() != trie.hash() {
+                let before_bytes = flatten_trie(&trie).len();
+                let after_bytes = flatten_trie(&after).len();
+                if after_bytes < before_bytes {
+                    collapses += 1;
+                }
+            }
+
             delta_parity_case(&trie, &ops);
         }
+
+        assert!(inserts > 0, "no insert of an absent key was generated");
+        assert!(updates > 0, "no update of a present key was generated");
+        assert!(deletes > 0, "no delete of a present key was generated");
+        assert!(absent_deletes > 0, "no no-op delete of an absent key was generated");
+        assert!(collapses > 0, "no batch shrank the trie, so no collapse arm was exercised");
+        assert!(batch_sizes.0 <= 2, "no small batch was generated (min {})", batch_sizes.0);
+        assert!(batch_sizes.1 >= 10, "no large batch was generated (max {})", batch_sizes.1);
     }
 }
 

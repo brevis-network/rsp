@@ -478,6 +478,46 @@ mod fast_receipts {
         }
     }
 
+    /// The transaction-type tripwire, in the *shipped* build.
+    ///
+    /// `encode_2718` writes `r.tx_type as u8` as the EIP-2718 type prefix and takes the
+    /// legacy-or-not decision from a `matches!`. Both are silent about a `TxType` that did not
+    /// exist when they were written: a new variant gets its discriminant written as a prefix
+    /// and a non-legacy shape, which is right only by luck, and a *renumbered* discriminant
+    /// produces no diagnostic at all.
+    ///
+    /// The exhaustiveness check for this lived in `#[cfg(test)]`, on `ALL_TX_TYPES` -- which
+    /// is a fixed-size array literal, not a tripwire, whatever its comment said -- and the
+    /// natural repair if alloy ever marks `TxType` `#[non_exhaustive]` is a `_ => ty` arm,
+    /// which removes the check permanently with nothing signalling the loss.
+    ///
+    /// Here it is a `const`: adding a variant is a compile error in the *encoder module*, and
+    /// the per-variant assertions below pin the discriminants that go on the wire, so a
+    /// renumbering is a compile error too.
+    const _: () = {
+        const fn prefix(ty: TxType) -> u8 {
+            match ty {
+                TxType::Legacy => 0,
+                TxType::Eip2930 => 1,
+                TxType::Eip1559 => 2,
+                TxType::Eip4844 => 3,
+                TxType::Eip7702 => 4,
+            }
+        }
+        // The EIP-2718 type prefixes, which are consensus. `Legacy` is the one that carries no
+        // prefix at all, which is why `encode_2718` branches on it.
+        assert!(prefix(TxType::Legacy) == 0);
+        assert!(prefix(TxType::Eip2930) == 1);
+        assert!(prefix(TxType::Eip1559) == 2);
+        assert!(prefix(TxType::Eip4844) == 3);
+        assert!(prefix(TxType::Eip7702) == 4);
+        assert!(TxType::Legacy as u8 == prefix(TxType::Legacy));
+        assert!(TxType::Eip2930 as u8 == prefix(TxType::Eip2930));
+        assert!(TxType::Eip1559 as u8 == prefix(TxType::Eip1559));
+        assert!(TxType::Eip4844 as u8 == prefix(TxType::Eip4844));
+        assert!(TxType::Eip7702 as u8 == prefix(TxType::Eip7702));
+    };
+
     fn encode_2718(r: &Receipt, bloom: &Bloom, out: &mut Vec<u8>, lens: &mut Vec<usize>) {
         lens.clear();
         let mut logs_payload = 0usize;
