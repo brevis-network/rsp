@@ -955,6 +955,26 @@ impl FlatStateViews<'_> {
     /// effectively-changed accounts/slots are materialized, untouched storage tries become
     /// digest stubs. Running the existing `update()` + `state_root()` on the overlay with the
     /// returned (filtered) post state yields the exact post-state root.
+    ///
+    /// # The wipe this has to avoid
+    ///
+    /// `storage_tries` was built from `self.storage` alone, and [`EthereumState::update`] reaches
+    /// for `self.storage_tries.entry(addr).or_default()` -- so a modified account with no
+    /// witnessed storage trie got a *fresh empty* one and its row was rewritten with its storage
+    /// wiped. A plain value transfer to a contract with non-empty storage is enough to reach it:
+    /// the transfer touches the account but makes no storage access, so `storage_ref`'s `expect`
+    /// never fires and nothing else notices.
+    ///
+    /// So every account the post state modifies gets an entry, seeded from
+    /// `prior_storage_root` (private, further down this file) when the witness carries no trie
+    /// for it -- a digest stub when the account had storage, a real empty trie when it had none
+    /// -- and the one case that cannot be answered at all is rejected here rather than left for
+    /// `update` to `unwrap`.
+    ///
+    /// The three-way split mirrors [`Self::post_state_root`] case for case, deliberately. This
+    /// function has no non-test caller; `overlay_state_parity` is a cross-check of the shipped
+    /// path only while the two compute the same thing, and it was the two disagreeing -- the fix
+    /// landing in one of them -- that the check is there to catch.
     pub fn materialize_overlay(
         &self,
         post_state: &HashedPostState,
@@ -973,6 +993,35 @@ impl FlatStateViews<'_> {
                     view.materialize(&keys)?
                 }
                 None => node_from_digest(view.root_hash),
+            };
+            storage_tries.insert(*hashed_address, trie);
+        }
+
+        for (hashed_address, account) in post_state.accounts.iter() {
+            if account.is_none() || self.storage.contains_key(hashed_address) {
+                continue;
+            }
+            let storage = post_state.storages.get(hashed_address);
+            let trie = if storage.is_some_and(|st| st.wiped) {
+                // `wiped` is legitimate -- a destroyed or freshly created account starts from
+                // the empty trie, so its prior root does not come into it.
+                MptNode::default()
+            } else {
+                match self.prior_storage_root(hashed_address)? {
+                    // No storage before this block: the delta, if any, applies to the empty
+                    // trie, which is the one case where `or_default()` was already right.
+                    root if root == FLAT_EMPTY_ROOT => MptNode::default(),
+                    // Non-empty storage and no witnessed trie. A stub carries the root through
+                    // for an account whose storage is untouched; if the block changed a slot
+                    // there is nothing to apply it to, and `post_state_root` rejects the same
+                    // witness rather than computing a root that drops the storage.
+                    root if storage.is_none() => node_from_digest(root),
+                    _ => {
+                        return Err(Error::FlatTrie(
+                            "no witnessed storage trie for a modified account",
+                        ))
+                    }
+                }
             };
             storage_tries.insert(*hashed_address, trie);
         }
@@ -1474,7 +1523,7 @@ mod tests {
     }
 
     /// An account whose storage trie is **not** in the witness must not have its storage
-    /// silently wiped by `post_state_root`.
+    /// silently wiped -- by `post_state_root`, *or* by `materialize_overlay`.
     ///
     /// The reachable shape is the cheapest transaction there is: a plain value transfer to a
     /// contract. The account is touched, so it appears in `post_state.accounts`; no storage
@@ -1485,8 +1534,14 @@ mod tests {
     ///
     /// Both arms are covered: an account with a storage *change* and no witnessed trie must be
     /// refused outright, and an account with no change must keep the root it had.
+    ///
+    /// Every case runs through **both** implementations. The fix first landed only in
+    /// `post_state_root`, leaving `materialize_overlay` -- a `pub` second oracle for the same
+    /// computation, reached through `EthereumState::update`'s
+    /// `storage_tries.entry(addr).or_default()` -- still wiping. A parity test that exercises
+    /// one of two implementations of the same thing is how they drift.
     #[test]
-    fn post_state_root_does_not_wipe_an_unwitnessed_storage_trie() {
+    fn unwitnessed_storage_trie_is_not_wiped_by_either_path() {
         let mut storage = MptNode::default();
         for i in 0..40usize {
             storage.insert_rlp(&keccak(i.to_be_bytes()), U256::from(i + 3)).unwrap();
@@ -1581,6 +1636,14 @@ mod tests {
         // `post_state.accounts` carries no code hash, so compare against the same shape the
         // computation produces rather than re-deriving it: what this pins is that the
         // *storage* root survives, which the `bytecode_hash: None` rows preserve.
+        // Both paths, on every case below: `post_state_root` computes the root directly, and
+        // `materialize_overlay` + `update` is the graph-trie route to the same answer.
+        let overlay_root = |p: &HashedPostState| -> Result<B256, Error> {
+            let mut overlay = views.materialize_overlay(p)?;
+            overlay.update(p);
+            Ok(overlay.state_root())
+        };
+
         let got = views.post_state_root(&post).unwrap();
         assert_ne!(
             got,
@@ -1614,6 +1677,11 @@ mod tests {
             "the contract's storage was wiped from the post-state root"
         );
         assert_eq!(got, expected.hash());
+        assert_eq!(
+            overlay_root(&post).unwrap(),
+            expected.hash(),
+            "the overlay wiped the contract's storage that `post_state_root` preserved"
+        );
 
         // (b) a storage *change* with no witnessed trie cannot be computed at all.
         let mut post_with_storage = post.clone();
@@ -1627,6 +1695,13 @@ mod tests {
             ),
             "a modified account with no witnessed storage trie must be refused"
         );
+        assert!(
+            matches!(
+                overlay_root(&post_with_storage),
+                Err(Error::FlatTrie("no witnessed storage trie for a modified account"))
+            ),
+            "the overlay must refuse what `post_state_root` refuses, not answer it"
+        );
 
         // (c) ... unless the account really had none, or the storage is wiped, both of which
         // stay computable.
@@ -1637,13 +1712,13 @@ mod tests {
         let mut eoa_changes = HashedStorage::new(false);
         eoa_changes.storage.insert(B256::from(keccak(1usize.to_be_bytes())), U256::from(4));
         post_eoa.storages.insert(eoa, eoa_changes);
-        assert!(views.post_state_root(&post_eoa).is_ok());
+        assert_eq!(views.post_state_root(&post_eoa).unwrap(), overlay_root(&post_eoa).unwrap());
 
         let mut post_wiped = post.clone();
         let mut wiped_changes = HashedStorage::new(true);
         wiped_changes.storage.insert(B256::from(keccak(0usize.to_be_bytes())), U256::from(9));
         post_wiped.storages.insert(contract, wiped_changes);
-        assert!(views.post_state_root(&post_wiped).is_ok());
+        assert_eq!(views.post_state_root(&post_wiped).unwrap(), overlay_root(&post_wiped).unwrap());
     }
 
     /// Applies ops to a graph trie (reference) and via delta_root; roots must agree.
@@ -2601,10 +2676,29 @@ impl FlatStateViews<'_> {
     /// an account that did not exist has `EMPTY_ROOT`, and a key whose path leaves the witness
     /// is an error rather than an absence (see [`FlatTrieView::get`]).
     ///
-    /// The cost is one state-trie walk per touched account with no witnessed storage trie --
-    /// mostly EOAs and the beneficiary. Measured against the alternative of carrying the root
-    /// through `verified_views`: that map is built only for accounts that *do* have a storage
-    /// trie, which is exactly the set this is not.
+    /// # What it costs, and what has not been tried
+    ///
+    /// One state-trie walk plus one `TrieAccount::decode` per *modified* account with no
+    /// witnessed storage trie -- mostly EOAs, the beneficiary, withdrawal recipients and the
+    /// 4788/2935 system contracts. `TrieDB`'s own note prices a walk at ~1,460 retired
+    /// instructions, which puts this in the 10^5--10^6 range for a mainnet block, on
+    /// `COMPUTE_STATE_ROOT`. **That is an estimate from a number measured elsewhere, not a
+    /// measurement of this code**: it wants a guest run on a real block, which needs the pico
+    /// toolchain and an RPC endpoint, and it has not been done. Treat the figure accordingly.
+    ///
+    /// Carrying the root through `verified_views` does not help: that map is built only for
+    /// accounts that *do* have a storage trie, which is exactly the set this is not. Two
+    /// routes that would help are **untried, not rejected**:
+    ///
+    /// * `TrieDB::basic_ref` already walks to these same rows during execution and decodes the same
+    ///   `TrieAccount`, discarding `storage_root`. Memoising it there and handing the map to
+    ///   `post_state_root` makes the walk free, at the price of interior mutability on
+    ///   `basic_ref`'s hot path and of getting the map back out of the executor's `db`.
+    /// * `delta_root`'s own descent reaches every one of these leaves a moment later. A change
+    ///   expressed as a function of the prior row rather than a fixed value would need no second
+    ///   walk at all.
+    ///
+    /// Both change the state-root path, and neither is worth landing on an estimate.
     fn prior_storage_root(&self, hashed_address: &B256) -> Result<B256, Error> {
         use alloy_rlp::Decodable;
         Ok(match self.state.get(hashed_address.as_slice())? {
