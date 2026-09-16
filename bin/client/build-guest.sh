@@ -73,7 +73,16 @@ fi
 
 # Record what was built, so a proof can be traced back to an ELF. The tree tracks neither the
 # ELF nor a digest of it, and two materially different valid ELFs build from this one source
-# tree, so without this line which one produced a given proof is not recoverable.
+# tree, so without this which one produced a given proof is not recoverable.
+#
+# Written to a *file*, not only echoed. Echoing it does not record anything: once the terminal
+# scrolls or the CI log expires the mapping is gone, and the problem this block exists to solve
+# is exactly where it was. The file lands next to the artefact it describes and is covered by
+# the same `elf` .gitignore entry, so it is recoverable without being committed.
+#
+# `rustc +pico -vV` rather than `cargo +pico --version`: the latter prints cargo's version
+# string, while `-vV` carries the commit hash that actually identifies the toolchain. The
+# `--wrap=memset` check above already computes it for $NM.
 if command -v shasum >/dev/null 2>&1; then
     DIGEST=$(shasum -a 256 elf/riscv64im-pico-zkvm-elf | cut -d' ' -f1)
 elif command -v sha256sum >/dev/null 2>&1; then
@@ -81,6 +90,23 @@ elif command -v sha256sum >/dev/null 2>&1; then
 else
     DIGEST="(no sha256 tool on PATH)"
 fi
+TOOLCHAIN=$(rustc +pico -vV 2>/dev/null | tr '\n' ' ' | tr -s ' ' || echo unknown)
+if COMMIT=$(git rev-parse HEAD 2>/dev/null); then
+    git diff --quiet HEAD 2>/dev/null || COMMIT="$COMMIT (dirty)"
+else
+    COMMIT="(not a git checkout)"
+fi
+INFO="elf/riscv64im-pico-zkvm-elf.build-info"
+{
+    echo "elf:       $(pwd)/elf/riscv64im-pico-zkvm-elf"
+    echo "sha256:    $DIGEST"
+    echo "built:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "toolchain: $TOOLCHAIN"
+    echo "commit:    $COMMIT"
+    echo "rustflags: $(printf '%s' "$CARGO_ENCODED_RUSTFLAGS" | tr "$US" ' ')"
+} > "$INFO"
+
 echo "guest ELF: $(pwd)/elf/riscv64im-pico-zkvm-elf"
 echo "sha256:    $DIGEST"
-echo "toolchain: $(cargo +pico --version 2>/dev/null || echo unknown)"
+echo "toolchain: $TOOLCHAIN"
+echo "recorded:  $(pwd)/$INFO"
