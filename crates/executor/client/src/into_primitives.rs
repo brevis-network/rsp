@@ -480,42 +480,40 @@ mod fast_receipts {
 
     /// The transaction-type tripwire, in the *shipped* build.
     ///
-    /// `encode_2718` writes `r.tx_type as u8` as the EIP-2718 type prefix and takes the
-    /// legacy-or-not decision from a `matches!`. Both are silent about a `TxType` that did not
-    /// exist when they were written: a new variant gets its discriminant written as a prefix
-    /// and a non-legacy shape, which is right only by luck, and a *renumbered* discriminant
-    /// produces no diagnostic at all.
+    /// `encode_2718` takes its legacy-or-not decision from `matches!(r.tx_type, TxType::Legacy)`,
+    /// and that is silent about a `TxType` that did not exist when it was written: a new variant
+    /// gets the non-legacy shape, which is right only by luck.
     ///
-    /// The exhaustiveness check for this lived in `#[cfg(test)]`, on `ALL_TX_TYPES` -- which
-    /// is a fixed-size array literal, not a tripwire, whatever its comment said -- and the
-    /// natural repair if alloy ever marks `TxType` `#[non_exhaustive]` is a `_ => ty` arm,
-    /// which removes the check permanently with nothing signalling the loss.
+    /// The exhaustiveness check for that lived in `#[cfg(test)]`, on `ALL_TX_TYPES` -- which is a
+    /// fixed-size array literal and not a tripwire, whatever its comment said -- and the natural
+    /// repair if alloy ever marks `TxType` `#[non_exhaustive]` is a `_ =>` arm, which removes the
+    /// check permanently with nothing signalling the loss. Here it is a `const`, so adding a
+    /// variant is a compile error in the encoder module, next to the `matches!` that needs
+    /// revisiting.
     ///
-    /// Here it is a `const`: adding a variant is a compile error in the *encoder module*, and
-    /// the per-variant assertions below pin the discriminants that go on the wire, so a
-    /// renumbering is a compile error too.
+    /// # What this deliberately does *not* assert
+    ///
+    /// The discriminants. An earlier version of this block pinned `TxType::Eip2930 as u8 == 1`
+    /// and so on, which was the right guard while the type byte was written as `r.tx_type as u8`.
+    /// #22 changed that to `Typed2718::ty()` -- the wire id from `#[envelope(ty = N)]`, which is
+    /// what EIP-2718 actually asks for and is not tied to the discriminant. With `ty()` the
+    /// discriminant is irrelevant to the encoding, so asserting it would *fail the build* on a
+    /// divergence that is not a defect. The exhaustiveness half is the part that is still load-
+    /// bearing, and `every_tx_type_matches_alloy` covers the wire ids against alloy.
     const _: () = {
-        const fn prefix(ty: TxType) -> u8 {
+        const fn is_legacy(ty: TxType) -> bool {
             match ty {
-                TxType::Legacy => 0,
-                TxType::Eip2930 => 1,
-                TxType::Eip1559 => 2,
-                TxType::Eip4844 => 3,
-                TxType::Eip7702 => 4,
+                TxType::Legacy => true,
+                TxType::Eip2930 | TxType::Eip1559 | TxType::Eip4844 | TxType::Eip7702 => false,
             }
         }
-        // The EIP-2718 type prefixes, which are consensus. `Legacy` is the one that carries no
-        // prefix at all, which is why `encode_2718` branches on it.
-        assert!(prefix(TxType::Legacy) == 0);
-        assert!(prefix(TxType::Eip2930) == 1);
-        assert!(prefix(TxType::Eip1559) == 2);
-        assert!(prefix(TxType::Eip4844) == 3);
-        assert!(prefix(TxType::Eip7702) == 4);
-        assert!(TxType::Legacy as u8 == prefix(TxType::Legacy));
-        assert!(TxType::Eip2930 as u8 == prefix(TxType::Eip2930));
-        assert!(TxType::Eip1559 as u8 == prefix(TxType::Eip1559));
-        assert!(TxType::Eip4844 as u8 == prefix(TxType::Eip4844));
-        assert!(TxType::Eip7702 as u8 == prefix(TxType::Eip7702));
+        // `Legacy` is the one variant that carries no 2718 prefix at all, which is the whole
+        // reason `encode_2718` branches on it.
+        assert!(is_legacy(TxType::Legacy));
+        assert!(!is_legacy(TxType::Eip2930));
+        assert!(!is_legacy(TxType::Eip1559));
+        assert!(!is_legacy(TxType::Eip4844));
+        assert!(!is_legacy(TxType::Eip7702));
     };
 
     fn encode_2718(r: &Receipt, bloom: &Bloom, out: &mut Vec<u8>, lens: &mut Vec<usize>) {

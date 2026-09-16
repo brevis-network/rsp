@@ -2217,17 +2217,17 @@ impl<'a> FlatTrieView<'a> {
         //
         // Three layers now stand behind it, and they check different things:
         //
-        //  1. `delta_root` and `empty_delta_root` -- the only entries into this family --
-        //     check the whole list is **strictly** ascending, in the shipped build. Strict is
-        //     what rejects a *duplicate* key, which the two below do not catch at all: a
-        //     duplicate makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the key
-        //     length, because the longest common prefix of a key with itself is the whole key.
-        //     Two bytes of API misuse, no witness required.
+        //  1. `delta_root` and `empty_delta_root` -- the only entries into this family -- check the
+        //     whole list is **strictly** ascending, in the shipped build. Strict is what rejects a
+        //     *duplicate* key, which the two below do not catch at all: a duplicate makes
+        //     `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the key length, because the
+        //     longest common prefix of a key with itself is the whole key. Two bytes of API misuse,
+        //     no witness required.
         //  2. this `debug_assert!`, which is the only one that checks the *full-key* ordering
-        //     rather than the ordering of the leading nibbles. `O(changes)` at every depth of
-        //     the recursion, which is why it cannot be a real `assert!`.
-        //  3. the `assert!` in the slot loop below, `O(1)` per run, which is the one that
-        //     reaches the guest.
+        //     rather than the ordering of the leading nibbles. `O(changes)` at every depth of the
+        //     recursion, which is why it cannot be a real `assert!`.
+        //  3. the `assert!` in the slot loop below, `O(1)` per run, which is the one that reaches
+        //     the guest.
         //
         // `debug_assert` rather than `assert` for this one: `delta_root` sorts just before
         // handing the list in, and the guest builds with debug assertions off, so it costs the
