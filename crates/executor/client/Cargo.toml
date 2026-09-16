@@ -51,15 +51,16 @@ alloy-consensus.workspace = true
 alloy-network.workspace = true
 alloy-rpc-types.workspace = true
 
+# misc
+# `config_digest` hashes a bincode encoding of the three wire fields the committed header
+# cannot show, so this is no longer dev-only. Inherited, like every other dependency here:
+# a literal version would let a workspace-wide bump leave the one crate compiled into the
+# guest behind, which is the host/guest graph divergence `lock-files` exists to catch.
+bincode.workspace = true
+
 # op
 op-alloy-network = { workspace = true, optional = true }
 op-alloy-rpc-types = { workspace = true, optional = true }
-# `config_digest` hashes a bincode encoding of the three wire fields the committed header
-# cannot show, so this is no longer dev-only.
-bincode = "1.3.3"
-
-[dev-dependencies]
-bincode = "1.3.3"
 
 [features]
 default = ["sha3-keccak"]
