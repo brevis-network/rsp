@@ -7,8 +7,11 @@ use revm::database::{states::bundle_state::BundleRetention, State};
 
 use crate::custom::OpCodeTrackingInspector;
 
-/// A generic block executor that uses reth's `BlockExecutionStrategy` to
-/// execute blocks.
+/// A generic block executor that runs a block through [`reth_evm::block::BlockExecutor`] with an
+/// [`OpCodeTrackingInspector`] attached, so a run can report per-opcode cycle costs.
+///
+/// (This said "uses reth's `BlockExecutionStrategy`". There is no such trait in the reth in use;
+/// the [`Executor`] impl below drives `BlockExecutor` directly.)
 #[allow(missing_debug_implementations, dead_code)]
 pub struct OpCodesTrackingBlockExecutor<C, DB> {
     /// EVM config.

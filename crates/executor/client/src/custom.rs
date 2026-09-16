@@ -1,9 +1,12 @@
-//! A cunstom EVM configuration for annotated precompiles.
+//! A custom EVM configuration for annotated precompiles.
 //!
-//! Originally from: https://github.com/paradigmxyz/alphanet/blob/main/crates/node/src/evm.rs.
+//! Originally from
+//! <https://github.com/paradigmxyz/alphanet/blob/main/crates/node/src/evm.rs>.
 //!
-//! The `CustomEvmConfig` type implements reth's `ConfigureEvm` and `ConfigureEvmEnv` traits,
-//! configuring the custom CustomEvmConfig precompiles and instructions.
+//! [`CustomEvmFactory`] is an [`EvmFactory`] whose precompiles are wrapped for cycle tracking;
+//! the [`reth_evm::ConfigureEvm`] implementation it feeds is `EthEvmConfig`'s. (This said
+//! "implements reth's `ConfigureEvm` and `ConfigureEvmEnv` traits" -- there is no
+//! `ConfigureEvmEnv` in the reth in use, and no type named `CustomEvmConfig` in this file.)
 
 use alloy_evm::{eth::EthEvmBuilder, EthEvm};
 use kzg_rs::{Bytes32, Bytes48, KzgProof, KzgSettings};

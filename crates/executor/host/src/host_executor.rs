@@ -26,8 +26,8 @@ pub type EthHostExecutor = HostExecutor<EthEvmConfig<ChainSpec, CustomEvmFactory
 
 pub type OpHostExecutor = HostExecutor<OpEvmConfig, OpChainSpec>;
 
-/// An executor that fetches data from an alloy `Provider` to execute blocks in
-/// `rsp_client_executor::executor::ClientExecutor`.
+/// An executor that fetches data from an [`alloy_provider::Provider`] to execute blocks in
+/// [`rsp_client_executor::executor::ClientExecutor`].
 #[derive(Debug, Clone)]
 pub struct HostExecutor<C: ConfigureEvm, CS> {
     evm_config: C,
