@@ -20,6 +20,12 @@ use serde_with::serde_as;
 
 use crate::error::ClientError;
 
+/// Domain tag for [`ClientExecutorInput::config_digest`]'s keccak preimage.
+///
+/// Fixed length, so the boundary between tag and payload is unambiguous, and versioned, so
+/// that changing what the digest covers does not silently keep the old value valid.
+pub const CONFIG_DIGEST_DOMAIN: &[u8] = b"rsp/config-digest/v1";
+
 pub type EthClientExecutorInput<'a> = ClientExecutorInput<'a, EthPrimitives>;
 
 #[cfg(feature = "optimism")]
@@ -87,13 +93,28 @@ impl<P: NodePrimitives> ClientExecutorInput<'_, P> {
     /// A digest over every wire field that changes execution and is invisible in the committed
     /// header. See [`CommittedHeader`].
     ///
-    /// Domain-separated and length-delimited by bincode's own framing: the three values are
-    /// serialised as one tuple, so no two different configurations share an encoding.
-    pub fn config_digest(&self) -> B256 {
-        let encoded =
-            bincode::serialize(&(&self.genesis, &self.custom_beneficiary, self.opcode_tracking))
-                .expect("the configuration is serializable");
-        keccak256(encoded)
+    /// Two properties, and they are not the same one -- the doc here used to claim the second
+    /// and implement only the first:
+    ///
+    /// * **Unambiguous within the preimage.** The three values are serialised as one bincode tuple,
+    ///   which length-delimits every variable-length field, so no two configurations share an
+    ///   encoding. That is all bincode's framing gives; it says nothing about anything outside this
+    ///   preimage.
+    /// * **Separated from every other keccak preimage in the system**, which is what
+    ///   [`CONFIG_DIGEST_DOMAIN`] is for. Without a tag the preimage is just bytes, and this guest
+    ///   keccaks trie node blobs, bytecodes and trie keys with the same function. The tag is a
+    ///   fixed-length constant prefix, so the split between it and the payload is unambiguous.
+    ///
+    /// Returns an error rather than panicking. `Genesis::Custom(ChainConfig)` is the one
+    /// variant carrying prover-supplied structure, so a `serde_bincode_compat` adapter failing
+    /// on it is a malformed input -- and a malformed input is a rejection, not a crash.
+    pub fn config_digest(&self) -> Result<B256, ClientError> {
+        let mut preimage = Vec::from(CONFIG_DIGEST_DOMAIN);
+        bincode::serialize_into(
+            &mut preimage,
+            &(&self.genesis, &self.custom_beneficiary, self.opcode_tracking),
+        )?;
+        Ok(keccak256(preimage))
     }
 
     /// Converts any borrowed wire bytes into owned buffers.
@@ -241,8 +262,15 @@ impl DatabaseRef for TrieDB<'_> {
             }));
         }
 
-        let account_in_trie =
-            self.views.state.get(hashed_address.as_slice()).expect("Can get from flat MPT");
+        // Not `expect`: `get` answers `Err(NodeNotResolved)` for a key whose path leaves the
+        // witnessed region, which is a witness the prover chose to omit -- attacker-controlled
+        // input, and so a rejection rather than a crash. `ProviderError` travels out through
+        // `BlockExecutionError` into `ClientError::BlockExecutionError`.
+        let account_in_trie = self
+            .views
+            .state
+            .get(hashed_address.as_slice())
+            .map_err(|e| ProviderError::TrieWitnessError(e.to_string()))?;
 
         let account = account_in_trie.map(|mut bytes| {
             let account_in_trie = TrieAccount::decode(&mut bytes).unwrap();
@@ -272,9 +300,10 @@ impl DatabaseRef for TrieDB<'_> {
             .get(&hashed_address)
             .expect("A storage trie must be provided for each account");
 
+        // As in `basic_ref`: an unwitnessed path is a rejection, not a panic.
         Ok(storage_view
             .get(keccak256(index.to_be_bytes::<32>()).as_slice())
-            .expect("Can get from flat MPT")
+            .map_err(|e| ProviderError::TrieWitnessError(e.to_string()))?
             .map(|mut bytes| U256::decode(&mut bytes).unwrap())
             .unwrap_or_default())
     }
@@ -619,31 +648,53 @@ mod committed_header_tests {
     /// rejection conditions into `Ok(())` -- and the committed header would be identical.
     #[test]
     fn the_config_digest_separates_every_field_it_covers() {
-        let base = input().config_digest();
+        let base = input().config_digest().unwrap();
 
         let mut g = input();
         g.genesis = Genesis::Sepolia;
-        assert_ne!(g.config_digest(), base, "genesis");
+        assert_ne!(g.config_digest().unwrap(), base, "genesis");
 
         let mut g = input();
         g.genesis = Genesis::Linea;
-        assert_ne!(g.config_digest(), base, "genesis (the custom-chain escape hatch)");
+        assert_ne!(g.config_digest().unwrap(), base, "genesis (the custom-chain escape hatch)");
 
         let mut b = input();
         b.custom_beneficiary = Some(address!("00000000000000000000000000000000cafebabe"));
-        assert_ne!(b.config_digest(), base, "custom_beneficiary");
+        assert_ne!(b.config_digest().unwrap(), base, "custom_beneficiary");
 
         let mut b2 = input();
         b2.custom_beneficiary = Some(address!("00000000000000000000000000000000cafebabf"));
-        assert_ne!(b2.config_digest(), b.config_digest(), "custom_beneficiary value");
+        assert_ne!(
+            b2.config_digest().unwrap(),
+            b.config_digest().unwrap(),
+            "custom_beneficiary value"
+        );
 
         let mut t = input();
         t.opcode_tracking = true;
-        assert_ne!(t.config_digest(), base, "opcode_tracking");
+        assert_ne!(t.config_digest().unwrap(), base, "opcode_tracking");
 
         // And it is a function of those fields only -- nothing else in the input perturbs it.
         let mut unrelated = input();
         unrelated.ancestor_headers = vec![Default::default(), Default::default()];
-        assert_eq!(unrelated.config_digest(), base);
+        assert_eq!(unrelated.config_digest().unwrap(), base);
+    }
+
+    /// The preimage is domain-separated, which is the property the doc used to claim of
+    /// bincode's framing. Bincode length-delimits *within* the tuple; it cannot stop the
+    /// encoding from also being a valid preimage somewhere else in a guest that keccaks trie
+    /// blobs, bytecodes and trie keys with the same function.
+    #[test]
+    fn the_config_digest_preimage_is_domain_tagged() {
+        let bare = bincode::serialize(&(&Genesis::Mainnet, &None::<Address>, false)).unwrap();
+        assert_ne!(
+            input().config_digest().unwrap(),
+            keccak256(&bare),
+            "the digest is keccak of the untagged encoding"
+        );
+
+        let mut tagged = Vec::from(CONFIG_DIGEST_DOMAIN);
+        tagged.extend_from_slice(&bare);
+        assert_eq!(input().config_digest().unwrap(), keccak256(&tagged));
     }
 }

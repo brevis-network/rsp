@@ -59,16 +59,24 @@ where
         &self,
         input: ClientExecutorInput<'_, C::Primitives>,
     ) -> Result<CommittedHeader, ClientError> {
-        let config_digest = input.config_digest();
+        let config_digest = input.config_digest()?;
         let sealed_headers = input.sealed_headers().collect::<Vec<_>>();
 
         // Initialize the witnessed database with verified storage proofs.
+        //
+        // Every step from here on is a rejection rather than a panic. These used to be
+        // `unwrap()`: `verified_views` returns `Err(MismatchedStateRoot)` when the witness does
+        // not hash to the parent header's root -- the anchor check, the one thing the whole
+        // trust chain hangs from -- and unwrapping it turned the tree's central rejection into
+        // an abort. A panic under `-Cpanic=abort` does fail closed, so this is liveness and
+        // reporting rather than soundness, but `flat.rs`'s own rule applies: a malformed
+        // witness should be a rejection, not a crash.
         let (views, accounts, block_hashes, bytecodes_by_hash) =
             profile_report!(INIT_WITNESS_DB, {
-                let (views, accounts) = input.verified_views().unwrap();
-                let (block_hashes, bytecodes_by_hash) = input.witness_aux(&sealed_headers).unwrap();
-                (views, accounts, block_hashes, bytecodes_by_hash)
-            });
+                let (views, accounts) = input.verified_views()?;
+                let (block_hashes, bytecodes_by_hash) = input.witness_aux(&sealed_headers)?;
+                Ok::<_, ClientError>((views, accounts, block_hashes, bytecodes_by_hash))
+            })?;
         let db = WrapDatabaseRef(TrieDB::new(&views, accounts, block_hashes, bytecodes_by_hash));
 
         let block_executor = BlockExecutor::new(self.evm_config.clone(), db, input.opcode_tracking);
@@ -79,23 +87,23 @@ where
                 .map_err(|_| ClientError::SignatureRecoveryFailed)
         })?;
 
-        // Validate the blocks.
+        // Validate the blocks. Consensus rejections are the expected answer for a block the
+        // prover made up, so they travel out as `ClientError::PostExecutionError` rather than
+        // aborting -- `validate_block_post_execution` below already worked that way.
         profile_report!(VALIDATE_HEADER, {
-            C::Primitives::validate_block(&block, self.chain_spec.clone())
-                .expect("The block is invalid");
+            C::Primitives::validate_block(&block, self.chain_spec.clone())?;
 
             for (header, parent) in sealed_headers.iter().tuple_windows() {
-                C::Primitives::validate_header(parent, self.chain_spec.clone())
-                    .expect("A parent header is invalid");
+                C::Primitives::validate_header(parent, self.chain_spec.clone())?;
 
                 C::Primitives::validate_header_against_parent(
                     header,
                     parent,
                     self.chain_spec.clone(),
-                )
-                .expect("The header is invalid against its parent");
+                )?;
             }
-        });
+            Ok::<_, ClientError>(())
+        })?;
 
         let execution_output =
             profile_report!(BLOCK_EXECUTION, { block_executor.execute(&block) })?;
@@ -118,10 +126,13 @@ where
         );
 
         // Verify the state root: one batched bottom-up delta pass over the verified blobs.
+        // `post_state_root` rejects a witness that omits a modified account's storage trie
+        // (and `prior_storage_root` under it rejects an unwitnessed path), so this is a
+        // `Result` on attacker-controlled input and must not be unwrapped.
         let state_root = profile_report!(COMPUTE_STATE_ROOT, {
             let hashed_state = executor_outcome.hash_state_slow::<KeccakKeyHasher>();
-            views.post_state_root(&hashed_state).unwrap()
-        });
+            views.post_state_root(&hashed_state)
+        })?;
 
         if state_root != input.current_block.header().state_root() {
             return Err(ClientError::MismatchedStateRoot);

@@ -31,4 +31,6 @@ pub enum ClientError {
     FailedToReadGenesisFile(#[from] std::io::Error),
     #[error("Failed to deserialize the genesis file: {}", .0)]
     FailedToDeserializeGenesisFile(#[from] serde_json::Error),
+    #[error("Failed to serialize the execution configuration: {}", .0)]
+    FailedToSerializeConfig(#[from] bincode::Error),
 }
