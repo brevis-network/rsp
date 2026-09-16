@@ -714,7 +714,7 @@ impl<'a> FlatTrieView<'a> {
                             blob = b;
                             inline = true;
                         }
-                        FlatRef::Digest(_) => {
+                        FlatRef::Digest(d) => {
                             if inline {
                                 return Err(Error::FlatTrie("digest ref inside inline node"));
                             }
@@ -722,7 +722,6 @@ impl<'a> FlatTrieView<'a> {
                                 self.edges[self.nodes[node_idx as usize].edge_start as usize];
                             if edge == EDGE_PRUNED {
                                 // Not "absent": unwitnessed. See the note on `get`.
-                                let FlatRef::Digest(d) = child else { unreachable!() };
                                 return Err(Error::NodeNotResolved(B256::from_slice(d)));
                             }
                             node_idx = edge;
@@ -1928,6 +1927,30 @@ fn ref_bytes_of(r: FlatRef<'_>, out: &mut Vec<u8>) {
 /// A (remaining-key-nibbles, new-value) pair; `None` deletes the key.
 type Change<'c> = (&'c [u8], Option<&'c [u8]>);
 
+/// Rejects a change list that is not strictly ascending by key. Called by `delta_root` and
+/// `empty_delta_root` on the list they have just sorted, so it is really a duplicate-key
+/// check; it is written as the full ordering test so that it also covers a caller that ever
+/// stops sorting.
+///
+/// Checked in the *shipped* build and not only under `debug_assertions`. Two separate things
+/// rest on it. `apply_branch`'s precondition is that `changes` is sorted by the whole key, and
+/// a violation there can return a silently wrong root rather than panicking (see the note on
+/// that function) -- so the guest, which builds with debug assertions off, had the property
+/// enforced in no configuration at all. And *duplicate* keys make `build_kvs` index
+/// `kvs[start].0[cp]` with `cp` equal to the key length, because the longest common prefix of a
+/// key with itself is the whole key: two bytes of API misuse, no witness required, and a panic
+/// that was invisible to every layer the harness had before round 2.
+///
+/// One extra pass of the same comparison the sort just made, against an `O(n log n)` sort: not
+/// measurable.
+#[inline]
+fn require_strictly_ascending(list: &[Change<'_>]) -> Result<(), Error> {
+    if list.windows(2).any(|w| w[0].0 >= w[1].0) {
+        return Err(Error::FlatTrie("delta changes must be strictly ascending by key"));
+    }
+    Ok(())
+}
+
 /// The result of rebuilding a subtree: its full RLP encoding, or nothing left.
 enum Out {
     Empty,
@@ -2088,23 +2111,7 @@ impl<'a> FlatTrieView<'a> {
             .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
             .collect();
         list.sort_unstable_by(|a, b| a.0.cmp(b.0));
-        // Strictly ascending, checked in the *shipped* build and not only under
-        // `debug_assertions`.
-        //
-        // Two separate things rest on it. `apply_branch`'s precondition is that `changes` is
-        // sorted by the whole key, and a violation there can return a silently wrong root
-        // rather than panicking (see the note on that function) -- so the guest, which builds
-        // with debug assertions off, had the property enforced in no configuration at all.
-        // And *duplicate* keys make `build_kvs` index `kvs[start].0[cp]` with `cp` equal to
-        // the key length, because the longest common prefix of a key with itself is the whole
-        // key: two bytes of API misuse, no witness required, and a panic that was invisible to
-        // every layer the harness had before round 2.
-        //
-        // One extra pass of the same comparison the sort just made, against an
-        // `O(n log n)` sort: not measurable.
-        if list.windows(2).any(|w| w[0].0 >= w[1].0) {
-            return Err(Error::FlatTrie("delta changes must be strictly ascending by key"));
-        }
+        require_strictly_ascending(&list)?;
 
         let out = if self.is_empty() {
             Self::apply_empty(&list)
@@ -2127,23 +2134,7 @@ impl<'a> FlatTrieView<'a> {
             .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
             .collect();
         list.sort_unstable_by(|a, b| a.0.cmp(b.0));
-        // Strictly ascending, checked in the *shipped* build and not only under
-        // `debug_assertions`.
-        //
-        // Two separate things rest on it. `apply_branch`'s precondition is that `changes` is
-        // sorted by the whole key, and a violation there can return a silently wrong root
-        // rather than panicking (see the note on that function) -- so the guest, which builds
-        // with debug assertions off, had the property enforced in no configuration at all.
-        // And *duplicate* keys make `build_kvs` index `kvs[start].0[cp]` with `cp` equal to
-        // the key length, because the longest common prefix of a key with itself is the whole
-        // key: two bytes of API misuse, no witness required, and a panic that was invisible to
-        // every layer the harness had before round 2.
-        //
-        // One extra pass of the same comparison the sort just made, against an
-        // `O(n log n)` sort: not measurable.
-        if list.windows(2).any(|w| w[0].0 >= w[1].0) {
-            return Err(Error::FlatTrie("delta changes must be strictly ascending by key"));
-        }
+        require_strictly_ascending(&list)?;
         Ok(match Self::apply_empty(&list) {
             Out::Empty => FLAT_EMPTY_ROOT,
             Out::Enc(enc) => B256::from(keccak(&enc)),
