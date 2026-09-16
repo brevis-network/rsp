@@ -21,7 +21,12 @@ name: CI
 #     why it is opt-in rather than always-on.
 #   * the root workspace links a *pre-campaign* revm (the lockfile pins it nine commits behind
 #     at both the baseline and the tip), so no host test here exercises the code the guest
-#     ships. `lock-files` at least makes a drift visible.
+#     ships. This one does **not** close here, and `lock-files` cannot close it: see the note
+#     on that job. It is structural, not a stale pin -- the guest's revm needs the RV64
+#     `[patch.crates-io]` entries in `bin/client/Cargo.toml` (`bn`, `k256`, `sha2`, ...), and
+#     against the crates.io `substrate-bn` the host workspace resolves, `revm-precompile` does
+#     not compile ("cannot add `AffineG1` to `AffineG1`"). Aligning the two means giving the
+#     host workspace the guest's patch set, which is a change to the tree, not to CI.
 
 on:
   push:
@@ -89,19 +94,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # The guest is a *separate* workspace with its own lockfile; a dependency change in
-      # `crates/` that is not reflected there means the host and the guest link different
-      # graphs, which is how the host workspace ended up on a pre-campaign revm.
+      # The guest is a *separate* workspace with its own lockfile, and `bin/client-op` a third;
+      # a dependency change in `crates/` that is not reflected there means the host and the
+      # guest link different graphs.
+      #
+      # `--locked` rather than a bare `cargo tree` followed by `git status --porcelain`. The
+      # latter rewrites the lockfile it is meant to be auditing, then reports the rewrite -- so
+      # it leaves a dirty tree for every later step, and its failure says only "not up to
+      # date", naming no file. `--locked` mutates nothing and names the lockfile it refused.
+      # (Both forms went red on the commit that added this job: `bin/client-op` is in no
+      # workspace and nothing compiles it, so its lockfile had drifted a long way.)
       - run: |
-          cargo tree > /dev/null
-          (cd ./bin/client && cargo tree > /dev/null)
-          (cd ./bin/client-op && cargo tree > /dev/null)
-      - run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "Lock files are not up to date:"
-            git status --porcelain
-            exit 1
+          cargo tree --locked > /dev/null
+          (cd ./bin/client && cargo tree --locked > /dev/null)
+          (cd ./bin/client-op && cargo tree --locked > /dev/null)
+
+      # A **report, not a gate**, and the distinction is the point.
+      #
+      # The header at the top of this file used to say `lock-files` "at least makes a drift
+      # visible" of the host/guest revm split. It does not and cannot: every lockfile above
+      # pins revm by *revision*, `cargo tree` never re-resolves an already-pinned git revision,
+      # and each lockfile is internally consistent with its own manifest. So the step above
+      # goes green on precisely that divergence. Printing the two revisions is what actually
+      # makes it visible.
+      #
+      # It cannot be a gate, because the divergence is real and cannot be closed from here --
+      # see the note at the top of this file. An always-red job is worth less than no job at
+      # all, and a green job that claims to check something it does not is worth less than
+      # either.
+      - name: report the revm revision each workspace links
+        run: |
+          rev() {
+            grep -m1 -o 'brevis-network/revm?branch=[^#]*#[0-9a-f]*' "$1" | sed 's/.*#//' ||
+              echo "<none>"
+          }
+          host=$(rev Cargo.lock)
+          guest=$(rev bin/client/Cargo.lock)
+          echo "host  workspace revm: $host"
+          echo "guest workspace revm: $guest"
+          if [ "$host" != "$guest" ]; then
+            echo "::warning::host and guest link different revm revisions" \
+                 "($host vs $guest), so no host test here exercises the code the guest ships"
           fi
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Two commits on this branch went and resolved intra-doc links, and nothing kept them
+      # resolved: a `[Type]` that does not resolve is a warning, and a warning in a tree with
+      # no CI is invisible. `-D warnings` is what makes the next one a build failure, and it
+      # is affordable here in a way it is not for `clippy` above -- rustdoc's lints are about
+      # the docs rather than about codegen, so none of them are deliberate choices on RV64.
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
   guest:
     name: build the guest ELF
