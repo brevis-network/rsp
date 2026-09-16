@@ -1,9 +1,3 @@
-//! The pre-flat witness database.
-//!
-//! [`WitnessDb`] is the plain map-of-everything form the guest used before the flat RLP trie
-//! format: it carries values with no proof of membership, so it is sound only where something
-//! else anchors them. The guest reads `rsp_mpt::FlatEthereumState` instead.
-
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use alloy_primitives::B256;

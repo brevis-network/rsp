@@ -1,10 +1,3 @@
-//! Host-side block execution and witness generation.
-//!
-//! [`HostExecutor`] fetches a block over RPC, executes it against an [`rsp_rpc_db::BasicRpcDb`] to
-//! find out which state it touches, and serialises that subset -- with the proofs that bind it to
-//! the parent state root -- into the input the guest runs on. The guest half is
-//! [`rsp_client_executor::executor::ClientExecutor`], which must reach the same header.
-
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use alloy_chains::Chain;

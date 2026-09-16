@@ -1,10 +1,3 @@
-//! Host-side databases that fetch state over RPC and record what a block touched.
-//!
-//! Executing a block against one of these yields the witness the guest is given: the accounts,
-//! slots, bytecodes and ancestor headers actually read, plus the proofs binding them to the
-//! parent state root. [`BasicRpcDb`] builds that from `eth_getProof`; `ExecutionWitnessRpcDb`
-//! (feature `execution-witness`) from `debug_executionWitness`.
-
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use alloy_consensus::Header;

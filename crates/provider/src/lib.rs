@@ -1,9 +1,3 @@
-//! RPC provider construction for the host.
-//!
-//! Wraps [`alloy_provider::RootProvider`] with a retry policy that treats the rate-limit and
-//! transient-server responses public endpoints return under load as retryable, which the default
-//! policy does not.
-
 use alloy_json_rpc::RpcError;
 use alloy_provider::{Network, RootProvider};
 use alloy_rpc_client::RpcClient;
