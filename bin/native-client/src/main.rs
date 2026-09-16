@@ -3,7 +3,6 @@ use rsp_client_executor::{
     executor::EthClientExecutor,
     io::{EthClientExecutorInput, LegacyEthClientExecutorInput},
 };
-use std::sync::Arc;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -51,10 +50,8 @@ fn main() {
 
     // Execute the block
     info!("init eth executor");
-    let executor = EthClientExecutor::eth(
-        Arc::new((&input.genesis).try_into().unwrap()),
-        input.custom_beneficiary,
-    );
+    let executor = EthClientExecutor::eth(&input.genesis, input.custom_beneficiary)
+        .expect("failed to build the chain spec");
     let committed = executor.execute(input).expect("failed to execute client");
     info!(
         "execution success gas_used = {} config_digest = {}",

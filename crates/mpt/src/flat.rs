@@ -191,6 +191,15 @@ fn rlp_header(bytes: &[u8], pos: usize) -> Result<(usize, usize, bool), Error> {
     // buffer here rather than at each of the ~a dozen call sites. `be_len` bounds `len` by
     // `bytes.len()`, and the check below bounds the sum; neither addition can wrap, because
     // `pos <= bytes.len()` and both addends are under `bytes.len()`.
+    //
+    // **This is the expensive guard, and it is worth its price.** `rlp_header` runs once per
+    // RLP item over the whole witness in `parse_and_verify`, so its two extra comparisons --
+    // together with `be_len`'s checked arithmetic and `parse_node`'s restatement -- are
+    // **+48.0 M retired instructions across the thirteen `perf/bench_data/rv64` blocks, 89 %
+    // of this branch's total cost** (+1.36 M on block 24006677 alone). Measured by building
+    // the guest with all three sites reverted and emulating both. It buys the property that a
+    // hostile witness is rejected rather than read out of bounds, which no amount of replaying
+    // real blocks can check -- see the note on `parse_and_verify`.
     let (payload, len, is_list) = match b0 {
         0x00..=0x7f => (pos, 1, false),
         0x80..=0xb7 => (pos + 1, (b0 - 0x80) as usize, false),
@@ -2591,9 +2600,17 @@ impl FlatStateViews<'_> {
     /// is an error rather than an absence (see [`FlatTrieView::get`]).
     ///
     /// Costs one state-trie walk plus a `TrieAccount::decode` per modified account with no
-    /// witnessed storage trie -- mostly EOAs -- on `COMPUTE_STATE_ROOT`. At `TrieDB`'s ~1,460
-    /// retired instructions a walk that is 10^5--10^6 for a mainnet block, but **that is
-    /// extrapolated, not measured here**: pricing it wants a guest run on a real block.
+    /// witnessed storage trie -- mostly EOAs -- on `COMPUTE_STATE_ROOT`.
+    ///
+    /// **Measured at zero.** An earlier note here estimated 10^5--10^6 retired instructions per
+    /// mainnet block by extrapolating `TrieDB`'s ~1,460-instruction walk, and flagged that as
+    /// not measured. It has since been measured, by building the guest with this function
+    /// short-circuited to `FLAT_EMPTY_ROOT` and emulating both arms over the thirteen
+    /// `perf/bench_data/rv64` blocks: **-819 instructions summed across all thirteen**, i.e.
+    /// nothing, with the per-block difference landing on both sides of zero. The reason is that
+    /// the arm is reached only for a modified account the witness carries no storage trie for,
+    /// which these witnesses essentially never contain. Do not re-estimate it; if the witness
+    /// shape changes, re-measure.
     ///
     /// Carrying the root through `verified_views` does not help -- that map covers exactly the
     /// accounts this does not. Two routes would, both **untried rather than rejected**: memoising

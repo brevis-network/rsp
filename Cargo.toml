@@ -180,6 +180,18 @@ sha3 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", tag = "patch-
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-6.0.0" }
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-6.0.0" }
 # revm patches
+#
+# The HOST stays on `pico-v98-31-0-2`, and its `Cargo.lock` stays pinned at `67781f52`
+# (2025-12-01). It cannot move: from revm `57b98989` (2026-03-25, "modify bn254 point cal")
+# onward `crates/precompile/src/bn254/substrate.rs` needs a `substrate-bn` API the sp1 `bn`
+# patch above does not provide -- `cannot add AffineG1 to AffineG1`. That is a defect on
+# `pico-v98-31-0-2` itself, not from revm #11, which does not touch bn254; the stale lock is
+# the only reason nobody has hit it. Fixing it means moving the host off the sp1 `bn` patch
+# and is out of scope for this pair. Tracked separately.
+#
+# The GUEST is what carries revm #11's memory-safety fixes into the proof, and
+# `bin/client/Cargo.toml` is repointed at its head branch for exactly that reason -- see the
+# note there. The host/guest revm skew this leaves is pre-existing, not introduced here.
 revm = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-bytecode = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-context = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }

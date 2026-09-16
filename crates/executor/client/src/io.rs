@@ -24,6 +24,22 @@ use crate::error::ClientError;
 /// changing what the digest covers does not silently keep the old value valid.
 pub const CONFIG_DIGEST_DOMAIN: &[u8] = b"rsp/config-digest/v1";
 
+/// The digest over the three wire fields that change execution and leave no trace in the
+/// committed header. See [`CommittedHeader`].
+///
+/// Free-standing so that the value the guest commits is computed from the fields that
+/// *configured the run* -- `ClientExecutor` holds its own copies and digests those -- while
+/// [`ClientExecutorInput::config_digest`] stays available to host tooling holding an input.
+pub fn config_digest(
+    genesis: &Genesis,
+    custom_beneficiary: &Option<Address>,
+    opcode_tracking: bool,
+) -> Result<B256, ClientError> {
+    let mut preimage = Vec::from(CONFIG_DIGEST_DOMAIN);
+    bincode::serialize_into(&mut preimage, &(genesis, custom_beneficiary, opcode_tracking))?;
+    Ok(keccak256(preimage))
+}
+
 pub type EthClientExecutorInput<'a> = ClientExecutorInput<'a, EthPrimitives>;
 
 #[cfg(feature = "optimism")]
@@ -99,12 +115,7 @@ impl<P: NodePrimitives> ClientExecutorInput<'_, P> {
     ///
     /// Fallible because `Genesis::Custom(ChainConfig)` carries prover-supplied structure.
     pub fn config_digest(&self) -> Result<B256, ClientError> {
-        let mut preimage = Vec::from(CONFIG_DIGEST_DOMAIN);
-        bincode::serialize_into(
-            &mut preimage,
-            &(&self.genesis, &self.custom_beneficiary, self.opcode_tracking),
-        )?;
-        Ok(keccak256(preimage))
+        config_digest(&self.genesis, &self.custom_beneficiary, self.opcode_tracking)
     }
 
     /// Converts any borrowed wire bytes into owned buffers.
@@ -394,30 +405,48 @@ pub trait WitnessInput {
 /// bytes and the raw jump-table words instead and rebuild the analyzed bytecode with two
 /// memcpys per contract. Non-legacy variants (EIP-7702) fall back to their normal encoding.
 ///
-/// # This format is fail-open, and that is deferred rather than fixed
+/// # Only the hashed preimage is trusted
 ///
-/// `hash_slow()` covers `code[..original_len]` and nothing else, so `original_len`,
-/// `jump_bit_len`, `jump_table` and the variant tag all cross the wire unauthenticated under
-/// one unchanged `code_hash`. `LegacyAnalyzedBytecode::new`'s three asserts check internal
-/// consistency only; none of them relates the jump table to the code, because doing so needs
-/// the same `analyze_legacy` walk that computing it needs. Executed: a forged jump table turns
-/// an `InvalidJump` halt into `SUCCESS`, and one byte of the unhashed padding becomes
-/// arbitrary-length attacker code under a legitimate contract's hash.
+/// `hash_slow()` covers `code[..original_len]` and nothing else, so `jump_bit_len`,
+/// `jump_table`, the padding in `code[original_len..]` and the variant tag all cross the wire
+/// unauthenticated under one unchanged `code_hash`. Executed, when they were believed: a
+/// forged jump table turned an `InvalidJump` halt into `SUCCESS`, and one byte of the unhashed
+/// padding became arbitrary-length attacker code under a legitimate contract's hash.
 ///
-/// **Tracked as brevis-network/rsp#24. The fix is `fa4bb04` on `tommy/group-a-review-fixes`**,
-/// which ships the preimage alone and re-derives the rest via `Bytecode::new_raw_checked`. It
-/// is held back here only because it changes the witness wire format, which invalidates every
-/// previously serialized `EthClientExecutorInput` -- including the committed
-/// `perf/bench_data/rv64/reth-*.bin` bench fixtures. Restore it once those are transcoded or
-/// regenerated; nothing else in this crate depends on the old shape.
+/// [`deserialize`] therefore reads **only the preimage** and re-derives everything else
+/// through `Bytecode::new_raw_checked`, which is `analyze_legacy` plus the EIP-7702 prefix
+/// test. That closes RSP-S0-1/2/4/6, and with them the wire half of REVM-S1-7: the analysis's
+/// post-conditions hold because the analysis produced them, rather than because a constructor
+/// restated two of the three.
 ///
-/// Inherited from `succinctlabs/rsp`, where it is still present at `upstream/main` `2013b56`.
+/// **The wire format is deliberately unchanged.** The redundant fields are still serialized
+/// and still ignored, so every previously serialized `EthClientExecutorInput` -- including the
+/// committed `perf/bench_data/rv64/reth-*.bin` bench fixtures -- still decodes. That is the
+/// difference from `fa4bb04`, which shipped the preimage alone and broke all of them; it is
+/// also why this is not yet the whole of brevis-network/rsp#24, which additionally drops the
+/// dead fields and the witness bytes they cost.
+///
+/// # What it costs, measured
+///
+/// **+202.8 M retired instructions across the thirteen `perf/bench_data/rv64` blocks, +6.5 %**
+/// (+5.8 M / +1.9 % on block 24006677; worst case +17.8 % on 18884864, where the witness is
+/// small and the contracts are not). Emulated on `validation/rv64-emu`, same fixtures, same
+/// rustflags, both arms.
+///
+/// That is much more than the ~1.85M the old shape saved on the `bitvec` decode, because the
+/// decode was never the whole of it: the jump table was *computed by the host*, and the guest
+/// now walks every contract byte itself. **It is not avoidable by preferring #24** -- shipping
+/// the preimage alone pays exactly the same walk, and differs only in also saving the witness
+/// bytes the dead fields cost. The price is authenticating the bytecode at all.
+///
+/// Inherited from `succinctlabs/rsp`, where the unauthenticated form is still present at
+/// `upstream/main` `2013b56`.
 mod wire_bytecodes {
     use std::borrow::Cow;
 
-    use revm::{bytecode::LegacyAnalyzedBytecode, state::Bytecode};
+    use revm::{primitives::Bytes, state::Bytecode};
     use rsp_mpt::serde_cow_bytes;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
     #[derive(Serialize, Deserialize)]
     enum WireBytecode<'a> {
@@ -448,24 +477,35 @@ mod wire_bytecodes {
         wire.serialize(s)
     }
 
+    /// Rebuilds each bytecode **from its hashed preimage alone**.
+    ///
+    /// Only `code[..original_len]` is read. `jump_bit_len`, `jump_table`, the padding in
+    /// `code[original_len..]` and the variant tag are all still on the wire -- the format is
+    /// unchanged, so previously serialized witnesses still decode -- but none of them is
+    /// trusted: `Bytecode::new_raw_checked` re-derives the jump table, the padding and the
+    /// variant from the preimage, which `code_hash` binds.
+    ///
+    /// `original_len` is not an exception. It selects the preimage, and the preimage is what
+    /// `hash_slow()` hashes, so a wrong `original_len` yields a bytecode whose hash does not
+    /// match the `code_hash` the lookup used.
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Bytecode>, D::Error> {
         let wire: Vec<WireBytecode<'de>> = Vec::deserialize(d)?;
-        Ok(wire
-            .into_iter()
-            .map(|w| match w {
-                WireBytecode::Legacy { code, original_len, jump_bit_len, jump_table } => {
-                    Bytecode::LegacyAnalyzed(LegacyAnalyzedBytecode::new(
-                        code.into_owned().into(),
-                        original_len as usize,
-                        revm::bytecode::JumpTable::from_bytes(
-                            jump_table.into_owned().into(),
-                            jump_bit_len as usize,
-                        ),
-                    ))
-                }
-                WireBytecode::Other(b) => b,
+        wire.into_iter()
+            .map(|w| {
+                let preimage: Bytes = match w {
+                    WireBytecode::Legacy { code, original_len, .. } => {
+                        let n = original_len as usize;
+                        if n > code.len() {
+                            return Err(D::Error::custom("original_len exceeds the code buffer"));
+                        }
+                        Bytes::from(code[..n].to_vec())
+                    }
+                    // The preimage of every variant, and the only thing `hash_slow()` covers.
+                    WireBytecode::Other(b) => Bytes::from(b.original_byte_slice().to_vec()),
+                };
+                Bytecode::new_raw_checked(preimage).map_err(D::Error::custom)
             })
-            .collect())
+            .collect()
     }
 
     #[cfg(test)]
@@ -473,7 +513,7 @@ mod wire_bytecodes {
         use bincode::Options;
 
         use super::*;
-        use revm_primitives::bytes;
+        use revm_primitives::{bytes, Address};
 
         #[test]
         fn wire_bytecode_roundtrip() {
@@ -499,6 +539,75 @@ mod wire_bytecodes {
             );
             let back = deserialize(&mut de).unwrap();
             assert_eq!(codes, back);
+        }
+
+        fn decode_wire(wire: Vec<WireBytecode<'_>>) -> Vec<Bytecode> {
+            let mut buf = Vec::new();
+            let mut ser = bincode::Serializer::new(
+                &mut buf,
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
+            );
+            wire.serialize(&mut ser).unwrap();
+            let mut de = bincode::Deserializer::from_slice(
+                &buf,
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
+            );
+            deserialize(&mut de).unwrap()
+        }
+
+        /// Everything outside the hashed preimage is ignored.
+        ///
+        /// This is RSP-S0-1/2/6 as a test: the same `code_hash` with a forged jump table used
+        /// to turn an `InvalidJump` halt into `SUCCESS`, and attacker bytes in the unhashed
+        /// padding used to execute under a legitimate contract's hash. Both records below
+        /// carry exactly those forgeries and must decode to what the preimage analyses to.
+        #[test]
+        fn only_the_hashed_preimage_survives_the_wire() {
+            let preimage = bytes!("5b600056");
+            let honest = Bytecode::new_raw(preimage.clone());
+
+            // Junk padding standing in for attacker code, plus a jump table asserting that
+            // every one of the first eight positions is a valid JUMPDEST.
+            let mut code = preimage.to_vec();
+            code.extend_from_slice(&[0x5b, 0x60, 0xff, 0x00]);
+            let forged = WireBytecode::Legacy {
+                code: Cow::Owned(code),
+                original_len: preimage.len() as u64,
+                jump_bit_len: 8,
+                jump_table: Cow::Owned(vec![0xff]),
+            };
+            assert_eq!(decode_wire(vec![forged]), vec![honest.clone()]);
+
+            // The variant tag is not the prover's either: the same preimage sent through the
+            // `Other` arm derives the same legacy bytecode, because `new_raw_checked` picks
+            // the variant from the preimage's own prefix.
+            assert_eq!(decode_wire(vec![WireBytecode::Other(honest.clone())]), vec![honest]);
+
+            // And an EIP-7702 preimage still derives EIP-7702, by that same prefix.
+            let delegated = Bytecode::new_eip7702(Address::repeat_byte(0xab));
+            assert_eq!(decode_wire(vec![WireBytecode::Other(delegated.clone())]), vec![delegated]);
+        }
+
+        /// `original_len` past the buffer is a rejection, not a panic or a wild slice.
+        #[test]
+        fn an_original_len_past_the_buffer_is_rejected() {
+            let wire = vec![WireBytecode::Legacy {
+                code: Cow::Owned(vec![0x00, 0x00]),
+                original_len: 99,
+                jump_bit_len: 0,
+                jump_table: Cow::Owned(vec![]),
+            }];
+            let mut buf = Vec::new();
+            let mut ser = bincode::Serializer::new(
+                &mut buf,
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
+            );
+            wire.serialize(&mut ser).unwrap();
+            let mut de = bincode::Deserializer::from_slice(
+                &buf,
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
+            );
+            assert!(deserialize(&mut de).is_err());
         }
     }
 }

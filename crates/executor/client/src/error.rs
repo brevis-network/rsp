@@ -33,4 +33,8 @@ pub enum ClientError {
     FailedToDeserializeGenesisFile(#[from] serde_json::Error),
     #[error("Failed to serialize the execution configuration: {}", .0)]
     FailedToSerializeConfig(#[from] bincode::Error),
+    #[error("The witness names a configuration this executor was not built for")]
+    MismatchedConfig,
+    #[error("Failed to build the chain spec from the genesis: {}", .0)]
+    FailedToBuildChainSpec(#[from] rsp_primitives::error::ChainSpecError),
 }

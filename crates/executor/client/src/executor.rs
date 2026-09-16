@@ -20,6 +20,7 @@ use reth_primitives_traits::Block;
 use reth_trie::KeccakKeyHasher;
 use revm::{database::WrapDatabaseRef, install_crypto};
 use revm_primitives::Address;
+use rsp_primitives::genesis::Genesis;
 use std::sync::Arc;
 
 pub const DESERIALZE_INPUTS: &str = "deserialize inputs";
@@ -37,10 +38,17 @@ pub type OpClientExecutor =
     ClientExecutor<reth_optimism_evm::OpEvmConfig, reth_optimism_chainspec::OpChainSpec>;
 
 /// An executor that executes a block inside a zkVM.
+///
+/// `genesis` and `custom_beneficiary` are kept here, not read back off the input, because they
+/// are what *built* `evm_config` and `chain_spec`. The committed digest has to name the
+/// configuration that ran; taking it from the input instead would let the two disagree, and a
+/// digest attesting to a configuration the block did not execute under is worse than none.
 #[derive(Debug, Clone)]
 pub struct ClientExecutor<C: ConfigureEvm, CS> {
     evm_config: C,
     chain_spec: Arc<CS>,
+    genesis: Genesis,
+    custom_beneficiary: Option<Address>,
 }
 
 impl<C, CS> ClientExecutor<C, CS>
@@ -57,7 +65,15 @@ where
         &self,
         input: ClientExecutorInput<'_, C::Primitives>,
     ) -> Result<CommittedHeader, ClientError> {
-        let config_digest = input.config_digest()?;
+        // Digest what configured *this executor*, and refuse an input that asks for anything
+        // else. In the guest both come from the same `ClientExecutorInput`, so this can only
+        // fire on a caller that built the executor from one configuration and handed it a
+        // witness naming another -- which the type system otherwise permits.
+        if input.genesis != self.genesis || input.custom_beneficiary != self.custom_beneficiary {
+            return Err(ClientError::MismatchedConfig);
+        }
+        let config_digest =
+            crate::io::config_digest(&self.genesis, &self.custom_beneficiary, input.opcode_tracking)?;
         let sealed_headers = input.sealed_headers().collect::<Vec<_>>();
 
         // Every fallible step from here on propagates rather than panicking. `verified_views`
@@ -162,28 +178,47 @@ where
 }
 
 impl EthClientExecutor {
-    pub fn eth(chain_spec: Arc<ChainSpec>, custom_beneficiary: Option<Address>) -> Self {
+    /// Builds the executor from the `Genesis` the witness carries, deriving the `ChainSpec`
+    /// here rather than taking one.
+    ///
+    /// Taking a prebuilt spec let a caller pass one that disagreed with the `genesis` the
+    /// committed digest names. Deriving it is what makes "the digest describes the run" true
+    /// by construction rather than by convention.
+    pub fn eth(
+        genesis: &Genesis,
+        custom_beneficiary: Option<Address>,
+    ) -> Result<Self, ClientError> {
         install_crypto(CustomCrypto::default());
 
-        Self {
+        let chain_spec: Arc<ChainSpec> = Arc::new(genesis.try_into()?);
+
+        Ok(Self {
             evm_config: EthEvmConfig::new_with_evm_factory(
                 chain_spec.clone(),
                 CustomEvmFactory::new(custom_beneficiary),
             ),
             chain_spec,
-        }
+            genesis: genesis.clone(),
+            custom_beneficiary,
+        })
     }
 }
 
 #[cfg(feature = "optimism")]
 impl OpClientExecutor {
-    pub fn optimism(chain_spec: Arc<reth_optimism_chainspec::OpChainSpec>) -> Self {
+    /// As [`EthClientExecutor::eth`]: the spec is derived here so it cannot disagree with the
+    /// `genesis` the committed digest names. OP has no `custom_beneficiary`.
+    pub fn optimism(genesis: &Genesis) -> Result<Self, ClientError> {
         install_crypto(CustomCrypto::default());
 
-        Self {
+        let chain_spec: Arc<reth_optimism_chainspec::OpChainSpec> = Arc::new(genesis.try_into()?);
+
+        Ok(Self {
             evm_config: reth_optimism_evm::OpEvmConfig::optimism(chain_spec.clone()),
             chain_spec,
-        }
+            genesis: genesis.clone(),
+            custom_beneficiary: None,
+        })
     }
 }
 
