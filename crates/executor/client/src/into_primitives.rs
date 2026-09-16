@@ -658,6 +658,7 @@ mod fast_receipts_be_len {
 #[cfg(test)]
 mod fast_receipts_parity {
     use alloy_consensus::{proofs::calculate_receipt_root, ReceiptWithBloom, TxReceipt, TxType};
+    use alloy_network::eip2718::Encodable2718;
     use alloy_primitives::{Address, Bytes, Log, LogData, B256};
     use reth_ethereum_primitives::Receipt;
 
@@ -831,11 +832,32 @@ mod fast_receipts_parity {
     /// The assertions at the bottom are on what was actually produced, not on loop counts: a
     /// count would hold however short the payloads were, which is precisely how this gap
     /// survived.
+    ///
+    /// "Produced" has to mean *bytes*, not the loop bounds. `max(&[.., 65_536, 70_000])` is a
+    /// constant, and `assert!(max >= 65_536)` on it holds for any behaviour of the code under
+    /// test -- indistinguishable from the iteration count the paragraph above rejects. So the
+    /// two guards read the encoder's own output: `max_len_bytes` is the width of the RLP list
+    /// header that came out of the encoded receipt, and `max_key_len` the width of the trie
+    /// key `receipts_root` builds with `encode_fixed_size`. Both go red if a future generator
+    /// stops reaching the rung, which is the whole point.
     #[test]
     fn receipts_root_over_long_payloads_and_large_blocks() {
+        /// Number of length bytes in the RLP list header of an encoded receipt value -- 0 for
+        /// the short-list form, 1..=8 for `0xf8..=0xff`. A typed receipt is `ty || rlp_list`
+        /// and a legacy one is the bare list, and the five wire ids are all <= 0x04, well
+        /// below any list tag.
+        fn list_length_bytes(value: &[u8]) -> usize {
+            let b0 = if value[0] <= 0x04 { value[1] } else { value[0] };
+            if b0 >= 0xf8 {
+                (b0 - 0xf7) as usize
+            } else {
+                0
+            }
+        }
+
         let mut rng = Rng(0x0BAD_C0DE_1234_5678);
-        let mut max_payload = 0usize;
-        let mut max_receipts = 0usize;
+        let mut max_len_bytes = 0usize;
+        let mut max_key_len = 0usize;
 
         // (a) One log per receipt, with a data length sitting on each rung of `header_len`'s
         // ladder and on both sides of it. 55/56 is the short-to-long edge, 255/256 is where
@@ -850,7 +872,6 @@ mod fast_receipts_parity {
                 address: Address::from_slice(&rng.bytes(20)),
                 data: LogData::new_unchecked(topics, Bytes::from(rng.bytes(len))),
             };
-            max_payload = max_payload.max(len);
             for (i, &ty) in ALL_TX_TYPES.iter().enumerate() {
                 let r = Receipt {
                     tx_type: ty,
@@ -859,6 +880,7 @@ mod fast_receipts_parity {
                     logs: std::vec![log.clone()],
                 };
                 let with_bloom = std::vec![ReceiptWithBloom::new(&r, TxReceipt::bloom(&r))];
+                max_len_bytes = max_len_bytes.max(list_length_bytes(&with_bloom[0].encoded_2718()));
                 assert_eq!(
                     super::fast_receipts::receipts_root(&with_bloom),
                     calculate_receipt_root(&with_bloom),
@@ -900,7 +922,11 @@ mod fast_receipts_parity {
             let receipts: Vec<Receipt> = (0..n).map(|i| receipt(&mut rng, i)).collect();
             let with_bloom: Vec<ReceiptWithBloom<&Receipt>> =
                 receipts.iter().map(|r| ReceiptWithBloom::new(r, TxReceipt::bloom(r))).collect();
-            max_receipts = max_receipts.max(n);
+            // The trie keys `receipts_root` will build. `adjust_index_for_rlp` permutes
+            // `0..n`, so the widest key in the block is the widest over that whole range.
+            for i in 0..n {
+                max_key_len = max_key_len.max(alloy_rlp::encode_fixed_size(&i).len());
+            }
             assert_eq!(
                 super::fast_receipts::receipts_root(&with_bloom),
                 calculate_receipt_root(&with_bloom),
@@ -908,13 +934,16 @@ mod fast_receipts_parity {
             );
         }
 
-        assert!(
-            max_payload >= 65_536,
-            "the long-form header above two length bytes was not reached ({max_payload})"
+        assert_eq!(
+            max_len_bytes, 3,
+            "the encoder never emitted an RLP list header with three length bytes, so the rung \
+             above 65,536 was not exercised (widest header produced: {max_len_bytes} length \
+             bytes)"
         );
-        assert!(
-            max_receipts >= 256,
-            "three-byte rlp(index) trie keys were not reached ({max_receipts})"
+        assert_eq!(
+            max_key_len, 3,
+            "no three-byte `rlp(index)` trie key was produced, so the 256-receipt rung was not \
+             exercised (widest key produced: {max_key_len} bytes)"
         );
     }
 

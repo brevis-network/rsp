@@ -486,6 +486,284 @@ mod tests {
         assert_eq!(calls.get() - before, 1, "an empty slot must not match an all-zero key");
     }
 
+    /// The match predicate is an **or**-reduction, and nothing weaker will do.
+    ///
+    /// `lookup`'s hit test is `(e.key[0] ^ w0) | .. | (e.key[3] ^ w3) | (e.len ^ N)`, and the
+    /// memo's soundness claim rests entirely on it: "a hit requires the stored key to equal
+    /// the probe byte for byte (`len` included), so a slot collision costs a rehash and can
+    /// never produce a wrong digest". Replace any one of those `|` with `&` or `^` and the
+    /// claim is false — the memo answers one input with a different input's digest.
+    ///
+    /// Four `|` operators, each mutable to `&` or `^`, is **eight** mutants, and all eight
+    /// survive the rest of this suite, `memo_is_exact_and_actually_caches` included. That test
+    /// *does* probe foreign slots — measured: 17 of its 600 keys' slots are contested, so the
+    /// predicate sees a non-matching entry on the order of 170 times a run — but on a contested
+    /// slot the stored key and the probe are two independent random 32-byte values, and each
+    /// mutant needs a further algebraic coincidence among the xor terms (`a & b == 0`,
+    /// `a == b`) of probability about 2^-64. More random keys will never produce one, so each
+    /// witness below is constructed rather than searched for, and each is aimed at one named
+    /// mutation.
+    ///
+    /// The count matters: the sweep shipped with six of the eight, missing `200:29 | -> &` and
+    /// `201:29 | -> &`. The argument above applies to those two unchanged — for a false hit
+    /// the mutant needs `terms[0] == 0`, and on a contested slot that is the xor of two
+    /// independent 64-bit words — so nothing else in the suite was killing them either, and
+    /// the `checked` tally at the bottom is what pins the sweep at eight.
+    ///
+    /// Every case seeds the slot the probe indexes with a *different* key, then probes: the
+    /// real predicate must miss and rehash, while the mutant returns the stored value. The
+    /// mutated predicate is evaluated here too, under both readings of it (see `mutated`), so
+    /// a witness that ever stops distinguishing the mutation it is aimed at fails the test
+    /// instead of passing it quietly.
+    #[test]
+    fn memo_match_predicate_needs_every_or() {
+        #[derive(Copy, Clone, PartialEq, Debug)]
+        enum Op {
+            And,
+            Xor,
+        }
+
+        /// The mutated predicate as the source patch actually reads.
+        ///
+        /// `cargo mutants` replaces the operator *token* in the source text — verified with
+        /// `cargo mutants --list --diff`, which emits `(e.key[1] ^ w1) & /* changed */` for
+        /// the site on line 199 — so the expression is re-parsed, and `&` binds tighter than
+        /// `^`, which binds tighter than `|`. A mutation at position `i` therefore does not
+        /// re-associate the chain: it binds terms `i` and `i+1` and ors the rest.
+        ///
+        ///     a | b | c | d | e   with `&` at position 1   ==>   a | (b & c) | d | e
+        fn mutated(terms: [u64; 5], at: usize, with: Op) -> u64 {
+            let paired = match with {
+                Op::And => terms[at] & terms[at + 1],
+                Op::Xor => terms[at] ^ terms[at + 1],
+            };
+            let mut acc = paired;
+            for (i, t) in terms.iter().enumerate() {
+                if i != at && i != at + 1 {
+                    acc |= t;
+                }
+            }
+            acc
+        }
+
+        /// The same mutation read as a left-associative reduction, i.e. as if the mutated
+        /// operator applied to everything accumulated so far: `((a | b) & c) | d | e` for a
+        /// mutation at position 1. This is what an AST-level rewrite of the inner binary node
+        /// would mean, and it is *not* what the textual patch above does. Every witness is
+        /// built so that both readings agree — all terms left of the mutated operator are
+        /// zero — so these cases kill the mutants under either one.
+        fn mutated_left_assoc(terms: [u64; 5], at: usize, with: Op) -> u64 {
+            let mut acc = terms[0];
+            for i in 0..4 {
+                acc = match (i == at, with) {
+                    (true, Op::And) => acc & terms[i + 1],
+                    (true, Op::Xor) => acc ^ terms[i + 1],
+                    (false, _) => acc | terms[i + 1],
+                };
+            }
+            acc
+        }
+
+        fn key32_from_words(w: [u64; 4]) -> Key32 {
+            let mut k = Key32([0u8; 32]);
+            for (i, word) in w.iter().enumerate() {
+                k.0[i * 8..i * 8 + 8].copy_from_slice(&word.to_le_bytes());
+            }
+            k
+        }
+
+        fn key20_from_words(w: [u64; 4]) -> Key20 {
+            assert_eq!(w[3], 0, "a 20-byte key has no fourth word");
+            assert_eq!(w[2] >> 32, 0, "a 20-byte key's third word is only four bytes");
+            let mut k = Key20([0u8; 20]);
+            k.0[0..8].copy_from_slice(&w[0].to_le_bytes());
+            k.0[8..16].copy_from_slice(&w[1].to_le_bytes());
+            k.0[16..20].copy_from_slice(&(w[2] as u32).to_le_bytes());
+            k
+        }
+
+        struct Case {
+            /// The mutation this witness kills, by the site `cargo mutants` reports.
+            mutant: &'static str,
+            /// Which `|` is replaced — 0 is `bloom.rs:198:36` — and by what.
+            at: usize,
+            with: Op,
+            /// What the slot already holds.
+            stored: [u64; 4],
+            stored_len: u64,
+            /// What is probed; `probe_len` is the `N` of the `lookup::<N>` call.
+            probe: [u64; 4],
+            probe_len: usize,
+        }
+
+        // In each case the xor terms are (a, b, c, d, e) with everything left of the mutated
+        // operator zero, and the pair it binds either disjoint (`&`) or equal (`^`).
+        let cases = [
+            // (a & b) | c | d | e  ->  a, b disjoint and nonzero; c = d = e = 0.
+            Case {
+                mutant: "bloom.rs:198:36  | -> &",
+                at: 0,
+                with: Op::And,
+                stored: [0b0001, 0b0010, 7, 9],
+                stored_len: 32,
+                probe: [0, 0, 7, 9],
+                probe_len: 32,
+            },
+            // (a ^ b) | c | d | e  ->  a == b, nonzero.
+            Case {
+                mutant: "bloom.rs:198:36  | -> ^",
+                at: 0,
+                with: Op::Xor,
+                stored: [0xdead_beef, 0xdead_beef, 7, 9],
+                stored_len: 32,
+                probe: [0, 0, 7, 9],
+                probe_len: 32,
+            },
+            // a | (b & c) | d | e  ->  a = 0, b and c disjoint and nonzero, d = e = 0.
+            Case {
+                mutant: "bloom.rs:199:29  | -> &",
+                at: 1,
+                with: Op::And,
+                stored: [7, 0b0001, 0b0010, 9],
+                stored_len: 32,
+                probe: [7, 0, 0, 9],
+                probe_len: 32,
+            },
+            // a | (b ^ c) | d | e  ->  a = 0, b == c nonzero, d = e = 0.
+            Case {
+                mutant: "bloom.rs:199:29  | -> ^",
+                at: 1,
+                with: Op::Xor,
+                stored: [7, 0xdead_beef, 0xdead_beef, 9],
+                stored_len: 32,
+                probe: [7, 0, 0, 9],
+                probe_len: 32,
+            },
+            // a | b | (c & d) | e  ->  a = b = 0, c and d disjoint and nonzero, e = 0.
+            Case {
+                mutant: "bloom.rs:200:29  | -> &",
+                at: 2,
+                with: Op::And,
+                stored: [7, 8, 0b0001, 0b0010],
+                stored_len: 32,
+                probe: [7, 8, 0, 0],
+                probe_len: 32,
+            },
+            // a | b | (c ^ d) | e  ->  a = b = 0, c == d nonzero, e = 0.
+            Case {
+                mutant: "bloom.rs:200:29  | -> ^",
+                at: 2,
+                with: Op::Xor,
+                stored: [7, 8, 0xdead_beef, 0xdead_beef],
+                stored_len: 32,
+                probe: [7, 8, 0, 0],
+                probe_len: 32,
+            },
+            // a | b | c | (d & e)  ->  a = b = c = 0, then d and e disjoint and nonzero. `e`
+            // is the length term again: 32 ^ 20 == 52 == 0b110100, and 8 is disjoint from it,
+            // so a 20-byte address probed against a slot holding a 32-byte topic comes back a
+            // hit under this mutant.
+            Case {
+                mutant: "bloom.rs:201:29  | -> &",
+                at: 3,
+                with: Op::And,
+                stored: [7, 8, 9, 8],
+                stored_len: 32,
+                probe: [7, 8, 9, 0],
+                probe_len: 20,
+            },
+            // a | b | c | (d ^ e)  ->  a = b = c = 0 and d == e, where e is the length
+            // mismatch. 32 ^ 20 == 52, so this one probes a 20-byte address against a slot
+            // holding a 32-byte topic — precisely the confusion the `len` word exists to
+            // prevent, and the field's own comment says so.
+            Case {
+                mutant: "bloom.rs:201:29  | -> ^",
+                at: 3,
+                with: Op::Xor,
+                stored: [7, 8, 9, 52],
+                stored_len: 32,
+                probe: [7, 8, 9, 0],
+                probe_len: 20,
+            },
+        ];
+
+        // A value no digest prefix will be mistaken for, so "returned the stored entry" is
+        // visible in the value as well as in the hash count.
+        const POISON: u64 = 0xBAD0_BAD0_BAD0_BAD0;
+        let mut table = empty_table();
+        let mut checked = 0usize;
+        for c in &cases {
+            let terms = [
+                c.stored[0] ^ c.probe[0],
+                c.stored[1] ^ c.probe[1],
+                c.stored[2] ^ c.probe[2],
+                c.stored[3] ^ c.probe[3],
+                c.stored_len ^ c.probe_len as u64,
+            ];
+            assert_ne!(
+                terms.iter().fold(0u64, |a, t| a | t),
+                0,
+                "{}: the real predicate calls this a hit, so it is not a miss case",
+                c.mutant
+            );
+            assert_eq!(
+                mutated(terms, c.at, c.with),
+                0,
+                "{}: this witness no longer distinguishes the mutation it is aimed at",
+                c.mutant
+            );
+            assert_eq!(
+                mutated_left_assoc(terms, c.at, c.with),
+                0,
+                "{}: the witness distinguishes the textual patch but not the left-associative \
+                 reading, so it depends on which one cargo-mutants does",
+                c.mutant
+            );
+
+            let idx = (c.probe[0] as usize) & (MEMO_LEN - 1);
+            table.slots[idx] =
+                MemoEntry { key: c.stored, val: POISON, len: c.stored_len, _pad: [0; 2] };
+
+            let calls = Cell::new(0usize);
+            let (got, expected) = match c.probe_len {
+                32 => {
+                    let k = key32_from_words(c.probe);
+                    // An unaligned probe returns `compute(bytes)` without consulting the slot
+                    // at all, which would make every case here pass vacuously.
+                    assert!((k.0.as_ptr() as usize).is_multiple_of(8));
+                    let got = table.lookup(&k.0, |b| {
+                        calls.set(calls.get() + 1);
+                        reference(b)
+                    });
+                    (got, reference(&k.0))
+                }
+                20 => {
+                    let k = key20_from_words(c.probe);
+                    assert!((k.0.as_ptr() as usize).is_multiple_of(8));
+                    let got = table.lookup(&k.0, |b| {
+                        calls.set(calls.get() + 1);
+                        reference(b)
+                    });
+                    (got, reference(&k.0))
+                }
+                n => panic!("the guest memoises 20- and 32-byte keys only, not {n}"),
+            };
+            assert_eq!(
+                calls.get(),
+                1,
+                "{}: the memo answered from a slot holding a different key",
+                c.mutant
+            );
+            assert_ne!(got, POISON, "{}: the memo returned the stored entry's value", c.mutant);
+            assert_eq!(got, expected, "{}: the recomputed digest is wrong", c.mutant);
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 8,
+            "the witness sweep did not run in full: four `|` operators, two mutations each"
+        );
+    }
+
     /// `ops_from_digest` + `apply_ops` must set exactly the bits `Bloom::m3_2048` sets, for
     /// every digest shape. Swept over random digests plus the boundary values of the 11-bit
     /// index (0 and 0x7FF in each of the three positions).
