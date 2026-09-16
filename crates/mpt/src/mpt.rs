@@ -529,9 +529,16 @@ pub(crate) unsafe fn keccak256_sponge_into(
         if off == 0 {
             // Do NOT unroll this. The loop is `ld`, `sd`, two `addi` and a branch per word,
             // and a four-at-a-time version with a tail ladder is fewer instructions on paper.
-            // Measured, it is worse by 240 K retired instructions on mainnet block 24006677:
-            // the bigger body stops `absorb_words` being inlined into the sponge, and the two
-            // out-of-line copies that appear then cost more than the addressing saves.
+            // Measured, it is worse on mainnet block 24006677: the bigger body stops
+            // `absorb_words` being inlined into the sponge, and the two out-of-line copies
+            // that appear then cost more than the addressing saves.
+            //
+            // **The size of the regression is not reliably recorded.** This comment said
+            // 240 K; the commit that rejected the experiment (`3fbd43fa`) says +1.33 M, 5.5x
+            // apart, for the same experiment. The convention in this project is that a
+            // negative result is written down so it is not retried, and a 5.5x spread makes
+            // the record useless for that -- so if anyone does retry it, *re-measure* rather
+            // than trusting either figure, and replace this paragraph with the answer.
             let q = p.cast::<u64>();
             for i in 0..k {
                 put::<FIRST>(state, i, q.add(i).read());

@@ -15,8 +15,11 @@
 # the calls instead.
 #
 # Consequence worth knowing: building with a plain `cargo pico build` still succeeds and
-# still produces a correct guest — just a ~1 % slower one, with no warning. If the guest's
-# cycle count ever jumps by roughly that much, check this first.
+# still produces a correct guest — just a ~1 % slower one, with no warning. The check at the
+# bottom of this script is what turns "no warning" into a build failure: it looks for the
+# `__wrap_memset` symbol in the linked ELF, which is only there if the flag took. A comment in
+# `rsp-guest-mem` used to say "the cycle regression check exists to catch exactly that"; there
+# has never been such a check anywhere in the repository, which is why this one is here.
 #
 # The flags below other than `--wrap` are copied verbatim from what `cargo pico build`
 # prints; if that tool changes them, re-copy them from its output.
@@ -68,4 +71,16 @@ else
     echo "warning: llvm-nm not found at $NM; skipped the --wrap=memset check" >&2
 fi
 
+# Record what was built, so a proof can be traced back to an ELF. The tree tracks neither the
+# ELF nor a digest of it, and two materially different valid ELFs build from this one source
+# tree, so without this line which one produced a given proof is not recoverable.
+if command -v shasum >/dev/null 2>&1; then
+    DIGEST=$(shasum -a 256 elf/riscv64im-pico-zkvm-elf | cut -d' ' -f1)
+elif command -v sha256sum >/dev/null 2>&1; then
+    DIGEST=$(sha256sum elf/riscv64im-pico-zkvm-elf | cut -d' ' -f1)
+else
+    DIGEST="(no sha256 tool on PATH)"
+fi
 echo "guest ELF: $(pwd)/elf/riscv64im-pico-zkvm-elf"
+echo "sha256:    $DIGEST"
+echo "toolchain: $(cargo +pico --version 2>/dev/null || echo unknown)"

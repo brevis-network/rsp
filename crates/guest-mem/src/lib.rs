@@ -26,6 +26,20 @@ const WORD: usize = core::mem::size_of::<usize>();
 /// Little-endian: the lowest differing byte *address* holds the least significant differing
 /// byte of the word, so the first difference is at the lowest set bit of the xor.
 ///
+/// # The **sign** is load-bearing, not just the zero/non-zero
+///
+/// The commit that introduced this ladder justified it in part with a static sweep that
+/// classified 105,382 executed calls as equality tests "and none ORD". That is **false**: 45
+/// of the 1,107 shipped call sites consume the result as a sign test, traced in the ELF to
+/// `post_state_root -> delta_root -> ipnsort` -- the sort, and now also the strict-ascending
+/// check, that `apply_branch`'s precondition depends on. An ordering-only-approximately-right
+/// `memcmp` would mis-sort a delta batch and hand `apply_branch` a list it is not allowed to
+/// receive.
+///
+/// The implementation is correct on this point and its test checks the returned value against
+/// the shift spelling for every differing-byte position and both directions; what was wrong
+/// was the *warrant*. Do not simplify this to an equality test.
+///
 /// Note for future rounds: unrolling the word loop four wide and replacing the sub-word tail
 /// with three size tests was measured at **+1.29 M** retired instructions on block 24006677.
 /// That is the third independent attempt to speed this function up and the third negative
@@ -211,15 +225,22 @@ mod c_exports {
 
     // Overriding `memset` by defining the symbol does *not* work, even though
     // `compiler_builtins` spells its `mem*` intrinsics with `linkage = "weak"`: linking the
-    // guest that way fails with `rust-lld: error: duplicate symbol: memset` (verified). The
-    // difference from `memcmp` above is most likely reachability -- nothing inside
-    // `compiler_builtins` calls `memcmp`, so the linker never pulls that object out of the
-    // archive, whereas `memset` is referenced internally and always comes along.
+    // guest that way fails with `rust-lld: error: duplicate symbol: memset` (verified).
+    //
+    // The reason is **not** archive laziness, which is what this note claimed for a while.
+    // `compiler_builtins`' `memset` is absorbed by `lto = "fat"` and re-emitted *strong* in a
+    // regular object, so the weak linkage is gone before the linker ever chooses; `memcmp`
+    // above survives only because `#![no_builtins]` excludes this crate from the LTO merge.
+    // The practical consequence: **if fat LTO is ever dropped, `memcmp` could start colliding
+    // the same way.**
     //
     // So the guest is linked with `--wrap=memset` instead (see `build-guest.sh`), which
     // redirects every call here. Note this makes the optimisation depend on the build
     // invocation: a plain `cargo pico build` silently drops it and costs ~7 M instructions,
-    // with no error. The cycle regression check exists to catch exactly that.
+    // with no error. `build-guest.sh` now checks the linked ELF actually defines
+    // `__wrap_memset` and fails if it does not -- which is what this comment used to claim a
+    // "cycle regression check" did. There has never been such a check anywhere in the
+    // repository.
     //
     // Only `memset` is replaced. A word-at-a-time `memcpy` was tried too and measured *worse*
     // than `compiler_builtins`' (53.4 M vs 50.3 M retired instructions on block 24006677): 42 %

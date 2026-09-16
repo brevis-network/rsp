@@ -186,29 +186,58 @@ fn emit_child(child: &MptNode, out: &mut Vec<u8>) {
 fn rlp_header(bytes: &[u8], pos: usize) -> Result<(usize, usize, bool), Error> {
     let err = || Error::FlatTrie("truncated RLP item");
     let b0 = *bytes.get(pos).ok_or_else(err)?;
-    match b0 {
-        0x00..=0x7f => Ok((pos, 1, false)),
-        0x80..=0xb7 => Ok((pos + 1, (b0 - 0x80) as usize, false)),
+    // Every arm returns a `(payload_offset, payload_len)` that callers turn straight into
+    // `&bytes[payload..payload + len]`, so both the offset and the sum have to be inside the
+    // buffer here rather than at each of the ~a dozen call sites. `be_len` bounds `len` by
+    // `bytes.len()`, and the check below bounds the sum; neither addition can wrap, because
+    // `pos <= bytes.len()` and both addends are under `bytes.len()`.
+    let (payload, len, is_list) = match b0 {
+        0x00..=0x7f => (pos, 1, false),
+        0x80..=0xb7 => (pos + 1, (b0 - 0x80) as usize, false),
         0xb8..=0xbf => {
             let ll = (b0 - 0xb7) as usize;
             let len = be_len(bytes, pos + 1, ll)?;
-            Ok((pos + 1 + ll, len, false))
+            (pos + 1 + ll, len, false)
         }
-        0xc0..=0xf7 => Ok((pos + 1, (b0 - 0xc0) as usize, true)),
+        0xc0..=0xf7 => (pos + 1, (b0 - 0xc0) as usize, true),
         0xf8..=0xff => {
             let ll = (b0 - 0xf7) as usize;
             let len = be_len(bytes, pos + 1, ll)?;
-            Ok((pos + 1 + ll, len, true))
+            (pos + 1 + ll, len, true)
         }
+    };
+    if payload > bytes.len() || len > bytes.len() - payload {
+        return Err(err());
     }
+    Ok((payload, len, is_list))
 }
 
+/// Decodes a big-endian RLP length of `ll` bytes.
+///
+/// `ll` comes straight off the wire (`b0 - 0xb7` or `b0 - 0xf7`, so up to 8), and the
+/// accumulate below shifts by 8 per byte: eight bytes is the full width of a `usize`, so a
+/// hostile length **wraps**. The guest ships with `overflow-checks = false`, so it wraps
+/// silently there while every host test, every Miri pass and 660 M fuzz executions *panic* --
+/// an entire defect class that the suite cannot see, because the shipped profile behaves
+/// differently from the tested one.
+///
+/// A length that does not fit in the buffer cannot be valid, so reject `ll` past what the
+/// buffer could possibly hold before accumulating anything. That bounds the accumulator at
+/// `bytes.len()`, which also makes every `payload + len` downstream non-wrapping.
 #[inline]
 fn be_len(bytes: &[u8], pos: usize, ll: usize) -> Result<usize, Error> {
-    let raw = bytes.get(pos..pos + ll).ok_or(Error::FlatTrie("truncated RLP length"))?;
+    let raw = bytes
+        .get(pos..pos.checked_add(ll).ok_or(Error::FlatTrie("RLP length overflow"))?)
+        .ok_or(Error::FlatTrie("truncated RLP length"))?;
     let mut len = 0usize;
     for &b in raw {
-        len = (len << 8) | b as usize;
+        len = match len.checked_shl(8) {
+            Some(shifted) => shifted | b as usize,
+            None => return Err(Error::FlatTrie("RLP length overflow")),
+        };
+    }
+    if len > bytes.len() {
+        return Err(Error::FlatTrie("RLP length exceeds the buffer"));
     }
     Ok(len)
 }
@@ -217,6 +246,8 @@ fn be_len(bytes: &[u8], pos: usize, ll: usize) -> Result<usize, Error> {
 #[inline]
 fn rlp_item_len(bytes: &[u8], pos: usize) -> Result<usize, Error> {
     let (payload, len, _) = rlp_header(bytes, pos)?;
+    // `payload >= pos` and `payload + len <= bytes.len()` are both established by
+    // `rlp_header`, so neither the subtraction nor the addition can wrap.
     Ok(payload - pos + len)
 }
 
@@ -271,6 +302,11 @@ fn parse_node(bytes: &[u8]) -> Result<FlatNode<'_>, Error> {
             return Err(Error::FlatTrie("too many items in node"));
         }
         let item_len = rlp_item_len(body, pos)?;
+        // A zero-length item would not advance, and `rlp_header` bounds `item_len` by
+        // `body.len()`, so neither the addition nor the loop can run away.
+        if item_len == 0 || item_len > body.len() - pos {
+            return Err(Error::FlatTrie("item runs past the node"));
+        }
         items[n] = (pos, item_len);
         n += 1;
         pos += item_len;
@@ -441,6 +477,13 @@ impl<'a> FlatTrieView<'a> {
         }
 
         let root_len = rlp_item_len(bytes, 0)?;
+        // `rlp_item_len` bounds this by `bytes.len()` now, but say so where the slice is
+        // taken: a truncated root item used to panic here rather than return an error. The
+        // panic aborts under `-Cpanic=abort` and so fails closed, but a malformed witness
+        // should be a rejection, not a crash.
+        if root_len > bytes.len() {
+            return Err(Error::FlatTrie("truncated root item"));
+        }
         let root_blob = &bytes[..root_len];
         let root = parse_node(root_blob)?;
         match root {
@@ -480,7 +523,9 @@ impl<'a> FlatTrieView<'a> {
         let mut pos = root_len;
         while pos < bytes.len() {
             let len = rlp_item_len(bytes, pos)?;
-            if bytes.len() < pos + len {
+            // `bytes.len() - pos`, not `pos + len`: the sum is what used to wrap in the
+            // profile the guest ships, turning "truncated" into "accepted".
+            if len == 0 || len > bytes.len() - pos {
                 return Err(Error::FlatTrie("truncated node blob"));
             }
             let blob = &bytes[pos..pos + len];
@@ -1189,6 +1234,152 @@ mod tests {
         assert_eq!(views.post_state_root(&post).unwrap(), expected_root);
     }
 
+    /// Every malformed-witness shape the harness found as a *panic site*, as a rejection.
+    ///
+    /// All of them fail closed today -- a panic aborts under `-Cpanic=abort`, so no proof
+    /// comes out -- so these are liveness, not soundness. What made them worth closing is the
+    /// **profile**: three of them are `usize` overflows in RLP length arithmetic, and the
+    /// guest builds with `overflow-checks = false` while every host test, every Miri pass and
+    /// 660 M fuzz executions build with them *on*. So the shipped artefact wrapped where the
+    /// tested one panicked, and an entire defect class -- anything whose trigger is an
+    /// arithmetic wrap -- was invisible to the whole suite.
+    ///
+    /// The lengths below are the ones that wrap: `0xbf`/`0xff` introduce an eight-byte
+    /// big-endian length, and eight shifts of 8 is the full width of a `usize`.
+    #[test]
+    fn malformed_witnesses_are_rejected_not_panicked() {
+        // A well-formed witness, as the control.
+        let trie = keccak_trie(8);
+        let good = flatten_trie(&trie);
+        assert!(FlatTrieView::parse_and_verify(&good).is_ok());
+
+        let cases: Vec<(&str, Vec<u8>)> = std::vec![
+            // Truncated root item: a list header claiming 0x30 payload bytes with none.
+            ("truncated root list", std::vec![0xf8, 0x30]),
+            // Long-form string header whose length bytes are missing.
+            ("truncated long length", std::vec![0xbf]),
+            // Eight-byte length of `usize::MAX`: `len << 8` eight times wraps to 0, which
+            // used to make the item look empty and in bounds.
+            (
+                "wrapping string length",
+                std::vec![0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ),
+            (
+                "wrapping list length",
+                std::vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ),
+            // A length that is merely far larger than the buffer.
+            ("length past the buffer", std::vec![0xb8, 0xff, 0x00]),
+            // A node whose declared payload runs past the blob.
+            ("branch payload past the blob", std::vec![0xf8, 0x40, 0x80, 0x80]),
+            // A zero-length item inside a list: would not advance the scan.
+            ("empty root item", std::vec![]),
+        ];
+        for (name, bytes) in cases {
+            if bytes.is_empty() {
+                // The empty region is the empty trie, which is legal.
+                assert!(FlatTrieView::parse_and_verify(&bytes).is_ok(), "{name}");
+                continue;
+            }
+            assert!(
+                FlatTrieView::parse_and_verify(&bytes).is_err(),
+                "{name}: accepted a malformed witness"
+            );
+        }
+
+        // A truncated *tail* blob, appended after a valid root.
+        let mut truncated = good.clone();
+        truncated.extend_from_slice(&[0xf8, 0x40]);
+        assert!(FlatTrieView::parse_and_verify(&truncated).is_err(), "truncated tail blob");
+
+        // And a wrapping length in a tail blob.
+        let mut wrapping_tail = good;
+        wrapping_tail.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        assert!(FlatTrieView::parse_and_verify(&wrapping_tail).is_err(), "wrapping tail length");
+    }
+
+    /// The two API-misuse shapes `delta_root` used to answer with a panic or a wrong root.
+    ///
+    /// A **duplicate key** makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the
+    /// key length -- the longest common prefix of a key with itself is the whole key -- and
+    /// panics. Two bytes of misuse, no witness required, and invisible to every layer the
+    /// harness had before round 2.
+    ///
+    /// An **unsorted list** violates `apply_branch`'s precondition. One shape of that returns
+    /// a *silently wrong root* under `--release`: revisiting a slot runs the child count
+    /// update twice, `count - 1 + 1` from 0 passes through `usize::MAX` with overflow checks
+    /// off and lands back on 0, which reaches the `count <= 1` collapse path holding a
+    /// `rebuilt` array that has lost a slot -- and that path never reads `touched`, so nothing
+    /// panics. Measured on the shape below before the fix: `0x56e81f…` (the empty-trie root)
+    /// where the correct answer is a real root.
+    ///
+    /// Neither is a soundness break for the caller -- this is the post-state root, compared
+    /// against the header immediately afterwards, not the witness authentication in
+    /// `parse_and_verify` -- but a silently wrong root is a worse failure mode than an error,
+    /// and until now the property was enforced in **no shipped configuration**.
+    #[test]
+    fn delta_root_refuses_duplicate_and_unsorted_keys() {
+        let trie = keccak_trie(40);
+        let bytes = flatten_trie(&trie);
+        let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
+
+        let k0 = B256::from(keccak(0usize.to_be_bytes()));
+        let k1 = B256::from(keccak(1usize.to_be_bytes()));
+
+        // A well-formed batch still works, and agrees with the node graph.
+        let ok: Vec<(B256, Option<Vec<u8>>)> =
+            std::vec![(k0, Some(alloy_rlp::encode(7u64))), (k1, Some(alloy_rlp::encode(8u64))),];
+        let mut full = trie.clone();
+        full.insert_rlp(k0.as_slice(), 7u64).unwrap();
+        full.insert_rlp(k1.as_slice(), 8u64).unwrap();
+        assert_eq!(view.delta_root(&ok).unwrap(), full.hash());
+
+        // Duplicate key.
+        let dup: Vec<(B256, Option<Vec<u8>>)> =
+            std::vec![(k0, Some(alloy_rlp::encode(7u64))), (k0, Some(alloy_rlp::encode(9u64))),];
+        assert!(matches!(
+            view.delta_root(&dup),
+            Err(Error::FlatTrie("delta changes must be strictly ascending by key"))
+        ));
+        assert!(matches!(
+            FlatTrieView::empty_delta_root(&dup),
+            Err(Error::FlatTrie("delta changes must be strictly ascending by key"))
+        ));
+
+        // A sorted list still descends, which is the control for the panicking test below.
+        let keys: Vec<B256> = (0..24usize).map(|i| B256::from(keccak(i.to_be_bytes()))).collect();
+        let nibs: Vec<Vec<u8>> = keys.iter().map(|k| to_nibs(k.as_slice())).collect();
+        let val = alloy_rlp::encode(3u64);
+        let mut list: Vec<Change<'_>> =
+            nibs.iter().map(|n| (n.as_slice(), Some(val.as_slice()))).collect();
+        list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        assert!(view.apply_src(Src::Node(0), &list).is_ok());
+    }
+
+    /// The guard *below* the entry check, reached the way a caller bypassing `delta_root`
+    /// would reach it -- `delta_root` sorts three lines before it descends, so nothing that
+    /// goes through it can get here.
+    ///
+    /// Expects the `debug_assert!`'s message rather than the `assert!`'s: both guards are
+    /// live, and in a test build the full-key `debug_assert!` fires first. The `assert!` is
+    /// the one that reaches the guest, where the `debug_assert!` is compiled out.
+    #[test]
+    #[should_panic(expected = "apply_branch requires `changes` sorted by key")]
+    fn apply_branch_panics_on_an_unsorted_list() {
+        let trie = keccak_trie(40);
+        let bytes = flatten_trie(&trie);
+        let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
+
+        let keys: Vec<B256> = (0..24usize).map(|i| B256::from(keccak(i.to_be_bytes()))).collect();
+        let nibs: Vec<Vec<u8>> = keys.iter().map(|k| to_nibs(k.as_slice())).collect();
+        let val = alloy_rlp::encode(3u64);
+        let mut list: Vec<Change<'_>> =
+            nibs.iter().map(|n| (n.as_slice(), Some(val.as_slice()))).collect();
+        list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        list.reverse();
+        let _ = view.apply_src(Src::Node(0), &list);
+    }
+
     /// An account whose storage trie is **not** in the witness must not have its storage
     /// silently wiped by `post_state_root`.
     ///
@@ -1748,6 +1939,23 @@ impl<'a> FlatTrieView<'a> {
             .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
             .collect();
         list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        // Strictly ascending, checked in the *shipped* build and not only under
+        // `debug_assertions`.
+        //
+        // Two separate things rest on it. `apply_branch`'s precondition is that `changes` is
+        // sorted by the whole key, and a violation there can return a silently wrong root
+        // rather than panicking (see the note on that function) -- so the guest, which builds
+        // with debug assertions off, had the property enforced in no configuration at all.
+        // And *duplicate* keys make `build_kvs` index `kvs[start].0[cp]` with `cp` equal to
+        // the key length, because the longest common prefix of a key with itself is the whole
+        // key: two bytes of API misuse, no witness required, and a panic that was invisible to
+        // every layer the harness had before round 2.
+        //
+        // One extra pass of the same comparison the sort just made, against an
+        // `O(n log n)` sort: not measurable.
+        if list.windows(2).any(|w| w[0].0 >= w[1].0) {
+            return Err(Error::FlatTrie("delta changes must be strictly ascending by key"));
+        }
 
         let out = if self.is_empty() {
             Self::apply_empty(&list)
@@ -1770,6 +1978,23 @@ impl<'a> FlatTrieView<'a> {
             .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
             .collect();
         list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        // Strictly ascending, checked in the *shipped* build and not only under
+        // `debug_assertions`.
+        //
+        // Two separate things rest on it. `apply_branch`'s precondition is that `changes` is
+        // sorted by the whole key, and a violation there can return a silently wrong root
+        // rather than panicking (see the note on that function) -- so the guest, which builds
+        // with debug assertions off, had the property enforced in no configuration at all.
+        // And *duplicate* keys make `build_kvs` index `kvs[start].0[cp]` with `cp` equal to
+        // the key length, because the longest common prefix of a key with itself is the whole
+        // key: two bytes of API misuse, no witness required, and a panic that was invisible to
+        // every layer the harness had before round 2.
+        //
+        // One extra pass of the same comparison the sort just made, against an
+        // `O(n log n)` sort: not measurable.
+        if list.windows(2).any(|w| w[0].0 >= w[1].0) {
+            return Err(Error::FlatTrie("delta changes must be strictly ascending by key"));
+        }
         Ok(match Self::apply_empty(&list) {
             Out::Empty => FLAT_EMPTY_ROOT,
             Out::Enc(enc) => B256::from(keccak(&enc)),
@@ -1934,8 +2159,24 @@ impl<'a> FlatTrieView<'a> {
         // authentication in `parse_and_verify` -- but a silently wrong root is a worse failure
         // mode than a panic, which is why the contract is now written as what the code needs.
         //
-        // `debug_assert` rather than `assert`: `delta_root` sorts just before handing the list
-        // in, and the guest builds with debug assertions off, so this costs it nothing.
+        // Three layers now stand behind it, and they check different things:
+        //
+        //  1. `delta_root` and `empty_delta_root` -- the only entries into this family --
+        //     check the whole list is **strictly** ascending, in the shipped build. Strict is
+        //     what rejects a *duplicate* key, which the two below do not catch at all: a
+        //     duplicate makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the key
+        //     length, because the longest common prefix of a key with itself is the whole key.
+        //     Two bytes of API misuse, no witness required.
+        //  2. this `debug_assert!`, which is the only one that checks the *full-key* ordering
+        //     rather than the ordering of the leading nibbles. `O(changes)` at every depth of
+        //     the recursion, which is why it cannot be a real `assert!`.
+        //  3. the `assert!` in the slot loop below, `O(1)` per run, which is the one that
+        //     reaches the guest.
+        //
+        // `debug_assert` rather than `assert` for this one: `delta_root` sorts just before
+        // handing the list in, and the guest builds with debug assertions off, so it costs the
+        // guest nothing. Note the ordering consequence for tests -- in a debug build this
+        // fires before (3) can, so a test aimed at (3) has to expect *this* message.
         debug_assert!(
             changes.windows(2).all(|w| w[0].0 <= w[1].0),
             "apply_branch requires `changes` sorted by key, not merely by leading nibble"

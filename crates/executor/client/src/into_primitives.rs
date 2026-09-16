@@ -307,12 +307,19 @@ fn handle_custom_chains(
 /// This module computes each receipt's length once, reserves exactly that, and writes the
 /// bytes through a raw cursor. Block 24006677: -1,187,892.
 ///
-/// # Why it is safe to hand-roll a consensus-critical encoding here
+/// # What the root comparison does and does not cover
 ///
-/// The output is not trusted -- it is hashed into a trie root and compared against the
-/// header's `receipts_root`, so any encoding error makes the block *fail*, and cannot make a
-/// bad block pass. Verified by mutation: corrupting one byte of this encoder's output makes
-/// the guest reject block 24006677.
+/// The output is hashed into a trie root and compared against the header's `receipts_root`,
+/// so an encoding error makes the block fail. Verified by mutation: corrupting one byte of
+/// this encoder's output makes the guest reject block 24006677.
+///
+/// **That is not the same as "it cannot make a bad block pass", which is what this paragraph
+/// used to say.** `receipts_root` is a *prover-supplied wire field*, like `state_root` at
+/// `executor.rs:118` and the logs bloom at `:131`: the comparison says the input is
+/// self-consistent, not that it is a canonical block. A prover who can predict a divergence
+/// writes the matching wrong root themselves. So the reason it is safe to hand-roll this is
+/// the *differential* below -- two independent oracles over 43,006 receipts and 66 blocks --
+/// and not the root check. Do not use the root check as a warrant for skipping a test.
 ///
 /// That argument covers wrong *bytes*, not a wrong *length*. What keeps the length halves
 /// honest is that each writer has exactly one length twin -- `header_len`/`phdr`,

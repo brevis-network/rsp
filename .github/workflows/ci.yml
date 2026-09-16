@@ -1,0 +1,125 @@
+name: CI
+
+# rsp had CI until `261dee3` (2025-09-11) squashed in a commit literally titled
+# `delete ci`, taking `.github/` from three workflows to none. It was never restored, and it
+# is an ancestor of every branch since — so for the whole guest-optimisation campaign nothing
+# in this repository compiled, tested or linted anything automatically, and the ten PRs were
+# squash-merged with no recorded review.
+#
+# Four separate proofs that "nothing verifies the guest" follow from that, and three of them
+# close here:
+#
+#   * `crates/executor/host/tests/integration.rs` did not compile for eleven months —
+#     `c269c19` added a parameter to `HostExecutor::execute` and did not touch the call site,
+#     thirteen days after CI was deleted. It is the only host->client->bincode round-trip test
+#     in the repo, i.e. the only test exercising the wire path every witness-layer defect
+#     lives on. `--all-targets` is what keeps it compiling.
+#   * `cargo check` does not compile the guest at all: type errors injected into a
+#     `cfg(target_os = "zkvm")` arm leave `cargo check --all-targets`, `cargo clippy
+#     --all-targets` and the whole test run green. `./bin/client/build-guest.sh` is the only
+#     command in the repository that compiles guest-only code — see the `guest` job below for
+#     why it is opt-in rather than always-on.
+#   * the root workspace links a *pre-campaign* revm (the lockfile pins it nine commits behind
+#     at both the baseline and the tip), so no host test here exercises the code the guest
+#     ships. `lock-files` at least makes a drift visible.
+
+on:
+  push:
+    branches: [pico, pico-rv64]
+  pull_request:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No toolchain action: `rust-toolchain.toml` pins `nightly-2025-08-04`, and passing
+      # `+nightly` explicitly picks up whatever `nightly` happens to be, which cannot compile
+      # revm here. Let the pin apply.
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # No `-D warnings`: several lints this tree fires are deliberate codegen choices on
+      # RV64 (`manual_is_multiple_of` on the alignment tests, for one). What this job is for
+      # is clippy's **deny-by-default** lints, which are the ones that have caught real
+      # defects here: `derived_hash_with_manual_eq` (a broken `Hash`/`Eq` contract, one lint
+      # invocation away from being caught at the commit that introduced it) and
+      # `arithmetic_overflow` (a full-width shift that makes a 32-bit target not build).
+      - run: cargo clippy --workspace --all-targets
+
+  check:
+    name: check (all targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # `--all-targets` so that test-only targets compile. This is the job that would have
+      # caught `integration.rs` on the day it broke.
+      - run: cargo check --workspace --all-targets
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # `rsp-host-executor`'s integration tests and `bin/host`'s `cycle_count_diff` need live
+      # RPC endpoints (`RPC_<chain_id>`) and fail with `NotPresent` without them, so they are
+      # excluded here rather than silently skipped. They are still compiled by the `check`
+      # job above, which is the part that regressed.
+      - run: cargo test --workspace --exclude rsp --exclude rsp-host-executor
+
+  lock-files:
+    name: lock files up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # The guest is a *separate* workspace with its own lockfile; a dependency change in
+      # `crates/` that is not reflected there means the host and the guest link different
+      # graphs, which is how the host workspace ended up on a pre-campaign revm.
+      - run: |
+          cargo tree > /dev/null
+          (cd ./bin/client && cargo tree > /dev/null)
+          (cd ./bin/client-op && cargo tree > /dev/null)
+      - run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Lock files are not up to date:"
+            git status --porcelain
+            exit 1
+          fi
+
+  guest:
+    name: build the guest ELF
+    # Opt-in, and deliberately so. `./bin/client/build-guest.sh` needs the `pico` rustup
+    # toolchain and `cargo-pico`, which this repository installs from a local path and pins
+    # nowhere — so a job that tried to install them would fail on every run, and an
+    # always-red job is worth less than no job at all. Set the repository variable
+    # `PICO_TOOLCHAIN_AVAILABLE` to `true` on a runner that has them.
+    #
+    # **This is the remaining half of "nothing verifies the guest".** Until it runs, no
+    # automated check in this repository compiles guest-only code, and the script's own
+    # `__wrap_memset` assertion — the thing that catches a build that silently dropped the
+    # central optimisation — never fires.
+    if: ${{ vars.PICO_TOOLCHAIN_AVAILABLE == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Do **not** substitute `cargo pico build`: it silently ignores the `--rustflags` this
+      # build depends on and produces a correct but ~1 % slower guest with no warning.
+      - run: ./bin/client/build-guest.sh
