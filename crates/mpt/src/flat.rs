@@ -214,16 +214,27 @@ fn rlp_header(bytes: &[u8], pos: usize) -> Result<(usize, usize, bool), Error> {
 
 /// Decodes a big-endian RLP length of `ll` bytes.
 ///
-/// `ll` comes straight off the wire (`b0 - 0xb7` or `b0 - 0xf7`, so up to 8), and the
-/// accumulate below shifts by 8 per byte: eight bytes is the full width of a `usize`, so a
-/// hostile length **wraps**. The guest ships with `overflow-checks = false`, so it wraps
+/// `ll` comes straight off the wire (`b0 - 0xb7` or `b0 - 0xf7`, so up to 8), and eight bytes
+/// is the full width of a `usize` on the 64-bit target the guest ships for: accumulating them
+/// as `len << 8 | b` **wraps**. The guest builds with `overflow-checks = false`, so it wraps
 /// silently there while every host test, every Miri pass and 660 M fuzz executions *panic* --
 /// an entire defect class that the suite cannot see, because the shipped profile behaves
 /// differently from the tested one.
 ///
-/// A length that does not fit in the buffer cannot be valid, so reject `ll` past what the
-/// buffer could possibly hold before accumulating anything. That bounds the accumulator at
-/// `bytes.len()`, which also makes every `payload + len` downstream non-wrapping.
+/// `checked_shl` does **not** close that, and the version that used it did not: `checked_shl`
+/// returns `None` only when the *shift amount* reaches the type's width, and the shift here is
+/// the constant 8, so on both 32- and 64-bit its `None` arm was unreachable and the discarded
+/// high bits stayed silent. What closes it is `checked_mul`/`checked_add` -- checked in the
+/// shipped profile as much as in the tested one -- together with the buffer bound applied
+/// *inside* the loop. The accumulation only ever grows, so a value already past `bytes.len()`
+/// can never come back under it; stopping there caps the accumulator at the buffer length,
+/// which is what makes every `payload + len` downstream non-wrapping.
+///
+/// The bound is on the accumulated value, not on `ll`: a length may legally be written with
+/// leading zero bytes, so rejecting `ll > size_of::<usize>()` up front would turn a decodable
+/// encoding into a rejection. This rejects exactly the lengths that cannot index the buffer,
+/// and it rejects them identically on 32- and 64-bit -- where the old code accepted
+/// `0x01_0000_0005` as `5` on a 32-bit build and read a truncated item as a valid one.
 #[inline]
 fn be_len(bytes: &[u8], pos: usize, ll: usize) -> Result<usize, Error> {
     let raw = bytes
@@ -231,18 +242,24 @@ fn be_len(bytes: &[u8], pos: usize, ll: usize) -> Result<usize, Error> {
         .ok_or(Error::FlatTrie("truncated RLP length"))?;
     let mut len = 0usize;
     for &b in raw {
-        len = match len.checked_shl(8) {
-            Some(shifted) => shifted | b as usize,
-            None => return Err(Error::FlatTrie("RLP length overflow")),
-        };
-    }
-    if len > bytes.len() {
-        return Err(Error::FlatTrie("RLP length exceeds the buffer"));
+        len = len
+            .checked_mul(256)
+            .and_then(|acc| acc.checked_add(b as usize))
+            .ok_or(Error::FlatTrie("RLP length overflow"))?;
+        if len > bytes.len() {
+            return Err(Error::FlatTrie("RLP length exceeds the buffer"));
+        }
     }
     Ok(len)
 }
 
 /// Total encoded length of the RLP item starting at `pos`.
+///
+/// **Never returns 0**, and two scan loops rely on that to terminate. Every `rlp_header` arm
+/// returns either `payload == pos` with `len >= 1` (the `0x00..=0x7f` single byte) or
+/// `payload > pos` (every header form that has a header byte at all), so the sum below is at
+/// least 1 in all five arms; `rlp_item_len_never_returns_zero` sweeps them. It is also bounded
+/// by `bytes.len() - pos`, since `rlp_header` establishes `payload + len <= bytes.len()`.
 #[inline]
 fn rlp_item_len(bytes: &[u8], pos: usize) -> Result<usize, Error> {
     let (payload, len, _) = rlp_header(bytes, pos)?;
@@ -302,9 +319,11 @@ fn parse_node(bytes: &[u8]) -> Result<FlatNode<'_>, Error> {
             return Err(Error::FlatTrie("too many items in node"));
         }
         let item_len = rlp_item_len(body, pos)?;
-        // A zero-length item would not advance, and `rlp_header` bounds `item_len` by
-        // `body.len()`, so neither the addition nor the loop can run away.
-        if item_len == 0 || item_len > body.len() - pos {
+        // `rlp_item_len` is at least 1, so the loop always advances; there is no separate
+        // `item_len == 0` test here because no header form can produce one (see its doc).
+        // The bound is re-asserted rather than assumed: it already follows from `rlp_header`,
+        // and this is the parser that has to fail closed on a hostile witness.
+        if item_len > body.len() - pos {
             return Err(Error::FlatTrie("item runs past the node"));
         }
         items[n] = (pos, item_len);
@@ -524,8 +543,11 @@ impl<'a> FlatTrieView<'a> {
         while pos < bytes.len() {
             let len = rlp_item_len(bytes, pos)?;
             // `bytes.len() - pos`, not `pos + len`: the sum is what used to wrap in the
-            // profile the guest ships, turning "truncated" into "accepted".
-            if len == 0 || len > bytes.len() - pos {
+            // profile the guest ships, turning "truncated" into "accepted". `rlp_header` now
+            // establishes the same bound, so this is a restatement at the point the slice is
+            // taken rather than the only check -- and `rlp_item_len` cannot return 0, so the
+            // loop advances without a separate test for it.
+            if len > bytes.len() - pos {
                 return Err(Error::FlatTrie("truncated node blob"));
             }
             let blob = &bytes[pos..pos + len];
@@ -1273,8 +1295,15 @@ mod tests {
             ("length past the buffer", std::vec![0xb8, 0xff, 0x00]),
             // A node whose declared payload runs past the blob.
             ("branch payload past the blob", std::vec![0xf8, 0x40, 0x80, 0x80]),
-            // A zero-length item inside a list: would not advance the scan.
-            ("empty root item", std::vec![]),
+            // Not a defect but the control for the loop's special case below: an empty
+            // region *is* the empty trie. This slot used to be labelled "a zero-length item
+            // inside a list: would not advance the scan", which read as a witness for the
+            // `item_len == 0` guard -- a shape no `rlp_header` arm can produce, so the guard
+            // was unreachable and this case never touched it. See `rlp_item_len`.
+            ("empty witness", std::vec![]),
+            // What the item scan actually hands `parse_node` when a list item carries
+            // nothing: a 2-item node whose path prefix is the empty string.
+            ("empty path prefix", std::vec![0xc2, 0x80, 0x80]),
         ];
         for (name, bytes) in cases {
             if bytes.is_empty() {
@@ -1297,6 +1326,70 @@ mod tests {
         let mut wrapping_tail = good;
         wrapping_tail.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
         assert!(FlatTrieView::parse_and_verify(&wrapping_tail).is_err(), "wrapping tail length");
+    }
+
+    /// `be_len`'s bound, including the shape a 32-bit build used to accept.
+    ///
+    /// The accumulate was `len.checked_shl(8)`, and `checked_shl` returns `None` only when the
+    /// *shift amount* reaches the type width -- with the constant 8 it never fires, so the
+    /// discarded high bits stayed silent and the `None` arm was dead code on every target. On
+    /// a 64-bit host the eight-byte case wrapped to something absurd that the trailing bound
+    /// then caught, which is why the witness tests above never noticed; on a 32-bit build
+    /// `[0,0,0,1,0,0,0,5]` truncated to `5`, passed the bound, and a truncated item read back
+    /// as a valid five-byte one.
+    ///
+    /// Checked against `be_len` directly rather than through a witness, so that each assertion
+    /// means the same thing on both widths -- a `parse_and_verify` case could only ever
+    /// exercise the host's.
+    #[test]
+    fn be_len_rejects_lengths_past_the_buffer() {
+        let mut buf = [0u8; 64];
+
+        // A length written with leading zeros is decodable, not a rejection: the bound is on
+        // the accumulated value, never on `ll`.
+        buf[..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x07]);
+        assert_eq!(be_len(&buf, 0, 4).unwrap(), 7);
+        assert_eq!(be_len(&buf, 0, 0).unwrap(), 0, "no length bytes is length zero");
+
+        // The 32-bit truncation witness. 0x01_0000_0005 keeps only `5` in a 32-bit `usize`;
+        // both widths must reject it, because 64 bytes of buffer cannot hold either value.
+        buf[..8].copy_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05]);
+        assert!(be_len(&buf, 0, 8).is_err(), "a length past the buffer must be rejected");
+
+        // Eight shifts of 8 is the full width of a 64-bit `usize`: this is the one that used
+        // to come back as 0 and make a truncated item look empty and in bounds.
+        assert!(be_len(&[0xff; 16], 0, 8).is_err(), "all-ones length");
+
+        // Length bytes that are not all there.
+        assert!(be_len(&buf, 60, 8).is_err(), "truncated length bytes");
+        assert!(be_len(&buf, 0, usize::MAX).is_err(), "`pos + ll` must not wrap");
+    }
+
+    /// The floor two scan loops rest on: `parse_node`'s item walk and `parse_and_verify`'s
+    /// blob walk both advance by `rlp_item_len` and neither tests for zero, because no
+    /// `rlp_header` arm can produce one. One representative encoding per arm.
+    #[test]
+    fn rlp_item_len_never_returns_zero() {
+        let mut long_string = std::vec![0xb8u8, 56];
+        long_string.extend_from_slice(&[0u8; 56]);
+        let mut long_list = std::vec![0xf8u8, 56];
+        long_list.extend_from_slice(&[0x80u8; 56]);
+
+        let cases: Vec<Vec<u8>> = std::vec![
+            std::vec![0x00], // 0x00..=0x7f: the item is the byte
+            std::vec![0x7f],
+            std::vec![0x80], // 0x80..=0xb7 with an empty payload
+            std::vec![0x83, 1, 2, 3],
+            long_string,     // 0xb8..=0xbf
+            std::vec![0xc0], // 0xc0..=0xf7 with an empty payload
+            std::vec![0xc3, 0x01, 0x02, 0x03],
+            long_list, // 0xf8..=0xff
+        ];
+        for bytes in &cases {
+            let n = rlp_item_len(bytes, 0).unwrap();
+            assert!(n >= 1, "rlp_item_len returned 0 for {bytes:02x?}");
+            assert!(n <= bytes.len(), "rlp_item_len ran past the buffer for {bytes:02x?}");
+        }
     }
 
     /// The two API-misuse shapes `delta_root` used to answer with a panic or a wrong root.
