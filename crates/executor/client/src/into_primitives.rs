@@ -749,13 +749,11 @@ mod fast_receipts_parity {
 
     /// The root over a block's worth of receipts must equal alloy's, receipt for receipt.
     ///
-    /// The guards at the bottom are on what the generator actually produced: that logs were
-    /// produced at all, that some receipt carried none (RLP's empty list), every `TxType`,
-    /// the two extremes of the topic list, and two of RLP's string forms -- the single byte
-    /// below `0x80` and the long form at 56. Anything counting iterations would prove
-    /// nothing, the bounds being constants: such a count holds however empty the receipts
-    /// are. Not guarded, and worth knowing: the two-byte length header, and the five
-    /// `cumulative_gas_used` shapes `receipt` draws from.
+    /// The guards at the bottom tally what the generator actually produced -- logs at all, a
+    /// receipt with none (RLP's empty list), every `TxType`, both extremes of the topic list, and
+    /// RLP's single-byte and long-form string forms. A count of iterations would prove nothing,
+    /// the bounds being constants. Not guarded: the two-byte length header, and the five
+    /// `cumulative_gas_used` shapes.
     #[test]
     fn receipts_root_matches_alloy() {
         let mut rng = Rng(0x5DEE_CE66_D000_0001);
@@ -817,35 +815,22 @@ mod fast_receipts_parity {
     /// The two ladders the block corpus never climbs: RLP's **long-form length header above
     /// two bytes**, and **three-byte `rlp(index)` trie keys**.
     ///
-    /// Both are mainnet-reachable and neither was covered. The generator above tops out at a
-    /// 300-byte log payload and a 200-receipt block, so -- measured independently from the
-    /// encoder side and the generator side, both landing on `max_logs_list_payload = 1199` --
-    /// nothing ever produced a payload near the 65,536 threshold where `header_len` goes to
-    /// four bytes, and nothing produced a block with 256 receipts, where the trie key goes to
-    /// three. A 64 KB log costs about 524 K gas, which is one transaction; blocks with more
-    /// than 256 transactions are routine.
+    /// Both are mainnet-reachable and neither was covered: the generator above tops out at a
+    /// 300-byte log payload (`max_logs_list_payload = 1199`, measured from both sides) and a
+    /// 200-receipt block, short of the 65,536 threshold where `header_len` goes to four bytes and
+    /// the 256 receipts where the trie key goes to three. A 64 KB log is one transaction, and
+    /// blocks past 256 transactions are routine. Two one-token mutants of the ladder change six
+    /// receipts roots and leave the rest of the suite green.
     ///
-    /// What that left unguarded: two one-token, length-preserving mutants of the ladder change
-    /// six receipts roots and leave the rest of the suite green. The code is correct there
-    /// today. Nothing was holding it.
-    ///
-    /// The assertions at the bottom are on what was actually produced, not on loop counts: a
-    /// count would hold however short the payloads were, which is precisely how this gap
-    /// survived.
-    ///
-    /// "Produced" has to mean *bytes*, not the loop bounds. `max(&[.., 65_536, 70_000])` is a
-    /// constant, and `assert!(max >= 65_536)` on it holds for any behaviour of the code under
-    /// test -- indistinguishable from the iteration count the paragraph above rejects. So the
-    /// two guards read the encoder's own output: `max_len_bytes` is the width of the RLP list
-    /// header that came out of the encoded receipt, and `max_key_len` the width of the trie
-    /// key `receipts_root` builds with `encode_fixed_size`. Both go red if a future generator
-    /// stops reaching the rung, which is the whole point.
+    /// The guards read the encoder's own output, not the loop bounds -- `max(&[.., 65_536])` is a
+    /// constant, and asserting on it holds for any behaviour of the code under test.
+    /// `max_len_bytes` is the RLP list-header width that came out of the encoded receipt, and
+    /// `max_key_len` the trie-key width `receipts_root` builds with `encode_fixed_size`.
     #[test]
     fn receipts_root_over_long_payloads_and_large_blocks() {
-        /// Number of length bytes in the RLP list header of an encoded receipt value -- 0 for
-        /// the short-list form, 1..=8 for `0xf8..=0xff`. A typed receipt is `ty || rlp_list`
-        /// and a legacy one is the bare list, and the five wire ids are all <= 0x04, well
-        /// below any list tag.
+        /// Length bytes in the RLP list header of an encoded receipt -- 0 for the short-list
+        /// form, 1..=8 for `0xf8..=0xff`. A typed receipt is `ty || rlp_list`; the five wire ids
+        /// are all <= 0x04, well below any list tag.
         fn list_length_bytes(value: &[u8]) -> usize {
             let b0 = if value[0] <= 0x04 { value[1] } else { value[0] };
             if b0 >= 0xf8 {

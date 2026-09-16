@@ -20,10 +20,8 @@ use serde_with::serde_as;
 
 use crate::error::ClientError;
 
-/// Domain tag for [`ClientExecutorInput::config_digest`]'s keccak preimage.
-///
-/// Fixed length, so the boundary between tag and payload is unambiguous, and versioned, so
-/// that changing what the digest covers does not silently keep the old value valid.
+/// Domain tag for [`ClientExecutorInput::config_digest`]'s keccak preimage. Versioned, so that
+/// changing what the digest covers does not silently keep the old value valid.
 pub const CONFIG_DIGEST_DOMAIN: &[u8] = b"rsp/config-digest/v1";
 
 pub type EthClientExecutorInput<'a> = ClientExecutorInput<'a, EthPrimitives>;
@@ -93,21 +91,13 @@ impl<P: NodePrimitives> ClientExecutorInput<'_, P> {
     /// A digest over every wire field that changes execution and is invisible in the committed
     /// header. See [`CommittedHeader`].
     ///
-    /// Two properties, and they are not the same one -- the doc here used to claim the second
-    /// and implement only the first:
+    /// Two distinct properties. Bincode's tuple framing length-delimits the fields, so no two
+    /// configurations share an encoding -- but that says nothing about anything *outside* this
+    /// preimage, and the guest keccaks trie node blobs, bytecodes and trie keys with the same
+    /// function. [`CONFIG_DIGEST_DOMAIN`] supplies the separation; being fixed-length, the split
+    /// between tag and payload is unambiguous.
     ///
-    /// * **Unambiguous within the preimage.** The three values are serialised as one bincode tuple,
-    ///   which length-delimits every variable-length field, so no two configurations share an
-    ///   encoding. That is all bincode's framing gives; it says nothing about anything outside this
-    ///   preimage.
-    /// * **Separated from every other keccak preimage in the system**, which is what
-    ///   [`CONFIG_DIGEST_DOMAIN`] is for. Without a tag the preimage is just bytes, and this guest
-    ///   keccaks trie node blobs, bytecodes and trie keys with the same function. The tag is a
-    ///   fixed-length constant prefix, so the split between it and the payload is unambiguous.
-    ///
-    /// Returns an error rather than panicking. `Genesis::Custom(ChainConfig)` is the one
-    /// variant carrying prover-supplied structure, so a `serde_bincode_compat` adapter failing
-    /// on it is a malformed input -- and a malformed input is a rejection, not a crash.
+    /// Fallible because `Genesis::Custom(ChainConfig)` carries prover-supplied structure.
     pub fn config_digest(&self) -> Result<B256, ClientError> {
         let mut preimage = Vec::from(CONFIG_DIGEST_DOMAIN);
         bincode::serialize_into(
@@ -154,42 +144,28 @@ impl<P: NodePrimitives> WitnessInput for ClientExecutorInput<'_, P> {
     }
 }
 
-/// What the guest commits at the end of execution: the derived header, **and a digest of the
-/// wire fields that change execution but are invisible in it**.
+/// What the guest commits: the derived header, **and a digest of the wire fields that change
+/// execution but are invisible in it**.
 ///
-/// # Why the second field exists
+/// The header alone does not identify the statement proved. Every field but the state root is
+/// copied verbatim from the prover's block header, so the header says "this input is
+/// self-consistent", not "this is mainnet block N". Pinning the header hash against a canonical
+/// block closes most of that, but three wire fields leave no trace in it at all:
 ///
-/// The header alone does not identify the statement being proved. `executor.rs` compares the
-/// recomputed state root against `input.current_block.header().state_root()` -- a
-/// prover-supplied wire field -- and then puts the *computed* root into the header it commits;
-/// every other field is copied verbatim from the prover's block header. So the header says
-/// "this input is self-consistent", not "this is mainnet block N". A verifier that pins the
-/// full header hash against a canonical block closes most of that, but three wire fields
-/// change execution and leave **no trace in the header at all**:
-///
-/// * [`ClientExecutorInput::genesis`] becomes the entire `ChainSpec` -- chain id, every hardfork
-///   activation, blob params. Executed: the same `chainId: 1` with the fork ladder lowered flips
-///   all five forks, PRAGUE gas 23605 against ISTANBUL 21705, with the difference landing in the
-///   beneficiary's balance. Sharper still, `chainId 59144` reaches `handle_custom_chains`, which
-///   turns `ConsensusError::ExtraDataExceedsMax` and `TheMergeDifficultyIsNotZero` into `Ok(())` --
-///   a wire field that switches off two consensus rejection conditions.
+/// * [`ClientExecutorInput::genesis`] becomes the whole `ChainSpec`. Executed: `chainId: 1` with
+///   the fork ladder lowered flips all five forks (PRAGUE gas 23605 against ISTANBUL 21705, the
+///   difference landing in the beneficiary's balance), and `chainId 59144` reaches
+///   `handle_custom_chains`, which turns `ExtraDataExceedsMax` and `TheMergeDifficultyIsNotZero`
+///   into `Ok(())` -- a wire field that switches off two consensus rejection conditions.
 /// * [`ClientExecutorInput::custom_beneficiary`] overwrites `block_env.beneficiary` for the whole
-///   block (and changes EIP-3651 warming and `COINBASE`), while the committed header takes
-///   `beneficiary` from the block header. Executed: the entire 21,000,000,000,000 wei tip moves to
-///   an address of the prover's choosing, and nothing compares the two.
-/// * [`ClientExecutorInput::opcode_tracking`] selects a different execution path (an inspector
-///   frame, which also disables the dispatch loop's `JUMPDEST` fusion).
+///   block while the committed header takes `beneficiary` from the block header. Executed: the
+///   entire tip moves to an address of the prover's choosing and nothing compares the two.
+/// * [`ClientExecutorInput::opcode_tracking`] selects an inspector frame, a different execution
+///   path.
 ///
-/// Committing a digest of the three makes the proof say which configuration it ran under. It
-/// does not decide what a verifier should *accept* -- that is an integration policy, and it is
-/// the question this fixes the tree so it can be asked: a verifier can now pin the digest to
-/// the one value its chain is supposed to use.
-///
-/// # Compatibility
-///
-/// This changes the public values the guest commits, and therefore the verifier contract.
-/// There is no way to bind these fields without doing that, since by construction they leave
-/// no trace anywhere else.
+/// The digest says which configuration ran; what a verifier should *accept* is integration
+/// policy. This changes the public values, and therefore the verifier contract -- unavoidably,
+/// since by construction these fields leave no trace anywhere else.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommittedHeader {
@@ -262,10 +238,8 @@ impl DatabaseRef for TrieDB<'_> {
             }));
         }
 
-        // Not `expect`: `get` answers `Err(NodeNotResolved)` for a key whose path leaves the
-        // witnessed region, which is a witness the prover chose to omit -- attacker-controlled
-        // input, and so a rejection rather than a crash. `ProviderError` travels out through
-        // `BlockExecutionError` into `ClientError::BlockExecutionError`.
+        // `get` answers `Err(NodeNotResolved)` for a key whose path leaves the witnessed region
+        // -- a subtree the prover chose to omit, so a rejection rather than a crash.
         let account_in_trie = self
             .views
             .state
@@ -413,53 +387,29 @@ pub trait WitnessInput {
     }
 }
 
-/// Compact wire format for account bytecodes.
+/// Compact wire format for account bytecodes: exactly the bytes the code hash covers, and
+/// nothing else.
 ///
-/// # What is on the wire, and why it is only this
+/// A bytecode is selected only if it hashes to what the (authenticated) account row says, which
+/// makes the *hashed preimage* self-authenticating -- and everything outside it free for the
+/// prover to choose. The previous format shipped `code`, `original_len`, `jump_bit_len` and
+/// `jump_table` as independent fields while `hash_slow()` covers only `code[..original_len]`, so
+/// three of the four were unconstrained. Executed against the real wire path under one unchanged
+/// `code_hash`: a forged jump table turns an `InvalidJump` halt into `SUCCESS`; a one-byte edit
+/// to the padding takes a transaction from gas 21006 to 43106 and, with one jump-table bit,
+/// becomes arbitrary-length attacker code under a legitimate contract's hash; re-tagging the
+/// variant (also outside the digest) turns a `Stop` into `InvalidJump`; and `Eip7702`'s
+/// `delegated_address` is a sibling of `raw`, so same hash, gas 21000 -> 43106.
 ///
-/// Exactly the bytes the code hash covers, and nothing else. `witness_aux` keys this vector by
-/// `Bytecode::hash_slow()` and `TrieDB::code_by_hash_ref` looks a contract up by the
-/// `code_hash` in its (authenticated) account row, so a bytecode is only ever selected if it
-/// hashes to what the state trie says. That makes the *hashed preimage* self-authenticating --
-/// and it makes everything outside the preimage free for the prover to choose.
+/// So: ship the preimage, derive the rest. [`Bytecode::new_raw_checked`] picks the variant and
+/// runs revm's `analyze_legacy`, which is where the jump table and padding come from -- the same
+/// constructor the host built the value with, so the round trip is exact and the guest cannot
+/// reject a bytecode the host accepted.
 ///
-/// The previous format shipped four independent fields -- `code`, `original_len`,
-/// `jump_bit_len`, `jump_table` -- and `hash_slow()` covers only `code[..original_len]`. Three
-/// of the four were therefore unconstrained, and `LegacyAnalyzedBytecode::new`'s asserts
-/// checked internal consistency, never the properties `analyze_legacy` guarantees. Executed
-/// against the real wire path, under one unchanged `code_hash`:
-///
-/// * a **forged jump table** turns an `InvalidJump` halt into `SUCCESS` with `storage[0] = 42`;
-/// * a **one-byte edit to the padding** (`0x00` -> `0x55`, outside the digest) takes a transaction
-///   from gas 21006 / storage 0 to gas 43106 / storage 42, and with one jump-table bit becomes
-///   arbitrary-length attacker code under a legitimate contract's hash;
-/// * the **variant tag** is prover-chosen, and the same bytes hash identically under either --
-///   re-tagging six bytes from `LegacyAnalyzed` to `Eip7702` turned a `Stop` into `InvalidJump` at
-///   the same gas;
-/// * `Eip7702`'s `delegated_address` is a *sibling* field of `raw` and `original_byte_slice()`
-///   returns only `raw`, so it is outside the digest too: same hash, gas 21000 -> 43106, and
-///   `EOA.storage[0] = 42`.
-///
-/// So: ship the preimage, derive the rest. [`Bytecode::new_raw_checked`] is the derivation --
-/// it picks the variant from the leading bytes and runs revm's own `analyze_legacy` for the
-/// legacy case, which is where the jump table and the padding come from. Every field of the
-/// resulting `Bytecode` is then a function of bytes the code hash commits to.
-///
-/// This is also the same constructor the host used to build the value in the first place
-/// (`rpc-db`'s `Bytecode::new_raw(code)`), so the round trip is exact by construction and the
-/// guest cannot reject a bytecode the host accepted.
-///
-/// # What it costs
-///
-/// The format exists because revm's `Bytecode` serde round-trips the jumpdest table through
-/// `bitvec`, which bincode decodes element-wise (~1.85 M cycles for a mainnet block's
-/// contracts). That cost is still avoided -- nothing bitvec-shaped is on the wire. What
-/// replaces the two memcpys is one `analyze_legacy` scan per contract, a linear walk with a
-/// `PUSH` skip. The witness also gets smaller by one bit per code byte.
-///
-/// Verifying a supplied table instead of deriving one would need the same scan (the walk is
-/// what distinguishes a `JUMPDEST` from a `PUSH` immediate), so there is no cheaper sound
-/// option -- only a more complicated one.
+/// Cost: the format exists because revm's `Bytecode` serde round-trips the jumpdest table
+/// through `bitvec`, which bincode decodes element-wise (~1.85 M cycles a block). That is still
+/// avoided; what replaces it is one `analyze_legacy` scan per contract. Verifying a supplied
+/// table would need the same scan, so there is no cheaper sound option.
 mod wire_bytecodes {
     use std::borrow::Cow;
 

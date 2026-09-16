@@ -50,11 +50,9 @@ where
 {
     /// Executes the block and returns the value the guest commits.
     ///
-    /// Returns a [`CommittedHeader`] rather than a bare `Header` so that the configuration
-    /// digest cannot be left off by a caller: the three wire fields it covers -- `genesis`,
-    /// `custom_beneficiary` and `opcode_tracking` -- change execution and appear nowhere in
-    /// the header, so a commitment without it does not say which chain's rules ran. See
-    /// [`CommittedHeader`].
+    /// Returns a [`CommittedHeader`] rather than a bare `Header` so a caller cannot leave the
+    /// configuration digest off: `genesis`, `custom_beneficiary` and `opcode_tracking` change
+    /// execution and appear nowhere in the header.
     pub fn execute(
         &self,
         input: ClientExecutorInput<'_, C::Primitives>,
@@ -62,15 +60,11 @@ where
         let config_digest = input.config_digest()?;
         let sealed_headers = input.sealed_headers().collect::<Vec<_>>();
 
-        // Initialize the witnessed database with verified storage proofs.
-        //
-        // Every step from here on is a rejection rather than a panic. These used to be
-        // `unwrap()`: `verified_views` returns `Err(MismatchedStateRoot)` when the witness does
-        // not hash to the parent header's root -- the anchor check, the one thing the whole
-        // trust chain hangs from -- and unwrapping it turned the tree's central rejection into
-        // an abort. A panic under `-Cpanic=abort` does fail closed, so this is liveness and
-        // reporting rather than soundness, but `flat.rs`'s own rule applies: a malformed
-        // witness should be a rejection, not a crash.
+        // Every fallible step from here on propagates rather than panicking. `verified_views`
+        // returns `Err(MismatchedStateRoot)` when the witness does not hash to the parent
+        // header's root -- the anchor the whole trust chain hangs from -- and an abort there
+        // fails closed but says nothing. `?` outside `profile_report!` so the zkvm arm still
+        // prints its end marker on the error path.
         let (views, accounts, block_hashes, bytecodes_by_hash) =
             profile_report!(INIT_WITNESS_DB, {
                 let (views, accounts) = input.verified_views()?;
@@ -87,9 +81,9 @@ where
                 .map_err(|_| ClientError::SignatureRecoveryFailed)
         })?;
 
-        // Validate the blocks. Consensus rejections are the expected answer for a block the
-        // prover made up, so they travel out as `ClientError::PostExecutionError` rather than
-        // aborting -- `validate_block_post_execution` below already worked that way.
+        // Consensus rejections are the expected answer for a block the prover made up, so they
+        // travel out as `ClientError::PostExecutionError`, as `validate_block_post_execution`
+        // below already did.
         profile_report!(VALIDATE_HEADER, {
             C::Primitives::validate_block(&block, self.chain_spec.clone())?;
 
@@ -125,10 +119,9 @@ where
             vec![execution_output.result.requests],
         );
 
-        // Verify the state root: one batched bottom-up delta pass over the verified blobs.
-        // `post_state_root` rejects a witness that omits a modified account's storage trie
-        // (and `prior_storage_root` under it rejects an unwitnessed path), so this is a
-        // `Result` on attacker-controlled input and must not be unwrapped.
+        // One batched bottom-up delta pass over the verified blobs. Fallible on
+        // attacker-controlled input: `post_state_root` rejects a witness that omits a modified
+        // account's storage trie.
         let state_root = profile_report!(COMPUTE_STATE_ROOT, {
             let hashed_state = executor_outcome.hash_state_slow::<KeccakKeyHasher>();
             views.post_state_root(&hashed_state)

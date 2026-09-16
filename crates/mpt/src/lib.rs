@@ -6,11 +6,9 @@
 //! RLP node blobs, verified in one pass by [`FlatTrieView::parse_and_verify`] and read without
 //! materialising a trie at all.
 //!
-//! The distinction that matters for soundness is between a key the witness proves *absent* and a
-//! key whose path leaves the witnessed region. The second is an omitted subtree, represented by
-//! its digest, which keeps the root hash correct -- so answering "absent" for it would make
-//! omission a way to make any account or slot read as zero. Both readers return
-//! [`Error::NodeNotResolved`] instead. See [`FlatTrieView::get`].
+//! Both readers distinguish a key the witness proves *absent* from one whose path leaves the
+//! witnessed region, returning [`Error::NodeNotResolved`] for the second. See
+//! [`FlatTrieView::get`] for why conflating them is fail-open.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 // target_vendor = "pico" is defined by the custom riscv64im-pico-zkvm-elf target

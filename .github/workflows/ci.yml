@@ -1,32 +1,10 @@
 name: CI
 
-# rsp had CI until `261dee3` (2025-09-11) squashed in a commit literally titled
-# `delete ci`, taking `.github/` from three workflows to none. It was never restored, and it
-# is an ancestor of every branch since — so for the whole guest-optimisation campaign nothing
-# in this repository compiled, tested or linted anything automatically, and the ten PRs were
-# squash-merged with no recorded review.
-#
-# Four separate proofs that "nothing verifies the guest" follow from that, and three of them
-# close here:
-#
-#   * `crates/executor/host/tests/integration.rs` did not compile for eleven months —
-#     `c269c19` added a parameter to `HostExecutor::execute` and did not touch the call site,
-#     thirteen days after CI was deleted. It is the only host->client->bincode round-trip test
-#     in the repo, i.e. the only test exercising the wire path every witness-layer defect
-#     lives on. `--all-targets` is what keeps it compiling.
-#   * `cargo check` does not compile the guest at all: type errors injected into a
-#     `cfg(target_os = "zkvm")` arm leave `cargo check --all-targets`, `cargo clippy
-#     --all-targets` and the whole test run green. `./bin/client/build-guest.sh` is the only
-#     command in the repository that compiles guest-only code — see the `guest` job below for
-#     why it is opt-in rather than always-on.
-#   * the root workspace links a *pre-campaign* revm (the lockfile pins it nine commits behind
-#     at both the baseline and the tip), so no host test here exercises the code the guest
-#     ships. This one does **not** close here, and `lock-files` cannot close it: see the note
-#     on that job. It is structural, not a stale pin -- the guest's revm needs the RV64
-#     `[patch.crates-io]` entries in `bin/client/Cargo.toml` (`bn`, `k256`, `sha2`, ...), and
-#     against the crates.io `substrate-bn` the host workspace resolves, `revm-precompile` does
-#     not compile ("cannot add `AffineG1` to `AffineG1`"). Aligning the two means giving the
-#     host workspace the guest's patch set, which is a change to the tree, not to CI.
+# The host workspace links a revm nine commits behind the guest's, so no host test here
+# exercises the code the guest ships. Structural, not a stale pin: the guest's revm needs the
+# RV64 `[patch.crates-io]` entries in `bin/client/Cargo.toml`, and against the crates.io
+# `substrate-bn` the host resolves, `revm-precompile` does not compile ("cannot add `AffineG1`
+# to `AffineG1`"). Closing it means giving the host workspace the guest's patch set.
 
 on:
   push:
@@ -47,9 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # No toolchain action: `rust-toolchain.toml` pins `nightly-2025-08-04`, and passing
-      # `+nightly` explicitly picks up whatever `nightly` happens to be, which cannot compile
-      # revm here. Let the pin apply.
+      # Never `+nightly`: it picks up whatever `nightly` happens to be, which cannot compile
+      # revm. Let `rust-toolchain.toml`'s pin apply.
       - run: cargo fmt --all --check
 
   clippy:
@@ -58,12 +35,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # No `-D warnings`: several lints this tree fires are deliberate codegen choices on
-      # RV64 (`manual_is_multiple_of` on the alignment tests, for one). What this job is for
-      # is clippy's **deny-by-default** lints, which are the ones that have caught real
-      # defects here: `derived_hash_with_manual_eq` (a broken `Hash`/`Eq` contract, one lint
-      # invocation away from being caught at the commit that introduced it) and
-      # `arithmetic_overflow` (a full-width shift that makes a 32-bit target not build).
+      # No `-D warnings`: some lints here are deliberate RV64 codegen choices
+      # (`manual_is_multiple_of` on the alignment tests). This job is for the deny-by-default
+      # lints.
       - run: cargo clippy --workspace --all-targets
 
   check:
@@ -72,8 +46,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # `--all-targets` so that test-only targets compile. This is the job that would have
-      # caught `integration.rs` on the day it broke.
       - run: cargo check --workspace --all-targets
 
   test:
@@ -82,10 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # `rsp-host-executor`'s integration tests and `bin/host`'s `cycle_count_diff` need live
-      # RPC endpoints (`RPC_<chain_id>`) and fail with `NotPresent` without them, so they are
-      # excluded here rather than silently skipped. They are still compiled by the `check`
-      # job above, which is the part that regressed.
+      # Excluded, not skipped: these need live `RPC_<chain_id>` endpoints. Still compiled above.
       - run: cargo test --workspace --exclude rsp --exclude rsp-host-executor
 
   lock-files:
@@ -94,34 +63,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # The guest is a *separate* workspace with its own lockfile, and `bin/client-op` a third;
-      # a dependency change in `crates/` that is not reflected there means the host and the
-      # guest link different graphs.
-      #
-      # `--locked` rather than a bare `cargo tree` followed by `git status --porcelain`. The
-      # latter rewrites the lockfile it is meant to be auditing, then reports the rewrite -- so
-      # it leaves a dirty tree for every later step, and its failure says only "not up to
-      # date", naming no file. `--locked` mutates nothing and names the lockfile it refused.
-      # (Both forms went red on the commit that added this job: `bin/client-op` is in no
-      # workspace and nothing compiles it, so its lockfile had drifted a long way.)
+      # Three workspaces, three lockfiles: a `crates/` dependency change not reflected in the
+      # guest's means host and guest link different graphs. `--locked` rather than `cargo tree` +
+      # `git status`, which rewrites the lockfile it is auditing and then reports its own rewrite.
       - run: |
           cargo tree --locked > /dev/null
           (cd ./bin/client && cargo tree --locked > /dev/null)
           (cd ./bin/client-op && cargo tree --locked > /dev/null)
 
-      # A **report, not a gate**, and the distinction is the point.
-      #
-      # The header at the top of this file used to say `lock-files` "at least makes a drift
-      # visible" of the host/guest revm split. It does not and cannot: every lockfile above
-      # pins revm by *revision*, `cargo tree` never re-resolves an already-pinned git revision,
-      # and each lockfile is internally consistent with its own manifest. So the step above
-      # goes green on precisely that divergence. Printing the two revisions is what actually
-      # makes it visible.
-      #
-      # It cannot be a gate, because the divergence is real and cannot be closed from here --
-      # see the note at the top of this file. An always-red job is worth less than no job at
-      # all, and a green job that claims to check something it does not is worth less than
-      # either.
+      # A report, not a gate: `cargo tree` never re-resolves a pinned revision, so the step above
+      # goes green on the revm split, and gating on a divergence that cannot be closed from here
+      # (see the header) would mean an always-red job.
       - name: report the revm revision each workspace links
         run: |
           rev() {
@@ -143,30 +95,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # Two commits on this branch went and resolved intra-doc links, and nothing kept them
-      # resolved: a `[Type]` that does not resolve is a warning, and a warning in a tree with
-      # no CI is invisible. `-D warnings` is what makes the next one a build failure, and it
-      # is affordable here in a way it is not for `clippy` above -- rustdoc's lints are about
-      # the docs rather than about codegen, so none of them are deliberate choices on RV64.
+      # `-D warnings` is affordable here, unlike `clippy`: no rustdoc lint is an RV64 choice.
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
   guest:
     name: build the guest ELF
-    # Opt-in, and deliberately so. `./bin/client/build-guest.sh` needs the `pico` rustup
-    # toolchain and `cargo-pico`, which this repository installs from a local path and pins
-    # nowhere — so a job that tried to install them would fail on every run, and an
-    # always-red job is worth less than no job at all. Set the repository variable
-    # `PICO_TOOLCHAIN_AVAILABLE` to `true` on a runner that has them.
-    #
-    # **This is the remaining half of "nothing verifies the guest".** Until it runs, no
-    # automated check in this repository compiles guest-only code, and the script's own
-    # `__wrap_memset` assertion — the thing that catches a build that silently dropped the
-    # central optimisation — never fires.
+    # The only job that compiles guest-only code: a type error under `cfg(target_os = "zkvm")`
+    # leaves every job above green. Opt-in because the `pico` toolchain and `cargo-pico` are
+    # installed from a local path and pinned nowhere — set `PICO_TOOLCHAIN_AVAILABLE` on a
+    # runner that has them.
     if: ${{ vars.PICO_TOOLCHAIN_AVAILABLE == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # Do **not** substitute `cargo pico build`: it silently ignores the `--rustflags` this
-      # build depends on and produces a correct but ~1 % slower guest with no warning.
+      # Not `cargo pico build`: it silently ignores the `--rustflags` this build depends on and
+      # produces a correct but ~1 % slower guest.
       - run: ./bin/client/build-guest.sh

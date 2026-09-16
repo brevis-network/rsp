@@ -495,26 +495,17 @@ mod tests {
     /// claim is false — the memo answers one input with a different input's digest.
     ///
     /// Four `|` operators, each mutable to `&` or `^`, is **eight** mutants, and all eight
-    /// survive the rest of this suite, `memo_is_exact_and_actually_caches` included. That test
-    /// *does* probe foreign slots — measured: 17 of its 600 keys' slots are contested, so the
-    /// predicate sees a non-matching entry on the order of 170 times a run — but on a contested
-    /// slot the stored key and the probe are two independent random 32-byte values, and each
-    /// mutant needs a further algebraic coincidence among the xor terms (`a & b == 0`,
-    /// `a == b`) of probability about 2^-64. More random keys will never produce one, so each
-    /// witness below is constructed rather than searched for, and each is aimed at one named
-    /// mutation.
+    /// survive the rest of this suite. `memo_is_exact_and_actually_caches` does probe foreign
+    /// slots — measured: 17 of its 600 keys' slots are contested — but there the stored key and
+    /// the probe are independent random values, and each mutant needs a further algebraic
+    /// coincidence (`a & b == 0`, `a == b`) of probability about 2^-64. Random keys will never
+    /// produce one, so every witness below is constructed and aimed at one named mutation, and
+    /// the `checked` tally at the bottom pins the sweep at eight.
     ///
-    /// The count matters: the sweep shipped with six of the eight, missing `200:29 | -> &` and
-    /// `201:29 | -> &`. The argument above applies to those two unchanged — for a false hit
-    /// the mutant needs `terms[0] == 0`, and on a contested slot that is the xor of two
-    /// independent 64-bit words — so nothing else in the suite was killing them either, and
-    /// the `checked` tally at the bottom is what pins the sweep at eight.
-    ///
-    /// Every case seeds the slot the probe indexes with a *different* key, then probes: the
-    /// real predicate must miss and rehash, while the mutant returns the stored value. The
-    /// mutated predicate is evaluated here too, under both readings of it (see `mutated`), so
-    /// a witness that ever stops distinguishing the mutation it is aimed at fails the test
-    /// instead of passing it quietly.
+    /// Each case seeds the slot the probe indexes with a *different* key: the real predicate must
+    /// miss and rehash, while the mutant returns the stored value. The mutated predicate is
+    /// evaluated here too, under both readings of it (see `mutated`), so a witness that stops
+    /// distinguishing its mutation fails rather than passing quietly.
     #[test]
     fn memo_match_predicate_needs_every_or() {
         #[derive(Copy, Clone, PartialEq, Debug)]
@@ -523,13 +514,9 @@ mod tests {
             Xor,
         }
 
-        /// The mutated predicate as the source patch actually reads.
-        ///
-        /// `cargo mutants` replaces the operator *token* in the source text — verified with
-        /// `cargo mutants --list --diff`, which emits `(e.key[1] ^ w1) & /* changed */` for
-        /// the site on line 199 — so the expression is re-parsed, and `&` binds tighter than
-        /// `^`, which binds tighter than `|`. A mutation at position `i` therefore does not
-        /// re-associate the chain: it binds terms `i` and `i+1` and ors the rest.
+        /// The mutated predicate as the source patch actually reads. `cargo mutants` replaces
+        /// the operator *token*, so the expression is re-parsed and precedence applies: a
+        /// mutation at position `i` binds terms `i` and `i+1` and ors the rest.
         ///
         ///     a | b | c | d | e   with `&` at position 1   ==>   a | (b & c) | d | e
         fn mutated(terms: [u64; 5], at: usize, with: Op) -> u64 {
@@ -546,12 +533,10 @@ mod tests {
             acc
         }
 
-        /// The same mutation read as a left-associative reduction, i.e. as if the mutated
-        /// operator applied to everything accumulated so far: `((a | b) & c) | d | e` for a
-        /// mutation at position 1. This is what an AST-level rewrite of the inner binary node
-        /// would mean, and it is *not* what the textual patch above does. Every witness is
-        /// built so that both readings agree — all terms left of the mutated operator are
-        /// zero — so these cases kill the mutants under either one.
+        /// The same mutation read as a left-associative reduction — `((a | b) & c) | d | e` for
+        /// position 1 — which is what an AST-level rewrite would mean, not what the textual patch
+        /// does. Every witness zeroes all terms left of the mutated operator, so both readings
+        /// agree and the cases kill the mutants under either.
         fn mutated_left_assoc(terms: [u64; 5], at: usize, with: Op) -> u64 {
             let mut acc = terms[0];
             for i in 0..4 {

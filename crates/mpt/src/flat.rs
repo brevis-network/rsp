@@ -214,27 +214,20 @@ fn rlp_header(bytes: &[u8], pos: usize) -> Result<(usize, usize, bool), Error> {
 
 /// Decodes a big-endian RLP length of `ll` bytes.
 ///
-/// `ll` comes straight off the wire (`b0 - 0xb7` or `b0 - 0xf7`, so up to 8), and eight bytes
-/// is the full width of a `usize` on the 64-bit target the guest ships for: accumulating them
-/// as `len << 8 | b` **wraps**. The guest builds with `overflow-checks = false`, so it wraps
-/// silently there while every host test, every Miri pass and 660 M fuzz executions *panic* --
-/// an entire defect class that the suite cannot see, because the shipped profile behaves
-/// differently from the tested one.
+/// `ll` is up to 8, the full width of a `usize`, so `len << 8 | b` wraps. The guest builds with
+/// `overflow-checks = false` and wraps silently where every host test, Miri pass and fuzz
+/// execution panics -- a defect class the suite cannot see, because the shipped profile behaves
+/// differently from the tested one. `checked_shl` does not close it: it returns `None` only when
+/// the *shift amount* reaches the type width, and the shift here is the constant 8.
 ///
-/// `checked_shl` does **not** close that, and the version that used it did not: `checked_shl`
-/// returns `None` only when the *shift amount* reaches the type's width, and the shift here is
-/// the constant 8, so on both 32- and 64-bit its `None` arm was unreachable and the discarded
-/// high bits stayed silent. What closes it is `checked_mul`/`checked_add` -- checked in the
-/// shipped profile as much as in the tested one -- together with the buffer bound applied
-/// *inside* the loop. The accumulation only ever grows, so a value already past `bytes.len()`
-/// can never come back under it; stopping there caps the accumulator at the buffer length,
-/// which is what makes every `payload + len` downstream non-wrapping.
+/// `checked_mul`/`checked_add` are checked in both profiles. The buffer bound goes *inside* the
+/// loop: the accumulation only grows, so a value already past `bytes.len()` never comes back
+/// under it, and stopping there caps the accumulator at the buffer length -- which is what makes
+/// every `payload + len` downstream non-wrapping.
 ///
-/// The bound is on the accumulated value, not on `ll`: a length may legally be written with
-/// leading zero bytes, so rejecting `ll > size_of::<usize>()` up front would turn a decodable
-/// encoding into a rejection. This rejects exactly the lengths that cannot index the buffer,
-/// and it rejects them identically on 32- and 64-bit -- where the old code accepted
-/// `0x01_0000_0005` as `5` on a 32-bit build and read a truncated item as a valid one.
+/// The bound is on the accumulated value, not on `ll`, because a length may legally carry
+/// leading zero bytes. It therefore rejects identically on 32- and 64-bit, where the old code
+/// took `0x01_0000_0005` for `5` and read a truncated item as a valid one.
 #[inline]
 fn be_len(bytes: &[u8], pos: usize, ll: usize) -> Result<usize, Error> {
     let raw = bytes
@@ -255,11 +248,9 @@ fn be_len(bytes: &[u8], pos: usize, ll: usize) -> Result<usize, Error> {
 
 /// Total encoded length of the RLP item starting at `pos`.
 ///
-/// **Never returns 0**, and two scan loops rely on that to terminate. Every `rlp_header` arm
-/// returns either `payload == pos` with `len >= 1` (the `0x00..=0x7f` single byte) or
-/// `payload > pos` (every header form that has a header byte at all), so the sum below is at
-/// least 1 in all five arms; `rlp_item_len_never_returns_zero` sweeps them. It is also bounded
-/// by `bytes.len() - pos`, since `rlp_header` establishes `payload + len <= bytes.len()`.
+/// **Never returns 0** -- two scan loops rely on that to terminate. Every `rlp_header` arm gives
+/// either `payload == pos` with `len >= 1`, or `payload > pos`; `rlp_item_len_never_returns_zero`
+/// sweeps them. Also bounded by `bytes.len() - pos`.
 #[inline]
 fn rlp_item_len(bytes: &[u8], pos: usize) -> Result<usize, Error> {
     let (payload, len, _) = rlp_header(bytes, pos)?;
@@ -319,10 +310,8 @@ fn parse_node(bytes: &[u8]) -> Result<FlatNode<'_>, Error> {
             return Err(Error::FlatTrie("too many items in node"));
         }
         let item_len = rlp_item_len(body, pos)?;
-        // `rlp_item_len` is at least 1, so the loop always advances; there is no separate
-        // `item_len == 0` test here because no header form can produce one (see its doc).
-        // The bound is re-asserted rather than assumed: it already follows from `rlp_header`,
-        // and this is the parser that has to fail closed on a hostile witness.
+        // Re-asserted rather than assumed: it already follows from `rlp_header`, but this is the
+        // parser that has to fail closed on a hostile witness.
         if item_len > body.len() - pos {
             return Err(Error::FlatTrie("item runs past the node"));
         }
@@ -542,11 +531,9 @@ impl<'a> FlatTrieView<'a> {
         let mut pos = root_len;
         while pos < bytes.len() {
             let len = rlp_item_len(bytes, pos)?;
-            // `bytes.len() - pos`, not `pos + len`: the sum is what used to wrap in the
-            // profile the guest ships, turning "truncated" into "accepted". `rlp_header` now
-            // establishes the same bound, so this is a restatement at the point the slice is
-            // taken rather than the only check -- and `rlp_item_len` cannot return 0, so the
-            // loop advances without a separate test for it.
+            // `bytes.len() - pos`, not `pos + len`: the sum is what wrapped in the profile the
+            // guest ships, turning "truncated" into "accepted". `rlp_header` establishes the same
+            // bound, so this is a restatement at the point the slice is taken.
             if len > bytes.len() - pos {
                 return Err(Error::FlatTrie("truncated node blob"));
             }
@@ -956,25 +943,17 @@ impl FlatStateViews<'_> {
     /// digest stubs. Running the existing `update()` + `state_root()` on the overlay with the
     /// returned (filtered) post state yields the exact post-state root.
     ///
-    /// # The wipe this has to avoid
+    /// Every account the post state modifies must get a `storage_tries` entry, because
+    /// [`EthereumState::update`] reaches for `entry(addr).or_default()` and a *fresh empty* trie
+    /// rewrites the account's row with its storage wiped. A plain value transfer to a contract
+    /// reaches that: it touches the account but makes no storage access, so nothing else notices
+    /// the witness has no trie for it.
     ///
-    /// `storage_tries` was built from `self.storage` alone, and [`EthereumState::update`] reaches
-    /// for `self.storage_tries.entry(addr).or_default()` -- so a modified account with no
-    /// witnessed storage trie got a *fresh empty* one and its row was rewritten with its storage
-    /// wiped. A plain value transfer to a contract with non-empty storage is enough to reach it:
-    /// the transfer touches the account but makes no storage access, so `storage_ref`'s `expect`
-    /// never fires and nothing else notices.
-    ///
-    /// So every account the post state modifies gets an entry, seeded from
-    /// `prior_storage_root` (private, further down this file) when the witness carries no trie
-    /// for it -- a digest stub when the account had storage, a real empty trie when it had none
-    /// -- and the one case that cannot be answered at all is rejected here rather than left for
-    /// `update` to `unwrap`.
-    ///
-    /// The three-way split mirrors [`Self::post_state_root`] case for case, deliberately. This
-    /// function has no non-test caller; `overlay_state_parity` is a cross-check of the shipped
-    /// path only while the two compute the same thing, and it was the two disagreeing -- the fix
-    /// landing in one of them -- that the check is there to catch.
+    /// Entries with no witnessed trie are seeded from `prior_storage_root` -- a digest stub when
+    /// the account had storage, a real empty trie when it had none -- and the case that cannot be
+    /// answered is rejected here rather than left for `update` to `unwrap`. The three-way split
+    /// mirrors [`Self::post_state_root`] case for case; `overlay_state_parity` is a cross-check of
+    /// the shipped path only while the two agree.
     pub fn materialize_overlay(
         &self,
         post_state: &HashedPostState,
@@ -1307,16 +1286,13 @@ mod tests {
 
     /// Every malformed-witness shape the harness found as a *panic site*, as a rejection.
     ///
-    /// All of them fail closed today -- a panic aborts under `-Cpanic=abort`, so no proof
-    /// comes out -- so these are liveness, not soundness. What made them worth closing is the
-    /// **profile**: three of them are `usize` overflows in RLP length arithmetic, and the
-    /// guest builds with `overflow-checks = false` while every host test, every Miri pass and
-    /// 660 M fuzz executions build with them *on*. So the shipped artefact wrapped where the
-    /// tested one panicked, and an entire defect class -- anything whose trigger is an
-    /// arithmetic wrap -- was invisible to the whole suite.
+    /// A panic aborts under `-Cpanic=abort`, so these are liveness, not soundness. What made
+    /// them worth closing is the **profile**: three are `usize` overflows in RLP length
+    /// arithmetic, and the guest builds with `overflow-checks = false` while every host test,
+    /// Miri pass and fuzz execution builds with them on -- so the shipped artefact wrapped where
+    /// the tested one panicked, and an entire defect class was invisible to the whole suite.
     ///
-    /// The lengths below are the ones that wrap: `0xbf`/`0xff` introduce an eight-byte
-    /// big-endian length, and eight shifts of 8 is the full width of a `usize`.
+    /// `0xbf`/`0xff` below introduce an eight-byte big-endian length, the width that wraps.
     #[test]
     fn malformed_witnesses_are_rejected_not_panicked() {
         // A well-formed witness, as the control.
@@ -1343,14 +1319,10 @@ mod tests {
             ("length past the buffer", std::vec![0xb8, 0xff, 0x00]),
             // A node whose declared payload runs past the blob.
             ("branch payload past the blob", std::vec![0xf8, 0x40, 0x80, 0x80]),
-            // Not a defect but the control for the loop's special case below: an empty
-            // region *is* the empty trie. This slot used to be labelled "a zero-length item
-            // inside a list: would not advance the scan", which read as a witness for the
-            // `item_len == 0` guard -- a shape no `rlp_header` arm can produce, so the guard
-            // was unreachable and this case never touched it. See `rlp_item_len`.
+            // Not a defect: an empty region *is* the empty trie, and the loop below accepts it.
             ("empty witness", std::vec![]),
-            // What the item scan actually hands `parse_node` when a list item carries
-            // nothing: a 2-item node whose path prefix is the empty string.
+            // A 2-item node whose path prefix is the empty string -- what the item scan hands
+            // `parse_node` when a list item carries nothing.
             ("empty path prefix", std::vec![0xc2, 0x80, 0x80]),
         ];
         for (name, bytes) in cases {
@@ -1376,19 +1348,12 @@ mod tests {
         assert!(FlatTrieView::parse_and_verify(&wrapping_tail).is_err(), "wrapping tail length");
     }
 
-    /// `be_len`'s bound, including the shape a 32-bit build used to accept.
+    /// `be_len`'s bound, including the shape a 32-bit build used to accept:
+    /// `[0,0,0,1,0,0,0,5]` truncated to `5` and read a truncated item back as a valid one.
     ///
-    /// The accumulate was `len.checked_shl(8)`, and `checked_shl` returns `None` only when the
-    /// *shift amount* reaches the type width -- with the constant 8 it never fires, so the
-    /// discarded high bits stayed silent and the `None` arm was dead code on every target. On
-    /// a 64-bit host the eight-byte case wrapped to something absurd that the trailing bound
-    /// then caught, which is why the witness tests above never noticed; on a 32-bit build
-    /// `[0,0,0,1,0,0,0,5]` truncated to `5`, passed the bound, and a truncated item read back
-    /// as a valid five-byte one.
-    ///
-    /// Checked against `be_len` directly rather than through a witness, so that each assertion
-    /// means the same thing on both widths -- a `parse_and_verify` case could only ever
-    /// exercise the host's.
+    /// Checked against `be_len` directly rather than through a witness, so each assertion means
+    /// the same thing on both widths -- a `parse_and_verify` case could only exercise the host's,
+    /// which is why the witness tests above never noticed.
     #[test]
     fn be_len_rejects_lengths_past_the_buffer() {
         let mut buf = [0u8; 64];
@@ -1442,23 +1407,13 @@ mod tests {
 
     /// The two API-misuse shapes `delta_root` used to answer with a panic or a wrong root.
     ///
-    /// A **duplicate key** makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the
-    /// key length -- the longest common prefix of a key with itself is the whole key -- and
-    /// panics. Two bytes of misuse, no witness required, and invisible to every layer the
-    /// harness had before round 2.
+    /// A **duplicate key** makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the key
+    /// length and panic. An **unsorted list** violates `apply_branch`'s precondition, and one
+    /// shape of that returns a *silently wrong root* under `--release` -- see the note on
+    /// `apply_branch` for the mechanism; measured on the shape below before the fix, it gave
+    /// `0x56e81f…`, the empty-trie root, where a real root was correct.
     ///
-    /// An **unsorted list** violates `apply_branch`'s precondition. One shape of that returns
-    /// a *silently wrong root* under `--release`: revisiting a slot runs the child count
-    /// update twice, `count - 1 + 1` from 0 passes through `usize::MAX` with overflow checks
-    /// off and lands back on 0, which reaches the `count <= 1` collapse path holding a
-    /// `rebuilt` array that has lost a slot -- and that path never reads `touched`, so nothing
-    /// panics. Measured on the shape below before the fix: `0x56e81f…` (the empty-trie root)
-    /// where the correct answer is a real root.
-    ///
-    /// Neither is a soundness break for the caller -- this is the post-state root, compared
-    /// against the header immediately afterwards, not the witness authentication in
-    /// `parse_and_verify` -- but a silently wrong root is a worse failure mode than an error,
-    /// and until now the property was enforced in **no shipped configuration**.
+    /// Until this the property was enforced in **no shipped configuration**.
     #[test]
     fn delta_root_refuses_duplicate_and_unsorted_keys() {
         let trie = keccak_trie(40);
@@ -1525,21 +1480,14 @@ mod tests {
     /// An account whose storage trie is **not** in the witness must not have its storage
     /// silently wiped -- by `post_state_root`, *or* by `materialize_overlay`.
     ///
-    /// The reachable shape is the cheapest transaction there is: a plain value transfer to a
-    /// contract. The account is touched, so it appears in `post_state.accounts`; no storage
-    /// slot is read, so `storage_ref`'s `expect` never fires and nothing else notices that the
-    /// witness carries no storage trie for it. `post_state_root` then rewrote that account's
-    /// row with `storage_root = EMPTY_ROOT` -- the whole contract's storage gone, and a
-    /// post-state root computed as if it were.
+    /// The reachable shape is a plain value transfer to a contract: the account is touched, so it
+    /// appears in `post_state.accounts`, but no slot is read, so nothing notices the witness
+    /// carries no storage trie for it and the row is rewritten with `storage_root = EMPTY_ROOT`.
     ///
-    /// Both arms are covered: an account with a storage *change* and no witnessed trie must be
-    /// refused outright, and an account with no change must keep the root it had.
-    ///
-    /// Every case runs through **both** implementations. The fix first landed only in
-    /// `post_state_root`, leaving `materialize_overlay` -- a `pub` second oracle for the same
-    /// computation, reached through `EthereumState::update`'s
-    /// `storage_tries.entry(addr).or_default()` -- still wiping. A parity test that exercises
-    /// one of two implementations of the same thing is how they drift.
+    /// Both arms: a storage *change* with no witnessed trie must be refused outright, and no
+    /// change must keep the root it had. Every case runs through **both** implementations -- the
+    /// fix first landed only in `post_state_root`, and a parity test that exercises one of two
+    /// implementations of the same thing is how they drift.
     #[test]
     fn unwitnessed_storage_trie_is_not_wiped_by_either_path() {
         let mut storage = MptNode::default();
@@ -1757,11 +1705,9 @@ mod tests {
     /// three nibbles of path (two compact bytes) and a one-byte value, encoding to six bytes --
     /// under the 32-byte inlining threshold.
     ///
-    /// The other two arms stay at zero on purpose, and that is not a gap. A branch child is an
-    /// empty string, a 32-byte digest or an inlined node, so it can never be a lone byte below
-    /// `0x80` (`0x00..=0x7f`), and it can never need a multi-byte length header
-    /// (`0xb8..=0xbf`/`0xf8..=0xff`): a >55-byte string is not a child shape, and an inline node
-    /// is by definition under 32 bytes. Both arms exist only because `rlp_item_len` has them.
+    /// The other two arms stay at zero on purpose: a branch child is an empty string, a 32-byte
+    /// digest or an inlined node, so it is never a lone byte below `0x80` and never needs a
+    /// multi-byte length header. Both arms exist only because `rlp_item_len` has them.
     fn inline_child_trie() -> (MptNode, Vec<[u8; 32]>) {
         let mut trie = MptNode::default();
         let mut keys = Vec::new();
@@ -2002,22 +1948,17 @@ fn ref_bytes_of(r: FlatRef<'_>, out: &mut Vec<u8>) {
 /// A (remaining-key-nibbles, new-value) pair; `None` deletes the key.
 type Change<'c> = (&'c [u8], Option<&'c [u8]>);
 
-/// Rejects a change list that is not strictly ascending by key. Called by `delta_root` and
-/// `empty_delta_root` on the list they have just sorted, so it is really a duplicate-key
-/// check; it is written as the full ordering test so that it also covers a caller that ever
-/// stops sorting.
+/// Rejects a change list that is not strictly ascending by key. Both callers sort first, so in
+/// practice this is a duplicate-key check; written as the full ordering test to also cover a
+/// caller that stops sorting.
 ///
-/// Checked in the *shipped* build and not only under `debug_assertions`. Two separate things
-/// rest on it. `apply_branch`'s precondition is that `changes` is sorted by the whole key, and
-/// a violation there can return a silently wrong root rather than panicking (see the note on
-/// that function) -- so the guest, which builds with debug assertions off, had the property
-/// enforced in no configuration at all. And *duplicate* keys make `build_kvs` index
-/// `kvs[start].0[cp]` with `cp` equal to the key length, because the longest common prefix of a
-/// key with itself is the whole key: two bytes of API misuse, no witness required, and a panic
-/// that was invisible to every layer the harness had before round 2.
+/// Checked in the *shipped* build, not only under `debug_assertions` -- the guest builds with
+/// those off, so the property was enforced in no configuration at all. Two things rest on it:
+/// violating `apply_branch`'s sorted precondition can return a silently wrong root rather than
+/// panicking, and a duplicate key makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to
+/// the key length (the longest common prefix of a key with itself) and panic.
 ///
-/// One extra pass of the same comparison the sort just made, against an `O(n log n)` sort: not
-/// measurable.
+/// One extra pass of the comparison the sort just made: not measurable.
 #[inline]
 fn require_strictly_ascending(list: &[Change<'_>]) -> Result<(), Error> {
     if list.windows(2).any(|w| w[0].0 >= w[1].0) {
@@ -2345,53 +2286,31 @@ impl<'a> FlatTrieView<'a> {
         payload: &'a [u8],
         changes: &[Change<'_>],
     ) -> Result<Out, Error> {
-        // `changes` sorted is a precondition, not an optimisation, and it is the *whole* key
-        // that has to be ordered, not just the leading nibble: the group handed to the
-        // recursive call is `changes[start..idx]` with `&k[1..]`, so the same requirement
-        // applies again at every depth. Everything that reaches here comes through
-        // `delta_root`, which sorts with `sort_unstable_by(|a, b| a.0.cmp(b.0))`, and the
-        // recursion only ever strips a shared prefix, which preserves that order -- the
-        // assertion below just says so.
+        // Sorted `changes` is a precondition, and it is the *whole* key that must be ordered,
+        // not just the leading nibble: the recursive call gets `changes[start..idx]` with
+        // `&k[1..]`, so the requirement reapplies at every depth.
         //
-        // What a violation costs. The old shape (`for slot in 0..16` with an inner run scan)
-        // relied on ordering too, and dropped later changes silently, but was bounded by its
-        // `0..16` loop. This one steps over `changes`' runs directly, so a list with more than
-        // 16 runs overruns `touched`, and one whose runs are merely out of order walks off the
-        // end of a slot in the splice. Both panic.
+        // A violation is not merely a panic. Stepping over `changes`' runs directly, more than
+        // 16 runs overruns `touched` and out-of-order runs walk off the end of a slot in the
+        // splice -- but revisiting a slot instead runs the `count` update twice, and `count`
+        // then lands at or below 1 (usually 1 by ordinary arithmetic; 0 via `count - 1 + 1`
+        // wrapping with overflow checks off). Either reaches the `count <= 1` collapse path with
+        // a `rebuilt` array that has lost a slot, and that path never reads `touched`: a wrong
+        // root, no panic. Not a soundness problem -- this root is compared against the header
+        // immediately after -- but a worse failure mode than a panic.
         //
-        // But not every violation does. Revisiting a slot runs the `count` update below a
-        // second time for it, which can leave `count` anywhere at or below 1 -- including 0 by
-        // way of `count - 1 + 1` wrapping through `usize::MAX` with overflow checks off, but
-        // landing on 1 by ordinary arithmetic is the commoner route: over a 4,000-case sweep of
-        // unsorted lists, 53 of the 64 revisits that reached the gate arrived with `count == 1`
-        // and only 11 with `count == 0`. Either way it reaches the `count <= 1` collapse path
-        // holding a `rebuilt` array that has lost a slot -- and that path never reads `touched`,
-        // so it returns a wrong root with no panic. Rare, but enough that "a bounds panic rather
-        // than a wrong answer" is not a claim this can make.
+        // Three layers, checking different things:
         //
-        // Neither outcome is a soundness problem for the caller -- this is the post-state
-        // root, compared against the header immediately afterwards, not the witness
-        // authentication in `parse_and_verify` -- but a silently wrong root is a worse failure
-        // mode than a panic, which is why the contract is now written as what the code needs.
+        //  1. `delta_root`/`empty_delta_root`, the only entries here, check the whole list is
+        //     **strictly** ascending in the shipped build. Strict is what rejects a *duplicate*
+        //     key, which neither of the others catches.
+        //  2. this `debug_assert!`, the only check on *full-key* ordering rather than leading
+        //     nibbles. `O(changes)` at every depth, which is why it cannot be a real `assert!` --
+        //     and `delta_root` sorts immediately before, so the guest loses nothing.
+        //  3. the `assert!` in the slot loop below, `O(1)` per run, the one that reaches the guest.
         //
-        // Three layers now stand behind it, and they check different things:
-        //
-        //  1. `delta_root` and `empty_delta_root` -- the only entries into this family -- check the
-        //     whole list is **strictly** ascending, in the shipped build. Strict is what rejects a
-        //     *duplicate* key, which the two below do not catch at all: a duplicate makes
-        //     `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the key length, because the
-        //     longest common prefix of a key with itself is the whole key. Two bytes of API misuse,
-        //     no witness required.
-        //  2. this `debug_assert!`, which is the only one that checks the *full-key* ordering
-        //     rather than the ordering of the leading nibbles. `O(changes)` at every depth of the
-        //     recursion, which is why it cannot be a real `assert!`.
-        //  3. the `assert!` in the slot loop below, `O(1)` per run, which is the one that reaches
-        //     the guest.
-        //
-        // `debug_assert` rather than `assert` for this one: `delta_root` sorts just before
-        // handing the list in, and the guest builds with debug assertions off, so it costs the
-        // guest nothing. Note the ordering consequence for tests -- in a debug build this
-        // fires before (3) can, so a test aimed at (3) has to expect *this* message.
+        // In a debug build (2) fires before (3) can, so a test aimed at (3) must expect *this*
+        // message.
         debug_assert!(
             changes.windows(2).all(|w| w[0].0 <= w[1].0),
             "apply_branch requires `changes` sorted by key, not merely by leading nibble"
@@ -2665,40 +2584,23 @@ impl FlatStateViews<'_> {
     /// The storage root an account had *before* this block, read out of the already-verified
     /// state trie.
     ///
-    /// Only reached for an account with no entry in `self.storage`. `materialize_overlay`
-    /// builds `storage_tries` from `self.storage` alone, so a missing entry and an entry for
-    /// an empty trie were indistinguishable -- both answered `EMPTY_ROOT`, which rewrites the
-    /// account's row with its storage **wiped**. That is reachable by a plain value transfer
-    /// to a contract with non-empty storage: the transfer touches the account but makes no
-    /// storage access, so `storage_ref`'s `expect` never fires and nothing else notices.
-    ///
-    /// The state trie is anchored to the parent header's root, so its answer is authenticated;
-    /// an account that did not exist has `EMPTY_ROOT`, and a key whose path leaves the witness
+    /// Only reached for an account with no entry in `self.storage`, where a missing entry and an
+    /// empty trie would otherwise be indistinguishable -- both `EMPTY_ROOT`, which wipes the
+    /// account's storage. The state trie is anchored to the parent header's root, so the answer
+    /// is authenticated: a nonexistent account gives `EMPTY_ROOT`, and a path leaving the witness
     /// is an error rather than an absence (see [`FlatTrieView::get`]).
     ///
-    /// # What it costs, and what has not been tried
+    /// Costs one state-trie walk plus a `TrieAccount::decode` per modified account with no
+    /// witnessed storage trie -- mostly EOAs -- on `COMPUTE_STATE_ROOT`. At `TrieDB`'s ~1,460
+    /// retired instructions a walk that is 10^5--10^6 for a mainnet block, but **that is
+    /// extrapolated, not measured here**: pricing it wants a guest run on a real block.
     ///
-    /// One state-trie walk plus one `TrieAccount::decode` per *modified* account with no
-    /// witnessed storage trie -- mostly EOAs, the beneficiary, withdrawal recipients and the
-    /// 4788/2935 system contracts. `TrieDB`'s own note prices a walk at ~1,460 retired
-    /// instructions, which puts this in the 10^5--10^6 range for a mainnet block, on
-    /// `COMPUTE_STATE_ROOT`. **That is an estimate from a number measured elsewhere, not a
-    /// measurement of this code**: it wants a guest run on a real block, which needs the pico
-    /// toolchain and an RPC endpoint, and it has not been done. Treat the figure accordingly.
-    ///
-    /// Carrying the root through `verified_views` does not help: that map is built only for
-    /// accounts that *do* have a storage trie, which is exactly the set this is not. Two
-    /// routes that would help are **untried, not rejected**:
-    ///
-    /// * `TrieDB::basic_ref` already walks to these same rows during execution and decodes the same
-    ///   `TrieAccount`, discarding `storage_root`. Memoising it there and handing the map to
-    ///   `post_state_root` makes the walk free, at the price of interior mutability on
-    ///   `basic_ref`'s hot path and of getting the map back out of the executor's `db`.
-    /// * `delta_root`'s own descent reaches every one of these leaves a moment later. A change
-    ///   expressed as a function of the prior row rather than a fixed value would need no second
-    ///   walk at all.
-    ///
-    /// Both change the state-root path, and neither is worth landing on an estimate.
+    /// Carrying the root through `verified_views` does not help -- that map covers exactly the
+    /// accounts this does not. Two routes would, both **untried rather than rejected**: memoising
+    /// `TrieDB::basic_ref`, which already decodes these same rows and discards `storage_root`; or
+    /// expressing a `delta_root` change as a function of the prior row, since its descent reaches
+    /// these leaves anyway. Both change the state-root path, and neither is worth landing on an
+    /// estimate.
     fn prior_storage_root(&self, hashed_address: &B256) -> Result<B256, Error> {
         use alloy_rlp::Decodable;
         Ok(match self.state.get(hashed_address.as_slice())? {

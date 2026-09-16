@@ -52,10 +52,8 @@ alloy-network.workspace = true
 alloy-rpc-types.workspace = true
 
 # misc
-# `config_digest` hashes a bincode encoding of the three wire fields the committed header
-# cannot show, so this is no longer dev-only. Inherited, like every other dependency here:
-# a literal version would let a workspace-wide bump leave the one crate compiled into the
-# guest behind, which is the host/guest graph divergence `lock-files` exists to catch.
+# No longer dev-only: `config_digest` hashes a bincode encoding of the three wire fields the
+# committed header cannot show.
 bincode.workspace = true
 
 # op
