@@ -18,10 +18,10 @@
 //!   bytes are ever read.
 //!
 //! This module reads those six bytes as one aligned `u64` out of a slot it owns, and the bit
-//! arithmetic is byte-for-byte alloy's (see [`m3_2048`]). `bloom_parity` checks that against
+//! arithmetic is byte-for-byte alloy's (see `m3_2048` below). `bloom_parity` checks that against
 //! alloy over random logs.
 //!
-//! On top of that the guest memoises the digests: see [`MemoTable`].
+//! On top of that the guest memoises the digests: see `MemoTable` below.
 
 use alloy_primitives::{Bloom, Log};
 
