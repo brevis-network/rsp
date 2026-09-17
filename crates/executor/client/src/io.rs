@@ -428,10 +428,10 @@ pub trait WitnessInput {
 ///
 /// # What it costs, measured
 ///
-/// **+202.8 M retired instructions across the thirteen `perf/bench_data/rv64` blocks, +6.5 %**
-/// (+5.8 M / +1.9 % on block 24006677; worst case +17.8 % on 18884864, where the witness is
-/// small and the contracts are not). Emulated on `validation/rv64-emu`, same fixtures, same
-/// rustflags, both arms.
+/// **+182.4 M retired instructions across the thirteen `perf/bench_data/rv64` blocks, +5.8 %.**
+/// Isolated by building this tree with the pre-fix deserialiser restored *and the revm pin held
+/// at `7268a584`*, so revm #11's own guards (a further +20.4 M, +0.6 %) are not charged here.
+/// Emulated on `validation/rv64-emu`, same fixtures, same rustflags.
 ///
 /// That is much more than the ~1.85M the old shape saved on the `bitvec` decode, because the
 /// decode was never the whole of it: the jump table was *computed by the host*, and the guest
