@@ -477,6 +477,52 @@ mod wire_bytecodes {
         wire.serialize(s)
     }
 
+    /// The most `analyze_legacy` ever appends to the code it is handed: 32 bytes to complete a
+    /// `PUSH32` immediate that the end of the code truncates, one `STOP` if the last opcode is
+    /// not already one, and one guard byte for the dispatch loop's read past that `STOP`.
+    ///
+    /// Tight, not rounded up. The final iteration starts at `i <= len - 1` and the largest step
+    /// is `PUSH32`'s `31 + 2`, so `scan_end - len <= 32`; and a step of 33 *means* the last
+    /// opcode was `PUSH32`, so the `!= STOP` byte is always owed where the 32 is rather than
+    /// cancelling against it. `[PUSH32]` alone attains all 34, which is what revm's
+    /// `test_bytecode_with_max_push32` pins as `len + 33 + GUARD_BYTES`.
+    ///
+    /// Spelled out rather than written `32 + 1 + revm_bytecode::GUARD_BYTES`, which would say
+    /// it better and track the source. It cannot be: this crate compiles into **both**
+    /// workspaces, and the host's revm pin (`pico-v98-31-0-2`) has neither that constant nor
+    /// the guard byte it names -- its `analyze_legacy` tops out at 33 and can pad by 0. So the
+    /// literal is what covers both revisions, and it is an over-reserve of one byte on the host.
+    const MAX_ANALYSIS_PADDING: usize = 34;
+
+    /// Copies the hashed preimage into a buffer that already has room for that padding.
+    ///
+    /// `analyze_legacy` always appends at least the guard byte, and grows the buffer it is handed
+    /// with `BytesMut::resize`. Handed an exactly-sized one -- which is what `slice.to_vec()`
+    /// produces, because `Bytes::from` turns a `Vec` whose `len == capacity` into a boxed slice
+    /// and loses the capacity -- that `resize` is a `realloc`, and the guest's bump allocator
+    /// implements `realloc` as allocate-memcpy-free. So every contract was memcpied twice: once
+    /// out of the wire, and once more for the sake of its last byte. Reserving the padding up
+    /// front makes the second copy a length bump instead; `bytes` carries the spare capacity
+    /// across `Bytes` -> `BytesMut` because `len != capacity` takes the `Shared` arm, which
+    /// records `cap`.
+    ///
+    /// **Measured: -36,022,527 retired instructions over the thirteen `perf/bench_data/rv64`
+    /// blocks, -1.078 %** -- 19.7 % of what the re-derivation above costs. Per block -0.37 %
+    /// (24006677) to -2.61 % (18884864), and -1.046 instructions per byte of contract code with
+    /// a spread of 0.06 across a 6x range of block sizes, which is the shape of a copy removed
+    /// rather than of the heap alignment shifting. Two controls, both on the same rig: reserving
+    /// 0 instead of 34 reproduces the baseline to +7,803 (+0.0002 %), so the helper itself is
+    /// free and all of it is the reservation; reserving 40 instead of 34 moves it by +6,745, so
+    /// it is not the alignment lottery `docs/preimage-wire-measurement.md` warns about.
+    ///
+    /// The constant is a performance assumption and nothing else. If revm's padding ever exceeds
+    /// it, `resize` reallocates exactly as it did before and the output is unchanged.
+    fn preimage_buf(code: &[u8]) -> Bytes {
+        let mut buf = Vec::with_capacity(code.len() + MAX_ANALYSIS_PADDING);
+        buf.extend_from_slice(code);
+        Bytes::from(buf)
+    }
+
     /// Rebuilds each bytecode **from its hashed preimage alone**.
     ///
     /// Only `code[..original_len]` is read. `jump_bit_len`, `jump_table`, the padding in
@@ -498,10 +544,10 @@ mod wire_bytecodes {
                         if n > code.len() {
                             return Err(D::Error::custom("original_len exceeds the code buffer"));
                         }
-                        Bytes::from(code[..n].to_vec())
+                        preimage_buf(&code[..n])
                     }
                     // The preimage of every variant, and the only thing `hash_slow()` covers.
-                    WireBytecode::Other(b) => Bytes::from(b.original_byte_slice().to_vec()),
+                    WireBytecode::Other(b) => preimage_buf(b.original_byte_slice()),
                 };
                 Bytecode::new_raw_checked(preimage).map_err(D::Error::custom)
             })
