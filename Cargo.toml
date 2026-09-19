@@ -189,9 +189,9 @@ p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p2
 # the only reason nobody has hit it. Fixing it means moving the host off the sp1 `bn` patch
 # and is out of scope for this pair. Tracked separately.
 #
-# The GUEST is what carries revm #11's memory-safety fixes into the proof, and
-# `bin/client/Cargo.toml` is repointed at its head branch for exactly that reason -- see the
-# note there. The host/guest revm skew this leaves is pre-existing, not introduced here.
+# The GUEST carries revm #11's memory-safety fixes into the proof. Both manifests now name
+# `pico-v98-31-0-2`; the skew that remains is between the two LOCKS -- host `67781f52`, guest
+# `1d59d55b` -- not between branch names. Pre-existing, not introduced here.
 revm = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-bytecode = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-context = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
