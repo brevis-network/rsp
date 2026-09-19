@@ -16,16 +16,18 @@
 
 use std::borrow::Cow;
 
-use alloy_primitives::{map::{B256Map, HashMap}, B256};
+use alloy_primitives::{
+    map::{B256Map, HashMap},
+    B256,
+};
 use alloy_rlp::Encodable;
 use reth_trie::HashedPostState;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     mpt::{
-        keccak, keccak_into_b256, node_from_digest, node_with_cached_reference, prefix_nibs, to_nibs,
-        Error,
-        MptNode, MptNodeData, MptNodeReference, EMPTY_ROOT,
+        keccak, keccak_into_b256, node_from_digest, node_with_cached_reference, prefix_nibs,
+        to_nibs, Error, MptNode, MptNodeData, MptNodeReference, EMPTY_ROOT,
     },
     EthereumState,
 };
@@ -184,37 +186,85 @@ fn emit_child(child: &MptNode, out: &mut Vec<u8>) {
 fn rlp_header(bytes: &[u8], pos: usize) -> Result<(usize, usize, bool), Error> {
     let err = || Error::FlatTrie("truncated RLP item");
     let b0 = *bytes.get(pos).ok_or_else(err)?;
-    match b0 {
-        0x00..=0x7f => Ok((pos, 1, false)),
-        0x80..=0xb7 => Ok((pos + 1, (b0 - 0x80) as usize, false)),
+    // Every arm returns a `(payload_offset, payload_len)` that callers turn straight into
+    // `&bytes[payload..payload + len]`, so both the offset and the sum have to be inside the
+    // buffer here rather than at each of the ~a dozen call sites. `be_len` bounds `len` by
+    // `bytes.len()`, and the check below bounds the sum; neither addition can wrap, because
+    // `pos <= bytes.len()` and both addends are under `bytes.len()`.
+    //
+    // **This is the expensive guard, and it is worth its price.** `rlp_header` runs once per
+    // RLP item over the whole witness in `parse_and_verify`, so its two extra comparisons --
+    // together with `be_len`'s checked arithmetic and `parse_node`'s restatement -- are
+    // **+48.0 M retired instructions across the thirteen `perf/bench_data/rv64` blocks, 89 %
+    // of this branch's total cost** (+1.36 M on block 24006677 alone). Measured by building
+    // the guest with all three sites reverted and emulating both. It buys the property that a
+    // hostile witness is rejected rather than read out of bounds, which no amount of replaying
+    // real blocks can check -- see the note on `parse_and_verify`.
+    let (payload, len, is_list) = match b0 {
+        0x00..=0x7f => (pos, 1, false),
+        0x80..=0xb7 => (pos + 1, (b0 - 0x80) as usize, false),
         0xb8..=0xbf => {
             let ll = (b0 - 0xb7) as usize;
             let len = be_len(bytes, pos + 1, ll)?;
-            Ok((pos + 1 + ll, len, false))
+            (pos + 1 + ll, len, false)
         }
-        0xc0..=0xf7 => Ok((pos + 1, (b0 - 0xc0) as usize, true)),
+        0xc0..=0xf7 => (pos + 1, (b0 - 0xc0) as usize, true),
         0xf8..=0xff => {
             let ll = (b0 - 0xf7) as usize;
             let len = be_len(bytes, pos + 1, ll)?;
-            Ok((pos + 1 + ll, len, true))
+            (pos + 1 + ll, len, true)
         }
+    };
+    if payload > bytes.len() || len > bytes.len() - payload {
+        return Err(err());
     }
+    Ok((payload, len, is_list))
 }
 
+/// Decodes a big-endian RLP length of `ll` bytes.
+///
+/// `ll` is up to 8, the full width of a `usize`, so `len << 8 | b` wraps. The guest builds with
+/// `overflow-checks = false` and wraps silently where every host test, Miri pass and fuzz
+/// execution panics -- a defect class the suite cannot see, because the shipped profile behaves
+/// differently from the tested one. `checked_shl` does not close it: it returns `None` only when
+/// the *shift amount* reaches the type width, and the shift here is the constant 8.
+///
+/// `checked_mul`/`checked_add` are checked in both profiles. The buffer bound goes *inside* the
+/// loop: the accumulation only grows, so a value already past `bytes.len()` never comes back
+/// under it, and stopping there caps the accumulator at the buffer length -- which is what makes
+/// every `payload + len` downstream non-wrapping.
+///
+/// The bound is on the accumulated value, not on `ll`, because a length may legally carry
+/// leading zero bytes. It therefore rejects identically on 32- and 64-bit, where the old code
+/// took `0x01_0000_0005` for `5` and read a truncated item as a valid one.
 #[inline]
 fn be_len(bytes: &[u8], pos: usize, ll: usize) -> Result<usize, Error> {
-    let raw = bytes.get(pos..pos + ll).ok_or(Error::FlatTrie("truncated RLP length"))?;
+    let raw = bytes
+        .get(pos..pos.checked_add(ll).ok_or(Error::FlatTrie("RLP length overflow"))?)
+        .ok_or(Error::FlatTrie("truncated RLP length"))?;
     let mut len = 0usize;
     for &b in raw {
-        len = (len << 8) | b as usize;
+        len = len
+            .checked_mul(256)
+            .and_then(|acc| acc.checked_add(b as usize))
+            .ok_or(Error::FlatTrie("RLP length overflow"))?;
+        if len > bytes.len() {
+            return Err(Error::FlatTrie("RLP length exceeds the buffer"));
+        }
     }
     Ok(len)
 }
 
 /// Total encoded length of the RLP item starting at `pos`.
+///
+/// **Never returns 0** -- two scan loops rely on that to terminate. Every `rlp_header` arm gives
+/// either `payload == pos` with `len >= 1`, or `payload > pos`; `rlp_item_len_never_returns_zero`
+/// sweeps them. Also bounded by `bytes.len() - pos`.
 #[inline]
 fn rlp_item_len(bytes: &[u8], pos: usize) -> Result<usize, Error> {
     let (payload, len, _) = rlp_header(bytes, pos)?;
+    // `payload >= pos` and `payload + len <= bytes.len()` are both established by
+    // `rlp_header`, so neither the subtraction nor the addition can wrap.
     Ok(payload - pos + len)
 }
 
@@ -231,10 +281,18 @@ enum FlatRef<'a> {
 enum FlatNode<'a> {
     Null,
     Digest(&'a [u8]),
-    Leaf { prefix: &'a [u8], value: &'a [u8] },
-    Extension { prefix: &'a [u8], child: FlatRef<'a> },
+    Leaf {
+        prefix: &'a [u8],
+        value: &'a [u8],
+    },
+    Extension {
+        prefix: &'a [u8],
+        child: FlatRef<'a>,
+    },
     /// Payload region of the 17-item list.
-    Branch { payload: &'a [u8] },
+    Branch {
+        payload: &'a [u8],
+    },
 }
 
 /// Parses one node blob (`bytes` must be exactly the node's RLP encoding).
@@ -261,6 +319,11 @@ fn parse_node(bytes: &[u8]) -> Result<FlatNode<'_>, Error> {
             return Err(Error::FlatTrie("too many items in node"));
         }
         let item_len = rlp_item_len(body, pos)?;
+        // Re-asserted rather than assumed: it already follows from `rlp_header`, but this is the
+        // parser that has to fail closed on a hostile witness.
+        if item_len > body.len() - pos {
+            return Err(Error::FlatTrie("item runs past the node"));
+        }
         items[n] = (pos, item_len);
         n += 1;
         pos += item_len;
@@ -431,6 +494,13 @@ impl<'a> FlatTrieView<'a> {
         }
 
         let root_len = rlp_item_len(bytes, 0)?;
+        // `rlp_item_len` bounds this by `bytes.len()` now, but say so where the slice is
+        // taken: a truncated root item used to panic here rather than return an error. The
+        // panic aborts under `-Cpanic=abort` and so fails closed, but a malformed witness
+        // should be a rejection, not a crash.
+        if root_len > bytes.len() {
+            return Err(Error::FlatTrie("truncated root item"));
+        }
         let root_blob = &bytes[..root_len];
         let root = parse_node(root_blob)?;
         match root {
@@ -445,7 +515,12 @@ impl<'a> FlatTrieView<'a> {
                     return Err(Error::FlatTrie("data after digest root"));
                 }
                 view.root_hash = B256::from_slice(d);
-                view.nodes.push(NodeRec { off: 0, len: root_len as u32, edge_start: 0, kind: KIND_DIGEST });
+                view.nodes.push(NodeRec {
+                    off: 0,
+                    len: root_len as u32,
+                    edge_start: 0,
+                    kind: KIND_DIGEST,
+                });
                 view.hashes.push(view.root_hash);
                 return Ok(view);
             }
@@ -465,7 +540,10 @@ impl<'a> FlatTrieView<'a> {
         let mut pos = root_len;
         while pos < bytes.len() {
             let len = rlp_item_len(bytes, pos)?;
-            if bytes.len() < pos + len {
+            // `bytes.len() - pos`, not `pos + len`: the sum is what wrapped in the profile the
+            // guest ships, turning "truncated" into "accepted". `rlp_header` establishes the same
+            // bound, so this is a restatement at the point the slice is taken.
+            if len > bytes.len() - pos {
                 return Err(Error::FlatTrie("truncated node blob"));
             }
             let blob = &bytes[pos..pos + len];
@@ -483,15 +561,13 @@ impl<'a> FlatTrieView<'a> {
                     return Err(Error::FlatTrie("blob does not attach to the trie"));
                 };
                 while top.item_pos < top.items_end && top.slot < top.nslots {
-                    let (payload_off, payload_len, is_list) = rlp_header(bytes, top.item_pos as usize)?;
+                    let (payload_off, payload_len, is_list) =
+                        rlp_header(bytes, top.item_pos as usize)?;
                     let item_end = payload_off + payload_len;
                     let slot = top.slot;
                     top.item_pos = item_end as u32;
                     top.slot += 1;
-                    if !is_list
-                        && payload_len == 32
-                        && bytes[payload_off..item_end] == hash[..]
-                    {
+                    if !is_list && payload_len == 32 && bytes[payload_off..item_end] == hash[..] {
                         let idx = view.nodes.len() as u32;
                         let rec = view.nodes[top.node_idx as usize];
                         view.edges[rec.edge_start as usize + slot as usize] = idx;
@@ -590,8 +666,15 @@ impl<'a> FlatTrieView<'a> {
     }
 
     /// Retrieves the value for `key` (full key bytes, e.g. a 32-byte hashed key), walking the
-    /// raw blobs without allocating. Returns `None` for absent keys *and* for keys that resolve
-    /// into pruned subtrees (matching this fork's `MptNode::get_internal` behavior).
+    /// raw blobs without allocating.
+    ///
+    /// Returns `None` for a key the witness proves absent, and **`Err(NodeNotResolved)` for a
+    /// key whose path leaves the witnessed region** -- a subtree the prover declined to
+    /// encode, represented by its digest. Those two are different answers and must not be
+    /// confused: the digest keeps the root hash correct, so `parse_and_verify` and the anchor
+    /// check both pass, and reporting "absent" for the second makes omission a way to make an
+    /// account or a slot read as zero. See the matching arm in `MptNode::get_internal` for
+    /// what that buys an attacker and why the write path was never exposed to it.
     pub fn get(&self, key: &[u8]) -> Result<Option<&'a [u8]>, Error> {
         if self.is_empty() {
             return Ok(None);
@@ -603,10 +686,13 @@ impl<'a> FlatTrieView<'a> {
         let mut pos = 0usize; // nibble cursor
 
         loop {
-            let node =
-                if inline { parse_node(blob)? } else { self.parse_indexed(node_idx)? };
+            let node = if inline { parse_node(blob)? } else { self.parse_indexed(node_idx)? };
             match node {
-                FlatNode::Null | FlatNode::Digest(_) => return Ok(None),
+                FlatNode::Null => return Ok(None),
+                // The root itself is a digest: the whole trie is outside the witness.
+                FlatNode::Digest(d) => {
+                    return Err(Error::NodeNotResolved(B256::from_slice(d)));
+                }
                 FlatNode::Leaf { prefix, value } => {
                     return Ok(match match_prefix(prefix, key, pos) {
                         Some(p) if p == nkey => Some(value),
@@ -624,14 +710,15 @@ impl<'a> FlatTrieView<'a> {
                             blob = b;
                             inline = true;
                         }
-                        FlatRef::Digest(_) => {
+                        FlatRef::Digest(d) => {
                             if inline {
                                 return Err(Error::FlatTrie("digest ref inside inline node"));
                             }
-                            let edge = self.edges
-                                [self.nodes[node_idx as usize].edge_start as usize];
+                            let edge =
+                                self.edges[self.nodes[node_idx as usize].edge_start as usize];
                             if edge == EDGE_PRUNED {
-                                return Ok(None);
+                                // Not "absent": unwitnessed. See the note on `get`.
+                                return Err(Error::NodeNotResolved(B256::from_slice(d)));
                             }
                             node_idx = edge;
                             blob = self.blob(edge);
@@ -666,13 +753,15 @@ impl<'a> FlatTrieView<'a> {
                             blob = b;
                             inline = true;
                         }
-                        FlatRef::Digest(_) => {
+                        FlatRef::Digest(d) => {
                             if inline {
                                 return Err(Error::FlatTrie("digest ref inside inline node"));
                             }
-                            // Not inline: the edge was EDGE_PRUNED (else the fast path took it),
-                            // so this digest child is a pruned subtree — absent from the witness.
-                            return Ok(None);
+                            // Not inline: the edge was EDGE_PRUNED (else the fast path took
+                            // it), so this digest child is a subtree the witness does not
+                            // cover. See the note on `get`: that is not the same answer as
+                            // "absent" and must not be reported as one.
+                            return Err(Error::NodeNotResolved(B256::from_slice(d)));
                         }
                     }
                 }
@@ -680,7 +769,8 @@ impl<'a> FlatTrieView<'a> {
         }
     }
 
-    /// Materializes a sparse [`MptNode`] overlay containing the full paths for every key in
+    /// Materializes a sparse `MptNode` overlay (the module-private node graph) containing the
+    /// full paths for every key in
     /// `keys` (`(hashed_key, is_delete)`); everything off-path stays a digest stub. For delete
     /// keys, the remaining sibling of any 2-child branch on the path is materialized one level
     /// deep so that branch-collapse during `delete()` sees its real shape.
@@ -707,9 +797,7 @@ impl<'a> FlatTrieView<'a> {
         let data = match node {
             FlatNode::Null => return Ok(MptNode::default()),
             FlatNode::Digest(d) => return Ok(MptNodeData::Digest(B256::from_slice(d)).into()),
-            FlatNode::Leaf { prefix, value } => {
-                MptNodeData::Leaf(prefix.to_vec(), value.to_vec())
-            }
+            FlatNode::Leaf { prefix, value } => MptNodeData::Leaf(prefix.to_vec(), value.to_vec()),
             FlatNode::Extension { prefix, child } => {
                 let pn = prefix_nibs(prefix);
                 let remaining: Vec<(&[u8], bool)> = keys
@@ -802,8 +890,8 @@ impl<'a> FlatTrieView<'a> {
             FlatRef::Digest(_) => match parent {
                 Src::Inline(_) => Err(Error::FlatTrie("digest ref inside inline node")),
                 Src::Node(idx) => {
-                    let edge = self.edges
-                        [self.nodes[idx as usize].edge_start as usize + slot as usize];
+                    let edge =
+                        self.edges[self.nodes[idx as usize].edge_start as usize + slot as usize];
                     if edge == EDGE_PRUNED || edge == EDGE_INLINE {
                         return Err(Error::FlatTrie("descend into pruned subtree"));
                     }
@@ -863,7 +951,22 @@ impl FlatStateViews<'_> {
     /// effectively-changed accounts/slots are materialized, untouched storage tries become
     /// digest stubs. Running the existing `update()` + `state_root()` on the overlay with the
     /// returned (filtered) post state yields the exact post-state root.
-    pub fn materialize_overlay(&self, post_state: &HashedPostState) -> Result<EthereumState, Error> {
+    ///
+    /// Every account the post state modifies must get a `storage_tries` entry, because
+    /// [`EthereumState::update`] reaches for `entry(addr).or_default()` and a *fresh empty* trie
+    /// rewrites the account's row with its storage wiped. A plain value transfer to a contract
+    /// reaches that: it touches the account but makes no storage access, so nothing else notices
+    /// the witness has no trie for it.
+    ///
+    /// Entries with no witnessed trie are seeded from `prior_storage_root` -- a digest stub when
+    /// the account had storage, a real empty trie when it had none -- and the case that cannot be
+    /// answered is rejected here rather than left for `update` to `unwrap`. The three-way split
+    /// mirrors [`Self::post_state_root`] case for case; `overlay_state_parity` is a cross-check of
+    /// the shipped path only while the two agree.
+    pub fn materialize_overlay(
+        &self,
+        post_state: &HashedPostState,
+    ) -> Result<EthereumState, Error> {
         let account_keys: Vec<(B256, bool)> =
             post_state.accounts.iter().map(|(k, a)| (*k, a.is_none())).collect();
         let state_trie = self.state.materialize(&account_keys)?;
@@ -878,6 +981,35 @@ impl FlatStateViews<'_> {
                     view.materialize(&keys)?
                 }
                 None => node_from_digest(view.root_hash),
+            };
+            storage_tries.insert(*hashed_address, trie);
+        }
+
+        for (hashed_address, account) in post_state.accounts.iter() {
+            if account.is_none() || self.storage.contains_key(hashed_address) {
+                continue;
+            }
+            let storage = post_state.storages.get(hashed_address);
+            let trie = if storage.is_some_and(|st| st.wiped) {
+                // `wiped` is legitimate -- a destroyed or freshly created account starts from
+                // the empty trie, so its prior root does not come into it.
+                MptNode::default()
+            } else {
+                match self.prior_storage_root(hashed_address)? {
+                    // No storage before this block: the delta, if any, applies to the empty
+                    // trie, which is the one case where `or_default()` was already right.
+                    root if root == FLAT_EMPTY_ROOT => MptNode::default(),
+                    // Non-empty storage and no witnessed trie. A stub carries the root through
+                    // for an account whose storage is untouched; if the block changed a slot
+                    // there is nothing to apply it to, and `post_state_root` rejects the same
+                    // witness rather than computing a root that drops the storage.
+                    root if storage.is_none() => node_from_digest(root),
+                    _ => {
+                        return Err(Error::FlatTrie(
+                            "no witnessed storage trie for a modified account",
+                        ))
+                    }
+                }
             };
             storage_tries.insert(*hashed_address, trie);
         }
@@ -934,16 +1066,22 @@ mod tests {
         assert_eq!(view.get(b"c").unwrap(), None);
     }
 
+    /// A pruned subtree verifies, and every key whose path enters it is **refused**, not
+    /// reported absent.
+    ///
+    /// The two answers used to be the same one (`Ok(None)`), which is the fail-open half of
+    /// the witness format: the digest keeps the root hash right, so verification and the
+    /// anchor check both pass, and "the prover declined to encode this" arrives at the EVM as
+    /// "this account does not exist". The flat view and the node graph must agree on refusing
+    /// it, because the node graph is the oracle the differential harness compares against.
     #[test]
     fn flat_pruned_subtree() {
-        // prune one subtree to a digest; the view must verify and treat it as absent
         let trie = keccak_trie(64);
         let MptNodeData::Branch(children) = trie.as_data().clone() else {
             panic!("expected branch root")
         };
         let mut pruned_children = children;
-        let victim =
-            pruned_children.iter_mut().flatten().next().expect("at least one child");
+        let victim = pruned_children.iter_mut().flatten().next().expect("at least one child");
         **victim = node_from_digest(victim.hash());
         let pruned: MptNode = MptNodeData::Branch(pruned_children).into();
         assert_eq!(pruned.hash(), trie.hash());
@@ -955,11 +1093,23 @@ mod tests {
         let mut pruned_hits = 0;
         for i in 0..64usize {
             let key = keccak(i.to_be_bytes());
-            let got = view.get(&key).unwrap();
-            let expected = pruned.get(&key).unwrap();
-            assert_eq!(got, expected);
-            if expected.is_none() {
-                pruned_hits += 1;
+            match pruned.get(&key) {
+                Ok(expected) => {
+                    // Inside the witness: the two paths must agree value for value, and the
+                    // key must actually be there (these are all keys of the trie).
+                    assert_eq!(view.get(&key).unwrap(), expected, "key {i}");
+                    assert!(expected.is_some(), "key {i} vanished from the witnessed part");
+                }
+                Err(Error::NodeNotResolved(_)) => {
+                    pruned_hits += 1;
+                    assert!(
+                        matches!(view.get(&key), Err(Error::NodeNotResolved(_))),
+                        "key {i} descends into the pruned subtree; the flat view reported \
+                         {:?} instead of refusing it",
+                        view.get(&key)
+                    );
+                }
+                Err(e) => panic!("unexpected error for key {i}: {e:?}"),
             }
         }
         assert!(pruned_hits > 0, "the pruned subtree should hide some keys");
@@ -977,7 +1127,12 @@ mod tests {
         let bytes = flatten_trie(&digest_root);
         let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
         assert_eq!(view.root_hash, B256::repeat_byte(0x42));
-        assert_eq!(view.get(&keccak(b"x")).unwrap(), None);
+        // A digest root is a trie that is entirely outside the witness: it answers nothing.
+        // (`Ok(None)` here would say every account in the world is non-existent.)
+        assert!(matches!(
+            view.get(&keccak(b"x")),
+            Err(Error::NodeNotResolved(d)) if d == B256::repeat_byte(0x42)
+        ));
     }
 
     #[test]
@@ -1077,9 +1232,7 @@ mod tests {
         let addr_a = B256::from(keccak(b"account-a"));
         let addr_b = B256::from(keccak(b"account-b"));
         let addr_c = B256::from(keccak(b"account-c")); // new account
-        for (addr, storage, bal) in
-            [(addr_a, &storage_a, 100u64), (addr_b, &storage_b, 200u64)]
-        {
+        for (addr, storage, bal) in [(addr_a, &storage_a, 100u64), (addr_b, &storage_b, 200u64)] {
             let account = TrieAccount {
                 nonce: 1,
                 balance: U256::from(bal),
@@ -1109,9 +1262,7 @@ mod tests {
         let mut storage_changes = HashedStorage::new(false);
         storage_changes.storage.insert(B256::from(keccak(0usize.to_be_bytes())), U256::ZERO);
         storage_changes.storage.insert(B256::from(keccak(1usize.to_be_bytes())), U256::from(42));
-        storage_changes
-            .storage
-            .insert(B256::from(keccak(200usize.to_be_bytes())), U256::from(43));
+        storage_changes.storage.insert(B256::from(keccak(200usize.to_be_bytes())), U256::from(43));
         post.accounts.insert(
             addr_a,
             Some(Account { nonce: 2, balance: U256::from(111), bytecode_hash: None }),
@@ -1142,6 +1293,391 @@ mod tests {
         assert_eq!(views.post_state_root(&post).unwrap(), expected_root);
     }
 
+    /// Every malformed-witness shape the harness found as a *panic site*, as a rejection.
+    ///
+    /// A panic aborts under `-Cpanic=abort`, so these are liveness, not soundness. What made
+    /// them worth closing is the **profile**: three are `usize` overflows in RLP length
+    /// arithmetic, and the guest builds with `overflow-checks = false` while every host test,
+    /// Miri pass and fuzz execution builds with them on -- so the shipped artefact wrapped where
+    /// the tested one panicked, and an entire defect class was invisible to the whole suite.
+    ///
+    /// `0xbf`/`0xff` below introduce an eight-byte big-endian length, the width that wraps.
+    #[test]
+    fn malformed_witnesses_are_rejected_not_panicked() {
+        // A well-formed witness, as the control.
+        let trie = keccak_trie(8);
+        let good = flatten_trie(&trie);
+        assert!(FlatTrieView::parse_and_verify(&good).is_ok());
+
+        let cases: Vec<(&str, Vec<u8>)> = std::vec![
+            // Truncated root item: a list header claiming 0x30 payload bytes with none.
+            ("truncated root list", std::vec![0xf8, 0x30]),
+            // Long-form string header whose length bytes are missing.
+            ("truncated long length", std::vec![0xbf]),
+            // Eight-byte length of `usize::MAX`: `len << 8` eight times wraps to 0, which
+            // used to make the item look empty and in bounds.
+            (
+                "wrapping string length",
+                std::vec![0xbf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ),
+            (
+                "wrapping list length",
+                std::vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ),
+            // A length that is merely far larger than the buffer.
+            ("length past the buffer", std::vec![0xb8, 0xff, 0x00]),
+            // A node whose declared payload runs past the blob.
+            ("branch payload past the blob", std::vec![0xf8, 0x40, 0x80, 0x80]),
+            // Not a defect: an empty region *is* the empty trie, and the loop below accepts it.
+            ("empty witness", std::vec![]),
+            // A 2-item node whose path prefix is the empty string -- what the item scan hands
+            // `parse_node` when a list item carries nothing.
+            ("empty path prefix", std::vec![0xc2, 0x80, 0x80]),
+        ];
+        for (name, bytes) in cases {
+            if bytes.is_empty() {
+                // The empty region is the empty trie, which is legal.
+                assert!(FlatTrieView::parse_and_verify(&bytes).is_ok(), "{name}");
+                continue;
+            }
+            assert!(
+                FlatTrieView::parse_and_verify(&bytes).is_err(),
+                "{name}: accepted a malformed witness"
+            );
+        }
+
+        // A truncated *tail* blob, appended after a valid root.
+        let mut truncated = good.clone();
+        truncated.extend_from_slice(&[0xf8, 0x40]);
+        assert!(FlatTrieView::parse_and_verify(&truncated).is_err(), "truncated tail blob");
+
+        // And a wrapping length in a tail blob.
+        let mut wrapping_tail = good;
+        wrapping_tail.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        assert!(FlatTrieView::parse_and_verify(&wrapping_tail).is_err(), "wrapping tail length");
+    }
+
+    /// `be_len`'s bound, including the shape a 32-bit build used to accept:
+    /// `[0,0,0,1,0,0,0,5]` truncated to `5` and read a truncated item back as a valid one.
+    ///
+    /// Checked against `be_len` directly rather than through a witness, so each assertion means
+    /// the same thing on both widths -- a `parse_and_verify` case could only exercise the host's,
+    /// which is why the witness tests above never noticed.
+    #[test]
+    fn be_len_rejects_lengths_past_the_buffer() {
+        let mut buf = [0u8; 64];
+
+        // A length written with leading zeros is decodable, not a rejection: the bound is on
+        // the accumulated value, never on `ll`.
+        buf[..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x07]);
+        assert_eq!(be_len(&buf, 0, 4).unwrap(), 7);
+        assert_eq!(be_len(&buf, 0, 0).unwrap(), 0, "no length bytes is length zero");
+
+        // The 32-bit truncation witness. 0x01_0000_0005 keeps only `5` in a 32-bit `usize`;
+        // both widths must reject it, because 64 bytes of buffer cannot hold either value.
+        buf[..8].copy_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05]);
+        assert!(be_len(&buf, 0, 8).is_err(), "a length past the buffer must be rejected");
+
+        // Eight shifts of 8 is the full width of a 64-bit `usize`: this is the one that used
+        // to come back as 0 and make a truncated item look empty and in bounds.
+        assert!(be_len(&[0xff; 16], 0, 8).is_err(), "all-ones length");
+
+        // Length bytes that are not all there.
+        assert!(be_len(&buf, 60, 8).is_err(), "truncated length bytes");
+        assert!(be_len(&buf, 0, usize::MAX).is_err(), "`pos + ll` must not wrap");
+    }
+
+    /// The floor two scan loops rest on: `parse_node`'s item walk and `parse_and_verify`'s
+    /// blob walk both advance by `rlp_item_len` and neither tests for zero, because no
+    /// `rlp_header` arm can produce one. One representative encoding per arm.
+    #[test]
+    fn rlp_item_len_never_returns_zero() {
+        let mut long_string = std::vec![0xb8u8, 56];
+        long_string.extend_from_slice(&[0u8; 56]);
+        let mut long_list = std::vec![0xf8u8, 56];
+        long_list.extend_from_slice(&[0x80u8; 56]);
+
+        let cases: Vec<Vec<u8>> = std::vec![
+            std::vec![0x00], // 0x00..=0x7f: the item is the byte
+            std::vec![0x7f],
+            std::vec![0x80], // 0x80..=0xb7 with an empty payload
+            std::vec![0x83, 1, 2, 3],
+            long_string,     // 0xb8..=0xbf
+            std::vec![0xc0], // 0xc0..=0xf7 with an empty payload
+            std::vec![0xc3, 0x01, 0x02, 0x03],
+            long_list, // 0xf8..=0xff
+        ];
+        for bytes in &cases {
+            let n = rlp_item_len(bytes, 0).unwrap();
+            assert!(n >= 1, "rlp_item_len returned 0 for {bytes:02x?}");
+            assert!(n <= bytes.len(), "rlp_item_len ran past the buffer for {bytes:02x?}");
+        }
+    }
+
+    /// The two API-misuse shapes `delta_root` used to answer with a panic or a wrong root.
+    ///
+    /// A **duplicate key** makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to the key
+    /// length and panic. An **unsorted list** violates `apply_branch`'s precondition, and one
+    /// shape of that returns a *silently wrong root* under `--release` -- see the note on
+    /// `apply_branch` for the mechanism; measured on the shape below before the fix, it gave
+    /// `0x56e81f…`, the empty-trie root, where a real root was correct.
+    ///
+    /// Until this the property was enforced in **no shipped configuration**.
+    #[test]
+    fn delta_root_refuses_duplicate_and_unsorted_keys() {
+        let trie = keccak_trie(40);
+        let bytes = flatten_trie(&trie);
+        let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
+
+        let k0 = B256::from(keccak(0usize.to_be_bytes()));
+        let k1 = B256::from(keccak(1usize.to_be_bytes()));
+
+        // A well-formed batch still works, and agrees with the node graph.
+        let ok: Vec<(B256, Option<Vec<u8>>)> =
+            std::vec![(k0, Some(alloy_rlp::encode(7u64))), (k1, Some(alloy_rlp::encode(8u64))),];
+        let mut full = trie.clone();
+        full.insert_rlp(k0.as_slice(), 7u64).unwrap();
+        full.insert_rlp(k1.as_slice(), 8u64).unwrap();
+        assert_eq!(view.delta_root(&ok).unwrap(), full.hash());
+
+        // Duplicate key.
+        let dup: Vec<(B256, Option<Vec<u8>>)> =
+            std::vec![(k0, Some(alloy_rlp::encode(7u64))), (k0, Some(alloy_rlp::encode(9u64))),];
+        assert!(matches!(
+            view.delta_root(&dup),
+            Err(Error::FlatTrie("delta changes must be strictly ascending by key"))
+        ));
+        assert!(matches!(
+            FlatTrieView::empty_delta_root(&dup),
+            Err(Error::FlatTrie("delta changes must be strictly ascending by key"))
+        ));
+
+        // A sorted list still descends, which is the control for the panicking test below.
+        let keys: Vec<B256> = (0..24usize).map(|i| B256::from(keccak(i.to_be_bytes()))).collect();
+        let nibs: Vec<Vec<u8>> = keys.iter().map(|k| to_nibs(k.as_slice())).collect();
+        let val = alloy_rlp::encode(3u64);
+        let mut list: Vec<Change<'_>> =
+            nibs.iter().map(|n| (n.as_slice(), Some(val.as_slice()))).collect();
+        list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        assert!(view.apply_src(Src::Node(0), &list).is_ok());
+    }
+
+    /// The guard *below* the entry check, reached the way a caller bypassing `delta_root`
+    /// would reach it -- `delta_root` sorts three lines before it descends, so nothing that
+    /// goes through it can get here.
+    ///
+    /// Expects the `debug_assert!`'s message rather than the `assert!`'s: both guards are
+    /// live, and in a test build the full-key `debug_assert!` fires first. The `assert!` is
+    /// the one that reaches the guest, where the `debug_assert!` is compiled out.
+    #[test]
+    #[should_panic(expected = "apply_branch requires `changes` sorted by key")]
+    fn apply_branch_panics_on_an_unsorted_list() {
+        let trie = keccak_trie(40);
+        let bytes = flatten_trie(&trie);
+        let view = FlatTrieView::parse_and_verify(&bytes).unwrap();
+
+        let keys: Vec<B256> = (0..24usize).map(|i| B256::from(keccak(i.to_be_bytes()))).collect();
+        let nibs: Vec<Vec<u8>> = keys.iter().map(|k| to_nibs(k.as_slice())).collect();
+        let val = alloy_rlp::encode(3u64);
+        let mut list: Vec<Change<'_>> =
+            nibs.iter().map(|n| (n.as_slice(), Some(val.as_slice()))).collect();
+        list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        list.reverse();
+        let _ = view.apply_src(Src::Node(0), &list);
+    }
+
+    /// An account whose storage trie is **not** in the witness must not have its storage
+    /// silently wiped -- by `post_state_root`, *or* by `materialize_overlay`.
+    ///
+    /// The reachable shape is a plain value transfer to a contract: the account is touched, so it
+    /// appears in `post_state.accounts`, but no slot is read, so nothing notices the witness
+    /// carries no storage trie for it and the row is rewritten with `storage_root = EMPTY_ROOT`.
+    ///
+    /// Both arms: a storage *change* with no witnessed trie must be refused outright, and no
+    /// change must keep the root it had. Every case runs through **both** implementations -- the
+    /// fix first landed only in `post_state_root`, and a parity test that exercises one of two
+    /// implementations of the same thing is how they drift.
+    #[test]
+    fn unwitnessed_storage_trie_is_not_wiped_by_either_path() {
+        let mut storage = MptNode::default();
+        for i in 0..40usize {
+            storage.insert_rlp(&keccak(i.to_be_bytes()), U256::from(i + 3)).unwrap();
+        }
+        let storage_root = storage.hash();
+        assert_ne!(storage_root, EMPTY_ROOT);
+
+        let contract = B256::from(keccak(b"contract"));
+        let eoa = B256::from(keccak(b"eoa"));
+        let mut state_trie = MptNode::default();
+        state_trie
+            .insert_rlp(
+                contract.as_slice(),
+                TrieAccount {
+                    nonce: 1,
+                    balance: U256::from(100),
+                    storage_root,
+                    code_hash: B256::repeat_byte(0xcd),
+                },
+            )
+            .unwrap();
+        state_trie
+            .insert_rlp(
+                eoa.as_slice(),
+                TrieAccount {
+                    nonce: 7,
+                    balance: U256::from(500),
+                    storage_root: EMPTY_ROOT,
+                    code_hash: KECCAK_EMPTY,
+                },
+            )
+            .unwrap();
+        for i in 0..30usize {
+            state_trie
+                .insert_rlp(
+                    &keccak((2000 + i).to_be_bytes()),
+                    TrieAccount {
+                        nonce: i as u64,
+                        balance: U256::from(i),
+                        storage_root: EMPTY_ROOT,
+                        code_hash: KECCAK_EMPTY,
+                    },
+                )
+                .unwrap();
+        }
+
+        // The witness carries the state trie and *no* storage trie -- which is exactly what a
+        // value transfer needs, and exactly what an attacker would ship.
+        let flat = FlatEthereumState {
+            state_nodes: Cow::Owned(flatten_trie(&state_trie)),
+            storage_tries: std::vec::Vec::new(),
+        };
+        let views = flat.views().unwrap();
+        assert_eq!(views.state.root_hash, state_trie.hash());
+
+        // (a) balance moves, storage untouched: the row keeps its storage root.
+        let mut post = HashedPostState::default();
+        post.accounts.insert(
+            contract,
+            Some(Account { nonce: 1, balance: U256::from(101), bytecode_hash: None }),
+        );
+        post.accounts
+            .insert(eoa, Some(Account { nonce: 8, balance: U256::from(499), bytecode_hash: None }));
+
+        // `HashedPostState`'s `Account` carries `bytecode_hash: Option<B256>`, and
+        // `get_bytecode_hash()` answers `KECCAK_EMPTY` for `None`, so the rewritten rows take
+        // that. What this test pins is the *storage* root, which is orthogonal.
+        let mut expected = state_trie.clone();
+        expected
+            .insert_rlp(
+                contract.as_slice(),
+                TrieAccount {
+                    nonce: 1,
+                    balance: U256::from(101),
+                    storage_root,
+                    code_hash: KECCAK_EMPTY,
+                },
+            )
+            .unwrap();
+        expected
+            .insert_rlp(
+                eoa.as_slice(),
+                TrieAccount {
+                    nonce: 8,
+                    balance: U256::from(499),
+                    storage_root: EMPTY_ROOT,
+                    code_hash: KECCAK_EMPTY,
+                },
+            )
+            .unwrap();
+
+        // `post_state.accounts` carries no code hash, so compare against the same shape the
+        // computation produces rather than re-deriving it: what this pins is that the
+        // *storage* root survives, which the `bytecode_hash: None` rows preserve.
+        // Both paths, on every case below: `post_state_root` computes the root directly, and
+        // `materialize_overlay` + `update` is the graph-trie route to the same answer.
+        let overlay_root = |p: &HashedPostState| -> Result<B256, Error> {
+            let mut overlay = views.materialize_overlay(p)?;
+            overlay.update(p);
+            Ok(overlay.state_root())
+        };
+
+        let got = views.post_state_root(&post).unwrap();
+        assert_ne!(
+            got,
+            {
+                // The wiped answer, i.e. what the pre-image computed.
+                let mut wiped = state_trie.clone();
+                wiped
+                    .insert_rlp(
+                        contract.as_slice(),
+                        TrieAccount {
+                            nonce: 1,
+                            balance: U256::from(101),
+                            storage_root: EMPTY_ROOT,
+                            code_hash: KECCAK_EMPTY,
+                        },
+                    )
+                    .unwrap();
+                wiped
+                    .insert_rlp(
+                        eoa.as_slice(),
+                        TrieAccount {
+                            nonce: 8,
+                            balance: U256::from(499),
+                            storage_root: EMPTY_ROOT,
+                            code_hash: KECCAK_EMPTY,
+                        },
+                    )
+                    .unwrap();
+                wiped.hash()
+            },
+            "the contract's storage was wiped from the post-state root"
+        );
+        assert_eq!(got, expected.hash());
+        assert_eq!(
+            overlay_root(&post).unwrap(),
+            expected.hash(),
+            "the overlay wiped the contract's storage that `post_state_root` preserved"
+        );
+
+        // (b) a storage *change* with no witnessed trie cannot be computed at all.
+        let mut post_with_storage = post.clone();
+        let mut changes = HashedStorage::new(false);
+        changes.storage.insert(B256::from(keccak(0usize.to_be_bytes())), U256::from(9));
+        post_with_storage.storages.insert(contract, changes);
+        assert!(
+            matches!(
+                views.post_state_root(&post_with_storage),
+                Err(Error::FlatTrie("no witnessed storage trie for a modified account"))
+            ),
+            "a modified account with no witnessed storage trie must be refused"
+        );
+        assert!(
+            matches!(
+                overlay_root(&post_with_storage),
+                Err(Error::FlatTrie("no witnessed storage trie for a modified account"))
+            ),
+            "the overlay must refuse what `post_state_root` refuses, not answer it"
+        );
+
+        // (c) ... unless the account really had none, or the storage is wiped, both of which
+        // stay computable.
+        let mut post_eoa = HashedPostState::default();
+        post_eoa
+            .accounts
+            .insert(eoa, Some(Account { nonce: 8, balance: U256::from(499), bytecode_hash: None }));
+        let mut eoa_changes = HashedStorage::new(false);
+        eoa_changes.storage.insert(B256::from(keccak(1usize.to_be_bytes())), U256::from(4));
+        post_eoa.storages.insert(eoa, eoa_changes);
+        assert_eq!(views.post_state_root(&post_eoa).unwrap(), overlay_root(&post_eoa).unwrap());
+
+        let mut post_wiped = post.clone();
+        let mut wiped_changes = HashedStorage::new(true);
+        wiped_changes.storage.insert(B256::from(keccak(0usize.to_be_bytes())), U256::from(9));
+        post_wiped.storages.insert(contract, wiped_changes);
+        assert_eq!(views.post_state_root(&post_wiped).unwrap(), overlay_root(&post_wiped).unwrap());
+    }
+
     /// Applies ops to a graph trie (reference) and via delta_root; roots must agree.
     fn delta_parity_case(trie: &MptNode, ops: &[([u8; 32], Option<u64>)]) {
         let bytes = flatten_trie(trie);
@@ -1160,10 +1696,8 @@ mod tests {
             }
         }
 
-        let changes: Vec<(B256, Option<Vec<u8>>)> = ops
-            .iter()
-            .map(|(k, v)| (B256::from(*k), v.map(|v| alloy_rlp::encode(v))))
-            .collect();
+        let changes: Vec<(B256, Option<Vec<u8>>)> =
+            ops.iter().map(|(k, v)| (B256::from(*k), v.map(|v| alloy_rlp::encode(v)))).collect();
         assert_eq!(view.delta_root(&changes).unwrap(), full.hash());
     }
 
@@ -1180,11 +1714,9 @@ mod tests {
     /// three nibbles of path (two compact bytes) and a one-byte value, encoding to six bytes --
     /// under the 32-byte inlining threshold.
     ///
-    /// The other two arms stay at zero on purpose, and that is not a gap. A branch child is an
-    /// empty string, a 32-byte digest or an inlined node, so it can never be a lone byte below
-    /// `0x80` (`0x00..=0x7f`), and it can never need a multi-byte length header
-    /// (`0xb8..=0xbf`/`0xf8..=0xff`): a >55-byte string is not a child shape, and an inline node
-    /// is by definition under 32 bytes. Both arms exist only because `rlp_item_len` has them.
+    /// The other two arms stay at zero on purpose: a branch child is an empty string, a 32-byte
+    /// digest or an inlined node, so it is never a lone byte below `0x80` and never needs a
+    /// multi-byte length header. Both arms exist only because `rlp_item_len` has them.
     fn inline_child_trie() -> (MptNode, Vec<[u8; 32]>) {
         let mut trie = MptNode::default();
         let mut keys = Vec::new();
@@ -1299,8 +1831,24 @@ mod tests {
         delta_parity_case(&empty, &ops);
     }
 
+    /// The randomized half of the delta-root differential, with a coverage guard.
+    ///
+    /// This was the only unguarded sweep in the campaign, and it is on the central output-path
+    /// rewrite -- so "30 seeds passed" was the whole claim, and 30 seeds that all produced,
+    /// say, pure updates on a fat trie would have passed identically. The tallies below say
+    /// what the generator actually produced, and every one of them is a shape with its own arm
+    /// in `apply_src`: an insert of a key the trie does not have, a delete that removes a leaf,
+    /// a delete that *collapses* a branch to one child, a no-op delete of an absent key, and a
+    /// batch that empties the trie outright.
     #[test]
     fn delta_root_randomized_parity() {
+        let mut inserts = 0usize;
+        let mut updates = 0usize;
+        let mut deletes = 0usize;
+        let mut absent_deletes = 0usize;
+        let mut collapses = 0usize;
+        let mut batch_sizes = (usize::MAX, 0usize);
+
         // sweep many pseudo-random op batches against the graph implementation
         for seed in 0u64..30 {
             let n = 20 + (seed as usize * 13) % 200;
@@ -1313,10 +1861,7 @@ mod tests {
                 let existing = x % 2 == 0;
                 let idx = if existing { (x >> 8) as usize % n } else { n + j };
                 let delete = (x >> 16) % 3 == 0;
-                ops.push((
-                    keccak(idx.to_be_bytes()),
-                    if delete { None } else { Some(x >> 24) },
-                ));
+                ops.push((keccak(idx.to_be_bytes()), if delete { None } else { Some(x >> 24) }));
             }
             // dedup by key (last op wins), mirroring HashedPostState semantics
             let mut seen = std::collections::HashMap::new();
@@ -1324,8 +1869,47 @@ mod tests {
                 seen.insert(k, v);
             }
             let ops: Vec<([u8; 32], Option<u64>)> = seen.into_iter().collect();
+
+            // Classify against the trie this batch is applied to, before applying it.
+            batch_sizes = (batch_sizes.0.min(ops.len()), batch_sizes.1.max(ops.len()));
+            let mut after = trie.clone();
+            for (k, v) in &ops {
+                let present = trie.get(k).unwrap().is_some();
+                match (v, present) {
+                    (Some(_), true) => updates += 1,
+                    (Some(_), false) => inserts += 1,
+                    (None, true) => deletes += 1,
+                    (None, false) => absent_deletes += 1,
+                }
+                match v {
+                    Some(v) => {
+                        after.insert_rlp(k, *v).unwrap();
+                    }
+                    None => {
+                        after.delete(k).unwrap();
+                    }
+                }
+            }
+            // A branch collapse shows up as the trie getting *shallower* while keys were
+            // removed -- the arm that rebuilds a one-child branch as an extension or a leaf.
+            if deletes > 0 && after.hash() != trie.hash() {
+                let before_bytes = flatten_trie(&trie).len();
+                let after_bytes = flatten_trie(&after).len();
+                if after_bytes < before_bytes {
+                    collapses += 1;
+                }
+            }
+
             delta_parity_case(&trie, &ops);
         }
+
+        assert!(inserts > 0, "no insert of an absent key was generated");
+        assert!(updates > 0, "no update of a present key was generated");
+        assert!(deletes > 0, "no delete of a present key was generated");
+        assert!(absent_deletes > 0, "no no-op delete of an absent key was generated");
+        assert!(collapses > 0, "no batch shrank the trie, so no collapse arm was exercised");
+        assert!(batch_sizes.0 <= 2, "no small batch was generated (min {})", batch_sizes.0);
+        assert!(batch_sizes.1 >= 10, "no large batch was generated (max {})", batch_sizes.1);
     }
 }
 
@@ -1372,6 +1956,25 @@ fn ref_bytes_of(r: FlatRef<'_>, out: &mut Vec<u8>) {
 
 /// A (remaining-key-nibbles, new-value) pair; `None` deletes the key.
 type Change<'c> = (&'c [u8], Option<&'c [u8]>);
+
+/// Rejects a change list that is not strictly ascending by key. Both callers sort first, so in
+/// practice this is a duplicate-key check; written as the full ordering test to also cover a
+/// caller that stops sorting.
+///
+/// Checked in the *shipped* build, not only under `debug_assertions` -- the guest builds with
+/// those off, so the property was enforced in no configuration at all. Two things rest on it:
+/// violating `apply_branch`'s sorted precondition can return a silently wrong root rather than
+/// panicking, and a duplicate key makes `build_kvs` index `kvs[start].0[cp]` with `cp` equal to
+/// the key length (the longest common prefix of a key with itself) and panic.
+///
+/// One extra pass of the comparison the sort just made: not measurable.
+#[inline]
+fn require_strictly_ascending(list: &[Change<'_>]) -> Result<(), Error> {
+    if list.windows(2).any(|w| w[0].0 >= w[1].0) {
+        return Err(Error::FlatTrie("delta changes must be strictly ascending by key"));
+    }
+    Ok(())
+}
 
 /// The result of rebuilding a subtree: its full RLP encoding, or nothing left.
 enum Out {
@@ -1467,7 +2070,6 @@ fn enc_ext(nibs: &[u8], child_item: &[u8]) -> Vec<u8> {
     out
 }
 
-
 /// Builds a subtree from scratch out of sorted, distinct (nibbles, value) leaves.
 fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
     match kvs {
@@ -1496,8 +2098,8 @@ fn build_kvs(kvs: &[(&[u8], &[u8])]) -> Out {
             let payload_len: usize = outs
                 .iter()
                 .map(|o| o.as_ref().map_or(1, |e| if e.len() < 32 { e.len() } else { 33 }))
-                .sum::<usize>()
-                + 1;
+                .sum::<usize>() +
+                1;
             let mut branch = Vec::with_capacity(payload_len + 4);
             list_header_into(&mut branch, payload_len);
             for out in &outs {
@@ -1534,6 +2136,7 @@ impl<'a> FlatTrieView<'a> {
             .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
             .collect();
         list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        require_strictly_ascending(&list)?;
 
         let out = if self.is_empty() {
             Self::apply_empty(&list)
@@ -1556,6 +2159,7 @@ impl<'a> FlatTrieView<'a> {
             .map(|((_, v), n)| (n.as_slice(), v.as_deref()))
             .collect();
         list.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        require_strictly_ascending(&list)?;
         Ok(match Self::apply_empty(&list) {
             Out::Empty => FLAT_EMPTY_ROOT,
             Out::Enc(enc) => B256::from(keccak(&enc)),
@@ -1691,37 +2295,31 @@ impl<'a> FlatTrieView<'a> {
         payload: &'a [u8],
         changes: &[Change<'_>],
     ) -> Result<Out, Error> {
-        // `changes` sorted is a precondition, not an optimisation, and it is the *whole* key
-        // that has to be ordered, not just the leading nibble: the group handed to the
-        // recursive call is `changes[start..idx]` with `&k[1..]`, so the same requirement
-        // applies again at every depth. Everything that reaches here comes through
-        // `delta_root`, which sorts with `sort_unstable_by(|a, b| a.0.cmp(b.0))`, and the
-        // recursion only ever strips a shared prefix, which preserves that order -- the
-        // assertion below just says so.
+        // Sorted `changes` is a precondition, and it is the *whole* key that must be ordered,
+        // not just the leading nibble: the recursive call gets `changes[start..idx]` with
+        // `&k[1..]`, so the requirement reapplies at every depth.
         //
-        // What a violation costs. The old shape (`for slot in 0..16` with an inner run scan)
-        // relied on ordering too, and dropped later changes silently, but was bounded by its
-        // `0..16` loop. This one steps over `changes`' runs directly, so a list with more than
-        // 16 runs overruns `touched`, and one whose runs are merely out of order walks off the
-        // end of a slot in the splice. Both panic.
+        // A violation is not merely a panic. Stepping over `changes`' runs directly, more than
+        // 16 runs overruns `touched` and out-of-order runs walk off the end of a slot in the
+        // splice -- but revisiting a slot instead runs the `count` update twice, and `count`
+        // then lands at or below 1 (usually 1 by ordinary arithmetic; 0 via `count - 1 + 1`
+        // wrapping with overflow checks off). Either reaches the `count <= 1` collapse path with
+        // a `rebuilt` array that has lost a slot, and that path never reads `touched`: a wrong
+        // root, no panic. Not a soundness problem -- this root is compared against the header
+        // immediately after -- but a worse failure mode than a panic.
         //
-        // But not every violation does. Revisiting a slot runs the `count` update below a
-        // second time for it, which can leave `count` anywhere at or below 1 -- including 0 by
-        // way of `count - 1 + 1` wrapping through `usize::MAX` with overflow checks off, but
-        // landing on 1 by ordinary arithmetic is the commoner route: over a 4,000-case sweep of
-        // unsorted lists, 53 of the 64 revisits that reached the gate arrived with `count == 1`
-        // and only 11 with `count == 0`. Either way it reaches the `count <= 1` collapse path
-        // holding a `rebuilt` array that has lost a slot -- and that path never reads `touched`,
-        // so it returns a wrong root with no panic. Rare, but enough that "a bounds panic rather
-        // than a wrong answer" is not a claim this can make.
+        // Three layers, checking different things:
         //
-        // Neither outcome is a soundness problem for the caller -- this is the post-state
-        // root, compared against the header immediately afterwards, not the witness
-        // authentication in `parse_and_verify` -- but a silently wrong root is a worse failure
-        // mode than a panic, which is why the contract is now written as what the code needs.
+        //  1. `delta_root`/`empty_delta_root`, the only entries here, check the whole list is
+        //     **strictly** ascending in the shipped build. Strict is what rejects a *duplicate*
+        //     key, which neither of the others catches.
+        //  2. this `debug_assert!`, the only check on *full-key* ordering rather than leading
+        //     nibbles. `O(changes)` at every depth, which is why it cannot be a real `assert!` --
+        //     and `delta_root` sorts immediately before, so the guest loses nothing.
+        //  3. the `assert!` in the slot loop below, `O(1)` per run, the one that reaches the guest.
         //
-        // `debug_assert` rather than `assert`: `delta_root` sorts just before handing the list
-        // in, and the guest builds with debug assertions off, so this costs it nothing.
+        // In a debug build (2) fires before (3) can, so a test aimed at (3) must expect *this*
+        // message.
         debug_assert!(
             changes.windows(2).all(|w| w[0].0 <= w[1].0),
             "apply_branch requires `changes` sorted by key, not merely by leading nibble"
@@ -1914,8 +2512,8 @@ impl<'a> FlatTrieView<'a> {
                             }
                         }
                     })
-                    .sum::<usize>()
-                    + 1;
+                    .sum::<usize>() +
+                    1;
                 let mut out = Vec::with_capacity(payload_len + 4);
                 list_header_into(&mut out, payload_len);
                 for slot in slots.iter() {
@@ -1992,6 +2590,42 @@ impl<'a> FlatTrieView<'a> {
 }
 
 impl FlatStateViews<'_> {
+    /// The storage root an account had *before* this block, read out of the already-verified
+    /// state trie.
+    ///
+    /// Only reached for an account with no entry in `self.storage`, where a missing entry and an
+    /// empty trie would otherwise be indistinguishable -- both `EMPTY_ROOT`, which wipes the
+    /// account's storage. The state trie is anchored to the parent header's root, so the answer
+    /// is authenticated: a nonexistent account gives `EMPTY_ROOT`, and a path leaving the witness
+    /// is an error rather than an absence (see [`FlatTrieView::get`]).
+    ///
+    /// Costs one state-trie walk plus a `TrieAccount::decode` per modified account with no
+    /// witnessed storage trie -- mostly EOAs -- on `COMPUTE_STATE_ROOT`.
+    ///
+    /// **Measured at zero.** An earlier note here estimated 10^5--10^6 retired instructions per
+    /// mainnet block by extrapolating `TrieDB`'s ~1,460-instruction walk, and flagged that as
+    /// not measured. It has since been measured, by building the guest with this function
+    /// short-circuited to `FLAT_EMPTY_ROOT` and emulating both arms over the thirteen
+    /// `perf/bench_data/rv64` blocks: **-819 instructions summed across all thirteen**, i.e.
+    /// nothing, with the per-block difference landing on both sides of zero. The reason is that
+    /// the arm is reached only for a modified account the witness carries no storage trie for,
+    /// which these witnesses essentially never contain. Do not re-estimate it; if the witness
+    /// shape changes, re-measure.
+    ///
+    /// Carrying the root through `verified_views` does not help -- that map covers exactly the
+    /// accounts this does not. Two routes would, both **untried rather than rejected**: memoising
+    /// `TrieDB::basic_ref`, which already decodes these same rows and discards `storage_root`; or
+    /// expressing a `delta_root` change as a function of the prior row, since its descent reaches
+    /// these leaves anyway. Both change the state-root path, and neither is worth landing on an
+    /// estimate.
+    fn prior_storage_root(&self, hashed_address: &B256) -> Result<B256, Error> {
+        use alloy_rlp::Decodable;
+        Ok(match self.state.get(hashed_address.as_slice())? {
+            Some(mut bytes) => reth_trie::TrieAccount::decode(&mut bytes)?.storage_root,
+            None => FLAT_EMPTY_ROOT,
+        })
+    }
+
     /// Computes the post-state root for `post_state` directly from the verified blobs, without
     /// building any intermediate trie: storage-trie delta roots feed updated account rows into
     /// the state-trie delta.
@@ -2014,14 +2648,32 @@ impl FlatStateViews<'_> {
                                 .collect();
                             match self.storage.get(hashed_address) {
                                 Some(view) if !st.wiped => view.delta_root(&slot_changes)?,
-                                _ => FlatTrieView::empty_delta_root(&slot_changes)?,
+                                // `wiped` is legitimate -- a destroyed or freshly created
+                                // account starts from the empty trie.
+                                Some(_) => FlatTrieView::empty_delta_root(&slot_changes)?,
+                                None if st.wiped => FlatTrieView::empty_delta_root(&slot_changes)?,
+                                // No witnessed trie and not wiped: the delta can only be
+                                // applied to the empty trie, which is the right answer exactly
+                                // when the account had no storage. Anything else is a witness
+                                // that does not cover what the block changed, and computing a
+                                // root from it would silently drop the account's storage.
+                                None => {
+                                    if self.prior_storage_root(hashed_address)? == FLAT_EMPTY_ROOT {
+                                        FlatTrieView::empty_delta_root(&slot_changes)?
+                                    } else {
+                                        return Err(Error::FlatTrie(
+                                            "no witnessed storage trie for a modified account",
+                                        ));
+                                    }
+                                }
                             }
                         }
-                        None => self
-                            .storage
-                            .get(hashed_address)
-                            .map(|v| v.root_hash)
-                            .unwrap_or(FLAT_EMPTY_ROOT),
+                        // Unchanged storage: the row keeps the root it already had. Taking
+                        // `EMPTY_ROOT` when there is no witnessed trie wipes it instead.
+                        None => match self.storage.get(hashed_address) {
+                            Some(v) => v.root_hash,
+                            None => self.prior_storage_root(hashed_address)?,
+                        },
                     };
                     let trie_account = reth_trie::TrieAccount {
                         nonce: account.nonce,

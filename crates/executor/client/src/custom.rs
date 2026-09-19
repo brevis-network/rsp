@@ -1,9 +1,10 @@
-//! A cunstom EVM configuration for annotated precompiles.
+//! A custom EVM configuration for annotated precompiles.
 //!
-//! Originally from: https://github.com/paradigmxyz/alphanet/blob/main/crates/node/src/evm.rs.
+//! Originally from
+//! <https://github.com/paradigmxyz/alphanet/blob/main/crates/node/src/evm.rs>.
 //!
-//! The [CustomEvmConfig] type implements the [ConfigureEvm] and [ConfigureEvmEnv] traits,
-//! configuring the custom CustomEvmConfig precompiles and instructions.
+//! [`CustomEvmFactory`] is an [`EvmFactory`] whose precompiles are wrapped for cycle tracking;
+//! the [`reth_evm::ConfigureEvm`] implementation it feeds is `EthEvmConfig`'s.
 
 use alloy_evm::{eth::EthEvmBuilder, EthEvm};
 use kzg_rs::{Bytes32, Bytes48, KzgProof, KzgSettings};
@@ -155,16 +156,11 @@ fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoO
         PrecompileSpecId::from_spec_id(input.cfg_env.spec),
     ));
 
-    // Wrapping every precompile in a cycle-tracker turns `PrecompilesMap` from `Builtin` --
-    // where a lookup is one index into a `Vec` keyed by the short address -- into `Dynamic`,
-    // whose lookup is a `HashMap<Address, DynPrecompile>` probe with alloy's default (foldhash)
-    // hasher. That probe runs once per *call frame*, not once per precompile call, and on a
-    // target with no misaligned scalar loads foldhash reassembles the 20-byte key out of
-    // `lbu`s: measured at 3.41 M retired instructions on mainnet block 24006677 (0.71 % of the
-    // guest) over 24,932 lookups.
-    //
-    // Behind the off-by-default `cycle-tracker` feature: build with
-    // `--features rsp-client-executor/cycle-tracker` when a run wants the report.
+    // Off by default: wrapping the precompiles turns `PrecompilesMap` from `Builtin` (one index
+    // into a `Vec`) into `Dynamic` (a foldhash `HashMap<Address, _>` probe), and that probe runs
+    // once per *call frame*. With no misaligned scalar loads foldhash reassembles the 20-byte key
+    // out of `lbu`s: 3.41 M retired instructions on block 24006677 (0.71 %) over 24,932 lookups.
+    // Build with `--features rsp-client-executor/cycle-tracker` when a run wants the report.
     #[cfg(all(target_os = "zkvm", feature = "cycle-tracker"))]
     precompiles.map_precompiles(|address, p| {
         use alloy_evm::precompiles::Precompile;
@@ -204,16 +200,12 @@ fn evm_builder<DB: Database>(db: DB, mut input: EvmEnv) -> EthEvmBuilder<DB, NoO
         precompile.into()
     });
 
-    // The nonce check stays on, at revm's default. It costs nothing measurable: the sender's
-    // account is loaded before the transaction runs either way, so the check is one compare on
-    // a value already in a register -- measured across nine mainnet blocks, the difference is
-    // within codegen noise and lands on both sides of zero.
-    //
-    // For replaying a canonical block it is redundant -- a transaction whose nonce is wrong
-    // cannot be presented without also moving either the transactions root or the parent state
-    // root, and both are checked. It matters when the header is not known to be canonical:
-    // there, the root checks only say the input is self-consistent, and this is one of the few
-    // things left saying the transactions in it are ones the senders could actually have sent.
+    // Written out rather than left to the default, and pinned by a test. Redundant when
+    // replaying a canonical block -- a wrong nonce moves the transactions root or the parent
+    // state root, both checked -- but load-bearing when the header is *not* known to be
+    // canonical, where the root checks say only that the input is self-consistent. Free: the
+    // sender's account is loaded either way, so it is one compare on a register, within codegen
+    // noise across nine mainnet blocks.
     input.cfg_env.disable_nonce_check = false;
 
     EthEvmBuilder::new(db, input).precompiles(precompiles)
@@ -224,21 +216,12 @@ mod tests {
     use super::*;
     use revm::database::EmptyDB;
 
-    /// The transaction nonce check must be **on**.
+    /// The transaction nonce check must be **on**; see `evm_builder` for why it matters.
     ///
-    /// This is one line of configuration with a history: `evm_builder` set
-    /// `disable_nonce_check = true` from `a005ee4` until `adca0d2`, and it was not inherited from
-    /// anywhere -- revm's default is `false`, upstream `succinctlabs/rsp` never sets it, and
-    /// upstream's `custom.rs` does not contain the line at all. It arrived inside a 95-insertion
-    /// "sync upstream" change and nothing noticed for months.
+    /// `disable_nonce_check = true` sat here from `a005ee4` to `adca0d2`, inherited from nothing
+    /// -- revm defaults to `false` and upstream never sets it -- and nothing noticed for months.
     ///
-    /// For replaying a canonical block the check is redundant: a transaction whose nonce is wrong
-    /// moves either the transactions root or the parent state root, and both are checked. It
-    /// matters when the header is *not* known to be canonical, where the root checks only
-    /// establish that the input is self-consistent.
-    ///
-    /// Asserted through the public factory rather than on `evm_builder` directly, so it covers
-    /// what callers actually get.
+    /// Asserted through the public factory, so it covers what callers actually get.
     #[test]
     fn the_transaction_nonce_check_is_on() {
         let db: EmptyDB = EmptyDB::default();
@@ -246,11 +229,10 @@ mod tests {
         assert!(!evm.ctx().cfg.disable_nonce_check, "disable_nonce_check was turned back on");
     }
 
-    /// And that revm's default is what the line above relies on. The sibling `CfgEnv` escape
-    /// hatches (`disable_balance_check`, `disable_eip3607`, `disable_base_fee`, ...) are all
-    /// behind revm `optional_*` features that this workspace does not enable, so they cannot be
-    /// set at all; `disable_nonce_check` is the one that is always present, which is why it has
-    /// to be written out rather than left to the default.
+    /// The default the line above relies on. The sibling escape hatches
+    /// (`disable_balance_check`, `disable_eip3607`, ...) sit behind revm `optional_*` features
+    /// this workspace does not enable, so they cannot be set; `disable_nonce_check` is always
+    /// present, which is why it is written out.
     #[test]
     fn revm_default_leaves_the_nonce_check_on() {
         assert!(!CfgEnv::<SpecId>::default().disable_nonce_check);

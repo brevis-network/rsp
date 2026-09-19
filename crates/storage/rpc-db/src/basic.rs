@@ -22,7 +22,8 @@ use tracing::debug;
 
 use crate::{error::RpcDbError, RpcDb};
 
-/// A database that fetches data from a [Provider] over a [Transport].
+/// A database that fetches data from an [`alloy_provider::Provider`], recording every account,
+/// slot and bytecode a block reads so the witness can carry exactly that much.
 #[derive(Debug, Clone)]
 pub struct BasicRpcDb<P, N> {
     /// The provider which fetches data.

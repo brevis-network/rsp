@@ -6,7 +6,6 @@ use rsp_client_executor::{
     io::{CommittedHeader, EthClientExecutorInput},
     utils::profile_report,
 };
-use std::sync::Arc;
 
 // Linked for its `memcmp`/`bcmp` symbols, which override compiler-builtins'
 // byte-at-a-time versions. Nothing calls it directly.
@@ -35,12 +34,11 @@ pub fn main() {
     });
 
     // Execute the block.
-    let executor = EthClientExecutor::eth(
-        Arc::new((&input.genesis).try_into().unwrap()),
-        input.custom_beneficiary,
-    );
-    let header = executor.execute(input).expect("failed to execute client");
+    let executor = EthClientExecutor::eth(&input.genesis, input.custom_beneficiary)
+        .expect("failed to build the chain spec");
+    let committed = executor.execute(input).expect("failed to execute client");
 
-    // Commit the block header.
-    pico_sdk::io::commit::<CommittedHeader>(&header.into());
+    // Commit the derived header together with the digest of the configuration it ran under;
+    // see `CommittedHeader` for why the header alone does not identify the statement.
+    pico_sdk::io::commit::<CommittedHeader>(&committed);
 }

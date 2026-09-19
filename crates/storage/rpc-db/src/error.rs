@@ -2,7 +2,7 @@ use alloy_transport::TransportError;
 use revm_primitives::{Address, U256};
 use rsp_mpt::FromProofError;
 
-/// Errors that can occur when interacting with the [RpcDb].
+/// Errors that can occur when interacting with the [`RpcDb`](crate::RpcDb).
 #[derive(Debug, thiserror::Error)]
 pub enum RpcDbError {
     #[error("Transport Error: {}", .0)]

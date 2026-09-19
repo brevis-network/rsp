@@ -38,17 +38,26 @@ tiny-keccak = { git = "https://github.com/brevis-network/tiny-keccak", branch = 
 # tiny-keccak = { path = "../../../pico-patches/tiny-keccak" }
 
 # revm patches
-revm = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-bytecode = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-context = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-database = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-database-interface = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-handler = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-inspector = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-interpreter = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-precompile = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-primitives = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
-revm-state = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
+#
+# TEMPORARY, and it must be reverted before this merges: these point at revm PR #11's head
+# branch rather than `pico-v98-31-0-2`, because rsp #23 and revm #11 are a pair and the base
+# branch does not yet carry #11's memory-safety fixes -- merging rsp #23 against the base
+# branch would ship the guest without a single one of them. Order of operations: merge revm
+# #11 into `pico-v98-31-0-2`, change `tommy/group-a-review-fixes` back to `pico-v98-31-0-2`
+# here, re-lock, then merge this.
+#
+# Only the guest moves; see the root `Cargo.toml` for why the host cannot follow yet.
+revm = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-bytecode = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-context = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-database = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-database-interface = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-handler = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-inspector = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-interpreter = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-precompile = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-primitives = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
+revm-state = { git = "https://github.com/brevis-network/revm", branch = "tommy/group-a-review-fixes" }
 
 # elf optimization
 [profile.release]

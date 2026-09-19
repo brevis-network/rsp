@@ -307,12 +307,19 @@ fn handle_custom_chains(
 /// This module computes each receipt's length once, reserves exactly that, and writes the
 /// bytes through a raw cursor. Block 24006677: -1,187,892.
 ///
-/// # Why it is safe to hand-roll a consensus-critical encoding here
+/// # What the root comparison does and does not cover
 ///
-/// The output is not trusted -- it is hashed into a trie root and compared against the
-/// header's `receipts_root`, so any encoding error makes the block *fail*, and cannot make a
-/// bad block pass. Verified by mutation: corrupting one byte of this encoder's output makes
-/// the guest reject block 24006677.
+/// The output is hashed into a trie root and compared against the header's `receipts_root`,
+/// so an encoding error makes the block fail. Verified by mutation: corrupting one byte of
+/// this encoder's output makes the guest reject block 24006677.
+///
+/// **That is not the same as "it cannot make a bad block pass", which is what this paragraph
+/// used to say.** `receipts_root` is a *prover-supplied wire field*, like `state_root` at
+/// `executor.rs:118` and the logs bloom at `:131`: the comparison says the input is
+/// self-consistent, not that it is a canonical block. A prover who can predict a divergence
+/// writes the matching wrong root themselves. So the reason it is safe to hand-roll this is
+/// the *differential* below -- two independent oracles over 43,006 receipts and 66 blocks --
+/// and not the root check. Do not use the root check as a warrant for skipping a test.
 ///
 /// That argument covers wrong *bytes*, not a wrong *length*. What keeps the length halves
 /// honest is that each writer has exactly one length twin -- `header_len`/`phdr`,
@@ -471,6 +478,44 @@ mod fast_receipts {
         }
     }
 
+    /// The transaction-type tripwire, in the *shipped* build.
+    ///
+    /// `encode_2718` takes its legacy-or-not decision from `matches!(r.tx_type, TxType::Legacy)`,
+    /// and that is silent about a `TxType` that did not exist when it was written: a new variant
+    /// gets the non-legacy shape, which is right only by luck.
+    ///
+    /// The exhaustiveness check for that lived in `#[cfg(test)]`, on `ALL_TX_TYPES` -- which is a
+    /// fixed-size array literal and not a tripwire, whatever its comment said -- and the natural
+    /// repair if alloy ever marks `TxType` `#[non_exhaustive]` is a `_ =>` arm, which removes the
+    /// check permanently with nothing signalling the loss. Here it is a `const`, so adding a
+    /// variant is a compile error in the encoder module, next to the `matches!` that needs
+    /// revisiting.
+    ///
+    /// # What this deliberately does *not* assert
+    ///
+    /// The discriminants. An earlier version of this block pinned `TxType::Eip2930 as u8 == 1`
+    /// and so on, which was the right guard while the type byte was written as `r.tx_type as u8`.
+    /// #22 changed that to `Typed2718::ty()` -- the wire id from `#[envelope(ty = N)]`, which is
+    /// what EIP-2718 actually asks for and is not tied to the discriminant. With `ty()` the
+    /// discriminant is irrelevant to the encoding, so asserting it would *fail the build* on a
+    /// divergence that is not a defect. The exhaustiveness half is the part that is still load-
+    /// bearing, and `every_tx_type_matches_alloy` covers the wire ids against alloy.
+    const _: () = {
+        const fn is_legacy(ty: TxType) -> bool {
+            match ty {
+                TxType::Legacy => true,
+                TxType::Eip2930 | TxType::Eip1559 | TxType::Eip4844 | TxType::Eip7702 => false,
+            }
+        }
+        // `Legacy` is the one variant that carries no 2718 prefix at all, which is the whole
+        // reason `encode_2718` branches on it.
+        assert!(is_legacy(TxType::Legacy));
+        assert!(!is_legacy(TxType::Eip2930));
+        assert!(!is_legacy(TxType::Eip1559));
+        assert!(!is_legacy(TxType::Eip4844));
+        assert!(!is_legacy(TxType::Eip7702));
+    };
+
     fn encode_2718(r: &Receipt, bloom: &Bloom, out: &mut Vec<u8>, lens: &mut Vec<usize>) {
         lens.clear();
         let mut logs_payload = 0usize;
@@ -613,6 +658,7 @@ mod fast_receipts_be_len {
 #[cfg(test)]
 mod fast_receipts_parity {
     use alloy_consensus::{proofs::calculate_receipt_root, ReceiptWithBloom, TxReceipt, TxType};
+    use alloy_network::eip2718::Encodable2718;
     use alloy_primitives::{Address, Bytes, Log, LogData, B256};
     use reth_ethereum_primitives::Receipt;
 
@@ -703,13 +749,11 @@ mod fast_receipts_parity {
 
     /// The root over a block's worth of receipts must equal alloy's, receipt for receipt.
     ///
-    /// The guards at the bottom are on what the generator actually produced: that logs were
-    /// produced at all, that some receipt carried none (RLP's empty list), every `TxType`,
-    /// the two extremes of the topic list, and two of RLP's string forms -- the single byte
-    /// below `0x80` and the long form at 56. Anything counting iterations would prove
-    /// nothing, the bounds being constants: such a count holds however empty the receipts
-    /// are. Not guarded, and worth knowing: the two-byte length header, and the five
-    /// `cumulative_gas_used` shapes `receipt` draws from.
+    /// The guards at the bottom tally what the generator actually produced -- logs at all, a
+    /// receipt with none (RLP's empty list), every `TxType`, both extremes of the topic list, and
+    /// RLP's single-byte and long-form string forms. A count of iterations would prove nothing,
+    /// the bounds being constants. Not guarded: the two-byte length header, and the five
+    /// `cumulative_gas_used` shapes.
     #[test]
     fn receipts_root_matches_alloy() {
         let mut rng = Rng(0x5DEE_CE66_D000_0001);
@@ -766,6 +810,126 @@ mod fast_receipts_parity {
         assert!(topics_seen[4] > 0, "no log with four topics was generated");
         assert!(short_data > 0, "no single-byte log payload below 0x80 was generated");
         assert!(long_data > 0, "no log payload in RLP's long-string form was generated");
+    }
+
+    /// The two ladders the block corpus never climbs: RLP's **long-form length header above
+    /// two bytes**, and **three-byte `rlp(index)` trie keys**.
+    ///
+    /// Both are mainnet-reachable and neither was covered: the generator above tops out at a
+    /// 300-byte log payload (`max_logs_list_payload = 1199`, measured from both sides) and a
+    /// 200-receipt block, short of the 65,536 threshold where `header_len` goes to four bytes and
+    /// the 256 receipts where the trie key goes to three. A 64 KB log is one transaction, and
+    /// blocks past 256 transactions are routine. Two one-token mutants of the ladder change six
+    /// receipts roots and leave the rest of the suite green.
+    ///
+    /// The guards read the encoder's own output, not the loop bounds -- `max(&[.., 65_536])` is a
+    /// constant, and asserting on it holds for any behaviour of the code under test.
+    /// `max_len_bytes` is the RLP list-header width that came out of the encoded receipt, and
+    /// `max_key_len` the trie-key width `receipts_root` builds with `encode_fixed_size`.
+    #[test]
+    fn receipts_root_over_long_payloads_and_large_blocks() {
+        /// Length bytes in the RLP list header of an encoded receipt -- 0 for the short-list
+        /// form, 1..=8 for `0xf8..=0xff`. A typed receipt is `ty || rlp_list`; the five wire ids
+        /// are all <= 0x04, well below any list tag.
+        fn list_length_bytes(value: &[u8]) -> usize {
+            let b0 = if value[0] <= 0x04 { value[1] } else { value[0] };
+            if b0 >= 0xf8 {
+                (b0 - 0xf7) as usize
+            } else {
+                0
+            }
+        }
+
+        let mut rng = Rng(0x0BAD_C0DE_1234_5678);
+        let mut max_len_bytes = 0usize;
+        let mut max_key_len = 0usize;
+
+        // (a) One log per receipt, with a data length sitting on each rung of `header_len`'s
+        // ladder and on both sides of it. 55/56 is the short-to-long edge, 255/256 is where
+        // the length needs two bytes, 65,535/65,536 is where it needs three -- the rung the
+        // corpus never reaches.
+        for &len in &[
+            0usize, 1, 55, 56, 57, 254, 255, 256, 257, 1_000, 65_534, 65_535, 65_536, 65_537,
+            70_000,
+        ] {
+            let topics: Vec<B256> = (0..3).map(|_| B256::from_slice(&rng.bytes(32))).collect();
+            let log = Log {
+                address: Address::from_slice(&rng.bytes(20)),
+                data: LogData::new_unchecked(topics, Bytes::from(rng.bytes(len))),
+            };
+            for (i, &ty) in ALL_TX_TYPES.iter().enumerate() {
+                let r = Receipt {
+                    tx_type: ty,
+                    success: i % 2 == 0,
+                    cumulative_gas_used: 21_000 * (i as u64 + 1),
+                    logs: std::vec![log.clone()],
+                };
+                let with_bloom = std::vec![ReceiptWithBloom::new(&r, TxReceipt::bloom(&r))];
+                max_len_bytes = max_len_bytes.max(list_length_bytes(&with_bloom[0].encoded_2718()));
+                assert_eq!(
+                    super::fast_receipts::receipts_root(&with_bloom),
+                    calculate_receipt_root(&with_bloom),
+                    "receipts root diverged at log data length {len}, tx type {ty:?}"
+                );
+            }
+        }
+
+        // ... and the same lengths in a block, so the *receipt* payload -- not just the log's
+        // -- crosses the rung too.
+        for &len in &[56usize, 300, 65_536] {
+            let receipts: Vec<Receipt> = (0..4usize)
+                .map(|i| {
+                    let topics: Vec<B256> =
+                        (0..(i % 5)).map(|_| B256::from_slice(&rng.bytes(32))).collect();
+                    Receipt {
+                        tx_type: tx_type(i),
+                        success: true,
+                        cumulative_gas_used: 1_000_000 * (i as u64 + 1),
+                        logs: std::vec![Log {
+                            address: Address::from_slice(&rng.bytes(20)),
+                            data: LogData::new_unchecked(topics, Bytes::from(rng.bytes(len))),
+                        }],
+                    }
+                })
+                .collect();
+            let with_bloom: Vec<ReceiptWithBloom<&Receipt>> =
+                receipts.iter().map(|r| ReceiptWithBloom::new(r, TxReceipt::bloom(r))).collect();
+            assert_eq!(
+                super::fast_receipts::receipts_root(&with_bloom),
+                calculate_receipt_root(&with_bloom),
+                "receipts root diverged for a block of 64 KB logs at length {len}"
+            );
+        }
+
+        // (b) Block sizes across the trie-key ladder. `rlp(index)` is one byte below 0x80,
+        // two up to 0xff, and **three** from 0x100 -- which needs 256 receipts.
+        for &n in &[127usize, 128, 129, 254, 255, 256, 257, 300, 512] {
+            let receipts: Vec<Receipt> = (0..n).map(|i| receipt(&mut rng, i)).collect();
+            let with_bloom: Vec<ReceiptWithBloom<&Receipt>> =
+                receipts.iter().map(|r| ReceiptWithBloom::new(r, TxReceipt::bloom(r))).collect();
+            // The trie keys `receipts_root` will build. `adjust_index_for_rlp` permutes
+            // `0..n`, so the widest key in the block is the widest over that whole range.
+            for i in 0..n {
+                max_key_len = max_key_len.max(alloy_rlp::encode_fixed_size(&i).len());
+            }
+            assert_eq!(
+                super::fast_receipts::receipts_root(&with_bloom),
+                calculate_receipt_root(&with_bloom),
+                "receipts root diverged for a block of {n} receipts"
+            );
+        }
+
+        assert_eq!(
+            max_len_bytes, 3,
+            "the encoder never emitted an RLP list header with three length bytes, so the rung \
+             above 65,536 was not exercised (widest header produced: {max_len_bytes} length \
+             bytes)"
+        );
+        assert_eq!(
+            max_key_len, 3,
+            "no three-byte `rlp(index)` trie key was produced, so the 256-receipt rung was not \
+             exercised (widest key produced: {max_key_len} bytes)"
+        );
     }
 
     /// The empty case, which `receipts_root` short-circuits.

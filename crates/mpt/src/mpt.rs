@@ -145,24 +145,20 @@ pub(crate) const RATE: usize = 136;
 /// Keccak-256 into `out`, over a permute function.
 ///
 /// The body is the single-block case, `data.len() < RATE`; longer inputs go to
-/// [`keccak256_sponge_into`]. 66,283 of the 70,722 hashes on mainnet block 24006677 are
-/// single-block: every EVM `KECCAK256` of a 64-byte mapping key, every hashed account
-/// address and storage slot, every logs-bloom address and topic. The general sponge serves
-/// them through machinery they never use, and the measured cost of that is mostly not the
-/// branches:
+/// [`keccak256_sponge_into`]. 66,283 of the 70,722 hashes on block 24006677 are single-block --
+/// every EVM `KECCAK256` of a mapping key, every hashed address and slot, every bloom topic --
+/// and the general sponge serves them through machinery they never use. The measured cost is
+/// mostly not the branches:
 ///
-/// * It saves and restores twelve callee-saved registers, 26 instructions per call, because the
-///   multi-block absorb keeps seventeen state words live across the permute.
-/// * The final block's padding word is read-modify-written (`ld`, `xor`, `sd`) and the `0x80`
-///   terminator likewise, because either may land on a word an earlier block already filled. On a
-///   single block both words are known to be zero, so both are plain stores.
-/// * The block count, the 136-byte reciprocal and the multi-block loop's induction variables are
-///   all materialised before the length is tested.
+/// * twelve callee-saved registers saved and restored, 26 instructions per call, because the
+///   multi-block absorb keeps seventeen state words live across the permute;
+/// * the padding word and the `0x80` terminator are read-modify-written, since either may land on a
+///   word an earlier block filled — on a single block both are known zero, so plain stores;
+/// * the block count, the 136-byte reciprocal and the loop's induction variables are all
+///   materialised before the length is tested.
 ///
-/// The length test lives here rather than in the inlined wrappers on purpose. Split at the
-/// call sites it costs the two instructions of the test at each of the 66 of them plus the
-/// register pressure of a second live call target: measured at +0.65 M retired instructions
-/// against +0.14 M for one test inside one function.
+/// The length test lives here rather than in the inlined wrappers deliberately: split across the
+/// 66 call sites it measured +0.65 M retired instructions, against +0.14 M for one test here.
 ///
 /// # Safety
 ///
@@ -529,9 +525,16 @@ pub(crate) unsafe fn keccak256_sponge_into(
         if off == 0 {
             // Do NOT unroll this. The loop is `ld`, `sd`, two `addi` and a branch per word,
             // and a four-at-a-time version with a tail ladder is fewer instructions on paper.
-            // Measured, it is worse by 240 K retired instructions on mainnet block 24006677:
-            // the bigger body stops `absorb_words` being inlined into the sponge, and the two
-            // out-of-line copies that appear then cost more than the addressing saves.
+            // Measured, it is worse on mainnet block 24006677: the bigger body stops
+            // `absorb_words` being inlined into the sponge, and the two out-of-line copies
+            // that appear then cost more than the addressing saves.
+            //
+            // **The size of the regression is not reliably recorded.** This comment said
+            // 240 K; the commit that rejected the experiment (`3fbd43fa`) says +1.33 M, 5.5x
+            // apart, for the same experiment. The convention in this project is that a
+            // negative result is written down so it is not retried, and a 5.5x spread makes
+            // the record useless for that -- so if anyone does retry it, *re-measure* rather
+            // than trusting either figure, and replace this paragraph with the answer.
             let q = p.cast::<u64>();
             for i in 0..k {
                 put::<FIRST>(state, i, q.add(i).read());
@@ -567,20 +570,16 @@ pub(crate) unsafe fn keccak256_sponge_into(
         put::<FIRST>(state, k - 1, (prev >> sr) | (tail << sl));
     }
 
-    // `[0u64; 25]` is 200 bytes, which LLVM zeroes with a `memset` call — ~60 instructions,
-    // paid once per hash. Volatile stores keep it as 25 `sd`.
+    // `[0u64; 25]` is 200 bytes, which LLVM zeroes with a `memset` call (~60 instructions per
+    // hash); volatile stores keep it as 25 `sd`.
     //
-    // Only the capacity (words 17..25) has to be zeroed up front on the multi-block path: the
-    // first block is absorbed with `FIRST`, which *assigns* all `RATE_WORDS == 17` rate words
-    // (both `absorb_words::<true>` and `absorb_shifted::<true>` write every one of them), so
-    // the zeros the rate would have held are overwritten before anything reads them. That is
-    // 17 `sd` saved on each of the 4,439 multi-block hashes of mainnet block 24006677.
+    // On the multi-block path only the capacity (words 17..25) needs zeroing: `FIRST` *assigns*
+    // all 17 rate words, so the zeros are overwritten before anything reads them. 17 `sd` saved
+    // on each of the 4,439 multi-block hashes of block 24006677.
     //
-    // The single-block entry (`data.len() < RATE`) still needs all 25: it absorbs only
-    // `full <= 16` words and then reads `state[full]` and `state[RATE_WORDS - 1]`. Note that
-    // in the guest that path is unreachable -- `keccak256_into` handles short inputs itself
-    // and only tail-calls here with `data.len() >= RATE` -- but `keccak256_sponge` (the
-    // parity test helper) enters here directly with any length.
+    // The single-block entry still needs all 25 -- it absorbs `full <= 16` words then reads
+    // `state[full]` and `state[RATE_WORDS - 1]`. Unreachable from the guest, where
+    // `keccak256_into` handles short inputs itself, but `keccak256_sponge` enters here directly.
     let multi = data.len() >= RATE;
     let mut state = core::mem::MaybeUninit::<[u64; 25]>::uninit();
     // SAFETY: the writes below initialize words 17..25 always and words 0..17 either here or,
@@ -749,7 +748,8 @@ pub(crate) unsafe fn keccak256_sponge_into(
 ///
 /// The trie-verification pass hashes every node blob and then either compares the digest
 /// against a reference or stores it; going through a `[u8; 32]` return value costs it the
-/// 28 `srli` + 32 `sb` scatter described on [`keccak_into`].
+/// 28 `srli` + 32 `sb` scatter described on `keccak_into` (guest-only, so rustdoc cannot
+/// resolve it from a host build).
 #[inline]
 pub(crate) fn keccak_into_b256(data: &[u8], out: &mut B256) {
     #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
@@ -1271,7 +1271,21 @@ impl MptNode {
                     Ok(None)
                 }
             }
-            MptNodeData::Digest(_digest) => Ok(None),
+            // A digest stub is a subtree the witness *declined to encode*. Its content is still
+            // bound -- the digest keeps the root hash right, so verification and the anchor check
+            // both pass -- but its *presence* is not, so `Ok(None)` here reports "absent" for a
+            // key the witness merely does not cover.
+            //
+            // That is fail-open: omit an account's blobs and it reads back as non-existent
+            // (`BALANCE == 0`, `EXTCODEHASH`/`EXTCODESIZE` 0, a zero-value `CALL` that runs no
+            // code and succeeds). Writes through a pruned path do fail closed, which is why the
+            // digest-*root* arm was safe, but a read-only divergence has no backstop: a
+            // `require(paused == 0)` read out of a pruned subtree leaves `post_state.storages`
+            // without an entry, so `post_state_root` uses the correct stored root.
+            //
+            // `c269c19` weakened this to `Ok(None)`; `mpt::tests::test_partial` has asserted
+            // otherwise and failed ever since. The test was right -- do not skip it again.
+            MptNodeData::Digest(digest) => Err(Error::NodeNotResolved(*digest)),
         }
     }
 

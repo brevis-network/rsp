@@ -6,7 +6,6 @@ use rsp_client_executor::{
     io::{CommittedHeader, OpClientExecutorInput},
     utils::profile_report,
 };
-use std::sync::Arc;
 
 pub fn main() {
     // Read the input.
@@ -16,9 +15,11 @@ pub fn main() {
     });
 
     // Execute the block.
-    let executor = OpClientExecutor::optimism(Arc::new((&input.genesis).try_into().unwrap()));
-    let header = executor.execute(input).expect("failed to execute client");
+    let executor =
+        OpClientExecutor::optimism(&input.genesis).expect("failed to build the chain spec");
+    let committed = executor.execute(input).expect("failed to execute client");
 
-    // Commit the block hash.
-    sp1_zkvm::io::commit::<CommittedHeader>(&header.into());
+    // Commit the derived header together with the digest of the configuration it ran under;
+    // see `CommittedHeader`.
+    sp1_zkvm::io::commit::<CommittedHeader>(&committed);
 }

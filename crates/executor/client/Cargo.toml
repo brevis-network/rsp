@@ -51,13 +51,14 @@ alloy-consensus.workspace = true
 alloy-network.workspace = true
 alloy-rpc-types.workspace = true
 
+# misc
+# No longer dev-only: `config_digest` hashes a bincode encoding of the three wire fields the
+# committed header cannot show.
+bincode.workspace = true
+
 # op
 op-alloy-network = { workspace = true, optional = true }
 op-alloy-rpc-types = { workspace = true, optional = true }
-
-
-[dev-dependencies]
-bincode = "1.3.3"
 
 [features]
 default = ["sha3-keccak"]

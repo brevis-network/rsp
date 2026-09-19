@@ -31,7 +31,8 @@ async fn test_e2e_optimism() {
     let host_executor = rsp_host_executor::OpHostExecutor::optimism(chain_spec.clone());
 
     // Setup the client executor.
-    let client_executor = rsp_client_executor::executor::OpClientExecutor::optimism(chain_spec);
+    let client_executor =
+        rsp_client_executor::executor::OpClientExecutor::optimism(&Genesis::OpMainnet).unwrap();
 
     run_e2e::<_, OpChainSpec, op_alloy_network::Optimism>(
         host_executor,
@@ -54,7 +55,8 @@ async fn test_e2e_optimism_sepolia() {
     let host_executor = rsp_host_executor::OpHostExecutor::optimism(chain_spec.clone());
 
     // Setup the client executor.
-    let client_executor = rsp_client_executor::executor::OpClientExecutor::optimism(chain_spec);
+    let client_executor =
+        rsp_client_executor::executor::OpClientExecutor::optimism(&genesis).unwrap();
 
     run_e2e::<_, OpChainSpec, op_alloy_network::Optimism>(
         host_executor,
@@ -100,7 +102,7 @@ async fn run_eth_e2e(
     let host_executor = EthHostExecutor::eth(chain_spec.clone(), custom_beneficiary);
 
     // Setup the client executor.
-    let client_executor = EthClientExecutor::eth(chain_spec, custom_beneficiary);
+    let client_executor = EthClientExecutor::eth(genesis, custom_beneficiary).unwrap();
 
     run_e2e::<_, ChainSpec, Ethereum>(
         host_executor,
@@ -146,7 +148,7 @@ async fn run_e2e<C, CS, N>(
 
     // Execute the host.
     let client_input = host_executor
-        .execute(block_number, &provider, genesis.clone(), custom_beneficiary, false)
+        .execute(block_number, &provider, genesis.clone(), custom_beneficiary, false, &None)
         .await
         .expect("failed to execute host");
 
@@ -157,5 +159,5 @@ async fn run_e2e<C, CS, N>(
     let buffer = bincode::serialize(&client_input).unwrap();
 
     // Load the client input from a buffer.
-    let _: ClientExecutorInput<C::Primitives> = bincode::deserialize(&buffer).unwrap();
+    let _: ClientExecutorInput<'_, C::Primitives> = bincode::deserialize(&buffer).unwrap();
 }

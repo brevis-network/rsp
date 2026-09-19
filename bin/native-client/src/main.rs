@@ -3,7 +3,6 @@ use rsp_client_executor::{
     executor::EthClientExecutor,
     io::{EthClientExecutorInput, LegacyEthClientExecutorInput},
 };
-use std::sync::Arc;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -38,7 +37,11 @@ fn main() {
         converted = EthClientExecutorInput::from(legacy);
         let bytes = bincode::serialize(&converted).expect("failed to serialize converted input");
         std::fs::write(out, &bytes).expect("failed to write converted input");
-        info!("converted legacy input ({} bytes) -> flat input ({} bytes)", input_data.len(), bytes.len());
+        info!(
+            "converted legacy input ({} bytes) -> flat input ({} bytes)",
+            input_data.len(),
+            bytes.len()
+        );
         converted.clone()
     } else {
         bincode::deserialize(&input_data).expect("failed to deserialize input")
@@ -47,10 +50,11 @@ fn main() {
 
     // Execute the block
     info!("init eth executor");
-    let executor = EthClientExecutor::eth(
-        Arc::new((&input.genesis).try_into().unwrap()),
-        input.custom_beneficiary,
+    let executor = EthClientExecutor::eth(&input.genesis, input.custom_beneficiary)
+        .expect("failed to build the chain spec");
+    let committed = executor.execute(input).expect("failed to execute client");
+    info!(
+        "execution success gas_used = {} config_digest = {}",
+        committed.header.gas_used, committed.config_digest
     );
-    let header = executor.execute(input).expect("failed to execute client");
-    info!("execution success gas_used = {}", header.gas_used);
 }
