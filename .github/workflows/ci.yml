@@ -1,0 +1,51 @@
+# This fork has had no CI at all: there was no `.github/` on `pico-rv64`, so #20, #21, #22
+# and #23 all merged with zero checks -- #23 being a 25-commit change to the witness layer.
+#
+# Deliberately not upstream revm's matrix. This runs what this repo needs and what passes
+# today; anything that cannot pass yet is left out rather than left red, because a
+# permanently red check trains readers past the place a real failure would appear.
+name: CI
+
+on:
+  push:
+    branches: ["pico-**"]
+  pull_request:
+    branches: ["pico-**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      # `-p` rather than `--workspace`: `bin/host`'s `cycle_count_diff` needs an Ethereum RPC
+      # in `RPC_1` and fails without one. That is an integration test, not a unit test, and
+      # gating every PR on a live endpoint is the wrong trade.
+      - run: cargo test --release -p rsp-mpt -p rsp-client-executor -p rsp-guest-mem
+
+  revm-locks:
+    name: host and guest agree on revm
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - run: ./.github/scripts/check-revm-locks.sh
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
