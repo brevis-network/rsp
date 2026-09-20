@@ -572,16 +572,12 @@ mod wire_bytecodes {
             let mut buf = Vec::new();
             let mut ser = bincode::Serializer::new(
                 &mut buf,
-                bincode::options()
-                    .with_fixint_encoding()
-                    .allow_trailing_bytes(),
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
             );
             serialize(&codes, &mut ser).unwrap();
             let mut de = bincode::Deserializer::from_slice(
                 &buf,
-                bincode::options()
-                    .with_fixint_encoding()
-                    .allow_trailing_bytes(),
+                bincode::options().with_fixint_encoding().allow_trailing_bytes(),
             );
             let back = deserialize(&mut de).unwrap();
             assert_eq!(codes, back);

@@ -72,8 +72,11 @@ where
         if input.genesis != self.genesis || input.custom_beneficiary != self.custom_beneficiary {
             return Err(ClientError::MismatchedConfig);
         }
-        let config_digest =
-            crate::io::config_digest(&self.genesis, &self.custom_beneficiary, input.opcode_tracking)?;
+        let config_digest = crate::io::config_digest(
+            &self.genesis,
+            &self.custom_beneficiary,
+            input.opcode_tracking,
+        )?;
         let sealed_headers = input.sealed_headers().collect::<Vec<_>>();
 
         // Every fallible step from here on propagates rather than panicking. `verified_views`
