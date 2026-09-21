@@ -2554,7 +2554,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4293,7 +4293,7 @@ dependencies = [
 [[package]]
 name = "op-revm"
 version = "12.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "auto_impl",
  "revm",
@@ -5667,7 +5667,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.1",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6468,7 +6468,7 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "31.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "revm-bytecode",
  "revm-context",
@@ -6486,7 +6486,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "7.1.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "bitvec",
  "phf",
@@ -6497,7 +6497,7 @@ dependencies = [
 [[package]]
 name = "revm-context"
 version = "11.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "bitvec",
  "cfg-if",
@@ -6513,7 +6513,7 @@ dependencies = [
 [[package]]
 name = "revm-context-interface"
 version = "12.0.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",
@@ -6528,7 +6528,7 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "9.0.5"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "alloy-eips",
  "revm-bytecode",
@@ -6541,7 +6541,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "8.0.5"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "auto_impl",
  "either",
@@ -6553,7 +6553,7 @@ dependencies = [
 [[package]]
 name = "revm-handler"
 version = "12.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "auto_impl",
  "derive-where",
@@ -6571,7 +6571,7 @@ dependencies = [
 [[package]]
 name = "revm-inspector"
 version = "12.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "auto_impl",
  "either",
@@ -6587,7 +6587,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "29.0.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "revm-bytecode",
  "revm-context-interface",
@@ -6599,7 +6599,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "29.0.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -6620,7 +6620,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "21.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "alloy-primitives",
  "num_enum 0.7.5",
@@ -6631,7 +6631,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "8.1.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#67781f526669b98d3af22d1124c7223163ecdefd"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
 dependencies = [
  "bitflags 2.10.0",
  "revm-bytecode",
@@ -7020,7 +7020,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8641,12 +8641,15 @@ dependencies = [
 [[package]]
 name = "substrate-bn"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b5bbfa79abbae15dd642ea8176a21a635ff3c00059961d1ea27ad04e5b441c"
+source = "git+https://github.com/brevis-network/bn?branch=patch-v1.0.2-rv64#1455d63953ba9f7231043c57c7077cee6a10dc89"
 dependencies = [
+ "bytemuck",
  "byteorder",
+ "cfg-if",
  "crunchy",
  "lazy_static",
+ "num-bigint 0.4.6",
+ "pico-patch-libs",
  "rand 0.8.5",
  "rustc-hex",
 ]
@@ -8654,7 +8657,8 @@ dependencies = [
 [[package]]
 name = "substrate-bn-succinct-rs"
 version = "0.6.0"
-source = "git+https://github.com/sp1-patches/bn?tag=patch-0.6.0-sp1-6.0.0#f0a0eeb8784cf5611efe4f1ad2b20ce5eec14395"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a241fd7c1016fb8ad30fcf5a20986c0c4538e8f15a1b41a1761516299e377ec1"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -8664,7 +8668,6 @@ dependencies = [
  "num-bigint 0.4.6",
  "rand 0.8.5",
  "rustc-hex",
- "sp1-lib",
 ]
 
 [[package]]
@@ -8779,7 +8782,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
