@@ -34,17 +34,70 @@ cargo +pico build --release \
 mkdir -p elf
 cp target/riscv64im-pico-zkvm-elf/release/reth-pico elf/riscv64im-pico-zkvm-elf
 
-# Assert `--wrap=memset` took: the symbol is in the table only if it did. `llvm-nm` ships with
-# the pico toolchain, so this needs nothing installed. `memcmp`/`bcmp` need no check.
+# Two symbol-table assertions. Both failure modes produce a correct guest that is quietly slower,
+# which is the only kind worth a check here -- an incorrect guest fails its own tests.
+# `llvm-nm` ships with the pico toolchain, so this needs nothing installed.
 NM="$(rustc +pico --print sysroot)/lib/rustlib/$(rustc +pico -vV | sed -n 's/^host: //p')/bin/llvm-nm"
 if [ -x "$NM" ]; then
-    if ! "$NM" elf/riscv64im-pico-zkvm-elf | grep -q '__wrap_memset'; then
-        echo "ERROR: __wrap_memset is not in the ELF, so --wrap=memset was dropped." >&2
-        echo "       The guest is correct but ~7 M retired instructions a block slower." >&2
-        exit 1
-    fi
+    # One snapshot, and `case` rather than `"$NM" ... | grep -q ...`. That pipeline is a trap under
+    # the `set -o pipefail` above: `grep -q` closes the pipe at its first match, `llvm-nm` then dies
+    # on the write, pipefail makes the *whole pipeline* fail, and an `if <pipeline>; then error`
+    # therefore takes the else branch -- passing silently on exactly the input it exists to reject.
+    # Measured, not reasoned: raw status 74 with a pattern that is present. The `__wrap_memset`
+    # check below would have been safe either way only by accident, because `if !` turns that race
+    # into a loud false failure instead of a silent pass.
+    SYMS="$("$NM" elf/riscv64im-pico-zkvm-elf)"
+
+    # `--wrap=memset` took: the symbol is in the table only if it did. `memcmp`/`bcmp` need no
+    # check -- they are picked up by defining the symbols and nothing competes for them.
+    #
+    # This reads as a presence check on a symbol only because the link discards unreferenced
+    # sections: `rustc +pico --target riscv64im-pico-zkvm-elf --print link-args` passes
+    # `--gc-sections`. Without it the check would be vacuous, since `__wrap_memset` and `memcmp`
+    # sit adjacent in one object and the former would ride in on the latter's references.
+    case "$SYMS" in
+        *__wrap_memset*) ;;
+        *)
+            echo "ERROR: __wrap_memset is not in the ELF, so --wrap=memset was dropped." >&2
+            echo "       The guest is correct but ~7 M retired instructions a block slower." >&2
+            exit 1
+            ;;
+    esac
+
+    # `memcpy` resolved to `pico-sdk`'s assembly and not to `compiler_builtins`'. Two
+    # implementations define it -- `pico-sdk` unconditionally through `global_asm!`, and
+    # `compiler_builtins` through `-Z build-std-features=compiler-builtins-mem` -- and which one
+    # the link keeps is not pinned by anything. A guest that keeps the wrong one carries an
+    # 8-byte thunk into `compiler_builtins::mem::memcpy` and no assembly `memcpy` at all.
+    #
+    # Not hypothetical, and not cheap: the ELF shipped as brevis-vm's `reth-elf` between
+    # 2026-09-02 and 2026-09-22 lost this race, and a rebuild of its own source retired
+    # **4.97 % fewer instructions** over the thirteen bench blocks with byte-identical committed
+    # values and the same event kinds -- i.e. the same program, 5 % cheaper. Nothing reported it:
+    # the proofs were correct the whole time.
+    #
+    # Asserted as the absence of the loser rather than the presence of the winner, because that is
+    # the exact fingerprint and it does not move when the assembly is edited. `memmove` is
+    # deliberately not checked: `pico-sdk` supplies no assembly one, so it comes from
+    # `compiler_builtins` in every build, winner or loser.
+    # Both spellings: legacy mangling is the default and what `llvm-nm` prints today, but a
+    # switch to v0 or a demangling `nm` would otherwise turn this check off without a word.
+    case "$SYMS" in
+        *compiler_builtins*3mem*6memcpy* | *compiler_builtins::mem::memcpy*)
+            echo "ERROR: memcpy resolved to compiler_builtins, not to pico-sdk's assembly one." >&2
+            echo "       The guest is correct but roughly 5 % slower. See the comment above." >&2
+            exit 1
+            ;;
+        *) ;;
+    esac
 else
-    echo "warning: llvm-nm not found at $NM; skipped the --wrap=memset check" >&2
+    # Fail closed. These two checks are the only thing standing between a silently 5 %-slower
+    # guest and a shipped artefact, and a warning buried in an hour of build output is not a
+    # signal. If a toolchain layout change moves `llvm-nm`, that is worth stopping for.
+    echo "ERROR: llvm-nm not found at $NM, so the symbol-table checks could not run." >&2
+    echo "       Set PICO_SKIP_SYMBOL_CHECKS=1 to build anyway." >&2
+    [ "${PICO_SKIP_SYMBOL_CHECKS:-}" = 1 ] || exit 1
+    echo "       PICO_SKIP_SYMBOL_CHECKS=1 -- continuing without them." >&2
 fi
 
 # Record what was built, so a proof can be traced back to an ELF: the tree tracks neither the
