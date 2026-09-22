@@ -39,11 +39,10 @@ tiny-keccak = { git = "https://github.com/brevis-network/tiny-keccak", branch = 
 
 # revm patches
 #
-# The guest and the host now name the same branch, and still resolve to different revs.
-# `Cargo.lock` here pins `1d59d55b` (`pico-v98-31-0-2` once revm #11 merged); the root
-# `Cargo.lock` pins `67781f52` (2025-12-01) and is the one that cannot move -- see the root
-# `Cargo.toml` for the `substrate-bn` reason. So the host/guest revm skew survives in the
-# locks rather than in the branch names, and it is pre-existing either way.
+# This lockfile and the root one resolve revm independently, so naming the same branch in both
+# manifests does not keep the guest and the host on one revision -- for ten months it did not.
+# The `revm-locks` CI job is what does, by comparing the `revm` stanza of the two: move both locks
+# or neither.
 revm = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-bytecode = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-context = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
