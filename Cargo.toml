@@ -181,20 +181,15 @@ k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k2
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-6.0.0" }
 # revm patches
 #
-# Host and guest now resolve to the same revm. They did not between 2026-03-25 and this
-# commit: the host's `Cargo.lock` sat at `67781f52` (2025-12-01) while this manifest named
-# the branch, and cargo honours the lock, so the host silently built a ten-month-old revm and
-# nothing said so. `cargo update -p revm` on the state before this commit reproduces what was
-# hiding behind it -- two E0369s out of `bn254/substrate.rs`, which has used
-# `AffineG1 + AffineG1` and `AffineG1 * Fr` since revm `57b98989`.
+# Host and guest resolve revm from separate lockfiles, so naming the branch here does not keep
+# them on one revision: for ten months the host silently built a 2025-12-01 revm while the guest
+# carried one nine months newer, both builds green. The `revm-locks` CI job compares the `revm`
+# stanza of the two locks, so move both or neither -- and note it reads that one stanza only, so
+# a skew confined to `op-revm` or to a `revm-*` crate would still pass it.
 #
-# The sp1 `bn` patch does not provide those operators. `brevis-network/bn` does, and the
-# guest has always used it; the `bn` line above now names the same fork, which is the whole
-# of the fix.
-#
-# The GUEST carries revm #11's memory-safety fixes into the proof. Both manifests now name
-# `pico-v98-31-0-2`; the skew that remains is between the two LOCKS -- host `67781f52`, guest
-# `1d59d55b` -- not between branch names. Pre-existing, not introduced here.
+# The `bn` line above is part of the same story: from revm `57b98989` the bn254 precompile uses
+# `AffineG1 + AffineG1` and `AffineG1 * Fr`, which the sp1 `bn` patch does not provide and
+# `brevis-network/bn` does. That missing pair is what kept the host's lock back.
 revm = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-bytecode = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }
 revm-context = { git = "https://github.com/brevis-network/revm", branch = "pico-v98-31-0-2" }

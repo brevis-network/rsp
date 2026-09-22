@@ -4293,7 +4293,7 @@ dependencies = [
 [[package]]
 name = "op-revm"
 version = "12.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "auto_impl",
  "revm",
@@ -6468,7 +6468,7 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "31.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "revm-bytecode",
  "revm-context",
@@ -6486,7 +6486,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "7.1.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "bitvec",
  "phf",
@@ -6497,7 +6497,7 @@ dependencies = [
 [[package]]
 name = "revm-context"
 version = "11.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "bitvec",
  "cfg-if",
@@ -6513,7 +6513,7 @@ dependencies = [
 [[package]]
 name = "revm-context-interface"
 version = "12.0.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",
@@ -6528,7 +6528,7 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "9.0.5"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "alloy-eips",
  "revm-bytecode",
@@ -6541,7 +6541,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "8.0.5"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "auto_impl",
  "either",
@@ -6553,7 +6553,7 @@ dependencies = [
 [[package]]
 name = "revm-handler"
 version = "12.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "auto_impl",
  "derive-where",
@@ -6571,7 +6571,7 @@ dependencies = [
 [[package]]
 name = "revm-inspector"
 version = "12.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "auto_impl",
  "either",
@@ -6587,7 +6587,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "29.0.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "revm-bytecode",
  "revm-context-interface",
@@ -6599,7 +6599,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "29.0.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -6620,7 +6620,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "21.0.2"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "alloy-primitives",
  "num_enum 0.7.5",
@@ -6631,7 +6631,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "8.1.1"
-source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#af14a0614542f5cdc62c8e7d643889b703761583"
+source = "git+https://github.com/brevis-network/revm?branch=pico-v98-31-0-2#7777b121ef086418c08993ed1dd48fce18c81d89"
 dependencies = [
  "bitflags 2.10.0",
  "revm-bytecode",
