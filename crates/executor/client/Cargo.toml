@@ -42,6 +42,7 @@ reth-chainspec.workspace = true
 revm.workspace = true
 revm-primitives.workspace = true
 kzg-rs.workspace = true
+bls12_381.workspace = true
 
 # alloy
 alloy-evm.workspace = true

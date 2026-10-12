@@ -162,6 +162,9 @@ op-alloy-network = "0.22.4"
 op-alloy-rpc-types = "0.22.4"
 
 kzg-rs = { git = "https://github.com/brevis-network/kzg-rs", branch = "pico-v0.2.8-rv64" }
+# EIP-2537 in the guest (`rsp-client-executor`'s `eip2537`): the crate kzg-rs already pulls, plus
+# `experimental` for `hash_to_curve`'s map_to_curve.
+bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1-rv64", features = ["experimental"] }
 # local debug
 # kzg-rs = { path = "../pico-patches/kzg-rs" }
 
