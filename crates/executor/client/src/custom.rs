@@ -20,7 +20,10 @@ use revm::{
         interpreter_types::{Jumps, LoopControl},
         Interpreter, InterpreterTypes,
     },
-    precompile::{Crypto, PrecompileError, PrecompileSpecId, Precompiles},
+    precompile::{
+        bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar},
+        Crypto, PrecompileError, PrecompileSpecId, Precompiles,
+    },
     Context, Inspector,
 };
 use revm_primitives::{hardfork::SpecId, Address};
@@ -146,6 +149,46 @@ impl Crypto for CustomCrypto {
         }
 
         Ok(())
+    }
+
+    // EIP-2537 on Pico's BLS12-381 syscalls instead of revm's arkworks default; see
+    // `crate::eip2537`.
+
+    fn bls12_381_g1_add(&self, a: G1Point, b: G1Point) -> Result<[u8; 96], PrecompileError> {
+        crate::eip2537::g1_add(a, b)
+    }
+
+    fn bls12_381_g1_msm(
+        &self,
+        pairs: &mut dyn Iterator<Item = Result<G1PointScalar, PrecompileError>>,
+    ) -> Result<[u8; 96], PrecompileError> {
+        crate::eip2537::g1_msm(pairs)
+    }
+
+    fn bls12_381_g2_add(&self, a: G2Point, b: G2Point) -> Result<[u8; 192], PrecompileError> {
+        crate::eip2537::g2_add(a, b)
+    }
+
+    fn bls12_381_g2_msm(
+        &self,
+        pairs: &mut dyn Iterator<Item = Result<G2PointScalar, PrecompileError>>,
+    ) -> Result<[u8; 192], PrecompileError> {
+        crate::eip2537::g2_msm(pairs)
+    }
+
+    fn bls12_381_pairing_check(
+        &self,
+        pairs: &[(G1Point, G2Point)],
+    ) -> Result<bool, PrecompileError> {
+        crate::eip2537::pairing_check(pairs)
+    }
+
+    fn bls12_381_fp_to_g1(&self, fp: &[u8; 48]) -> Result<[u8; 96], PrecompileError> {
+        crate::eip2537::map_fp_to_g1(fp)
+    }
+
+    fn bls12_381_fp2_to_g2(&self, fp2: ([u8; 48], [u8; 48])) -> Result<[u8; 192], PrecompileError> {
+        crate::eip2537::map_fp2_to_g2(fp2)
     }
 }
 
