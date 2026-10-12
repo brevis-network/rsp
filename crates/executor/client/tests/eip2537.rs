@@ -28,13 +28,18 @@ use std::{fmt::Debug, fs, path::Path};
 #[test]
 fn eip2537_vectors() {
     assert!(install_crypto(CustomCrypto::default()), "a crypto provider was already installed");
-    let files: [(&str, PrecompileFn); 12] = [
+    let files: [(&str, PrecompileFn); 16] = [
         ("add_G1_bls", g1_add),
         ("fail-add_G1_bls", g1_add),
         ("add_G2_bls", g2_add),
         ("fail-add_G2_bls", g2_add),
         ("fail-msm_G1_bls", g1_msm),
         ("fail-msm_G2_bls", g2_msm),
+        // G1MUL's and G2MUL's vectors, which EIP-2537 runs as an MSM of one pair.
+        ("mul_G1_bls", g1_msm),
+        ("fail-mul_G1_bls", g1_msm),
+        ("mul_G2_bls", g2_msm),
+        ("fail-mul_G2_bls", g2_msm),
         ("pairing_check_bls", pairing),
         ("fail-pairing_check_bls", pairing),
         ("map_fp_to_G1_bls", map_fp_to_g1),
