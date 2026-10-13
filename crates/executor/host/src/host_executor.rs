@@ -24,6 +24,32 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 
 pub type EthHostExecutor = HostExecutor<EthEvmConfig<ChainSpec, CustomEvmFactory>, ChainSpec>;
 
+/// Post-state proofs, at `block_number`, of every account and storage slot `bundle` deletes.
+#[cfg(feature = "execution-witness")]
+async fn deleted_key_proofs<P: Provider<N>, N: Network>(
+    provider: &P,
+    block_number: u64,
+    bundle: &revm::database::BundleState,
+) -> Result<Vec<alloy_rpc_types::EIP1186AccountProofResponse>, HostError> {
+    let requests = bundle.state.iter().filter_map(|(address, account)| {
+        let deleted_slots: Vec<alloy_primitives::B256> = account
+            .storage
+            .iter()
+            .filter(|(_, slot)| {
+                slot.present_value.is_zero() && !slot.previous_or_original_value.is_zero()
+            })
+            .map(|(key, _)| (*key).into())
+            .collect();
+        let deleted_account = account.info.is_none() && account.original_info.is_some();
+        (!deleted_slots.is_empty() || deleted_account).then(|| {
+            std::future::IntoFuture::into_future(
+                provider.get_proof(*address, deleted_slots).number(block_number),
+            )
+        })
+    });
+    Ok(futures::future::try_join_all(requests).await?)
+}
+
 pub type OpHostExecutor = HostExecutor<OpEvmConfig, OpChainSpec>;
 
 /// An executor that fetches data from an [`alloy_provider::Provider`] to execute blocks in
@@ -150,17 +176,48 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             logs_bloom.accrue_bloom(&r.bloom());
         });
 
-        let state = rpc_db.state(&execution_output.state).await?;
+        #[cfg_attr(not(feature = "execution-witness"), allow(unused_mut))]
+        let mut state = rpc_db.state(&execution_output.state).await?;
 
         // Verify the state root.
         tracing::info!("verifying the state root");
-        let state_root = {
+        let hashed_post_state =
+            HashedPostState::from_bundle_state::<KeccakKeyHasher>(&execution_output.state.state);
+        let post_state_root = |state: &rsp_mpt::EthereumState| {
             let mut mutated_state = state.clone();
-            mutated_state.update(&HashedPostState::from_bundle_state::<KeccakKeyHasher>(
-                &execution_output.state.state,
-            ));
+            mutated_state.update(&hashed_post_state);
             mutated_state.state_root()
         };
+        #[cfg_attr(not(feature = "execution-witness"), allow(unused_mut))]
+        let mut state_root = post_state_root(&state);
+        // An execution witness can hold a sibling that one of the block's deletions merges into
+        // its parent as a digest only (see `EthereumState::resolve_merged_siblings`).
+        // A failure here leaves the mismatch to be reported below.
+        #[cfg(feature = "execution-witness")]
+        if state_root != current_block.header().state_root() {
+            match deleted_key_proofs(provider, block_number, &execution_output.state).await {
+                Ok(proofs) => match state.resolve_merged_siblings(&proofs) {
+                    Ok(resolved) => {
+                        tracing::warn!(
+                            "state root mismatch: resolved {resolved} trie node(s) from \
+                             post-state proofs of {} account(s) with deletions",
+                            proofs.len()
+                        );
+                        if resolved > 0 {
+                            state_root = post_state_root(&state);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "state root mismatch: the post-state proofs do not apply: {err}"
+                        )
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!("state root mismatch: fetching post-state proofs failed: {err}")
+                }
+            }
+        }
         if state_root != current_block.header().state_root() {
             return Err(HostError::StateRootMismatch(
                 state_root,
