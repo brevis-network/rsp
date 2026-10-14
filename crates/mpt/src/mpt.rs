@@ -1975,7 +1975,7 @@ pub fn transition_proofs_to_tries(
 }
 
 /// Adds all the leaf nodes of non-inclusion proofs to the nodes.
-fn add_orphaned_leafs(
+pub(crate) fn add_orphaned_leafs(
     key: impl AsRef<[u8]>,
     proof: &[impl AsRef<[u8]>],
     nodes_by_reference: &mut HashMap<MptNodeReference, MptNode>,
@@ -2016,6 +2016,91 @@ mod tests {
     use hex_literal::hex;
 
     use super::*;
+
+    /// Block 26182443 cleared slot 0xfb of a contract whose slots 0x6f and 0xfb were the only two
+    /// below storage path [3] (they hash to 0x39... and 0x3e...). The deletion puts the leaf of
+    /// 0x6f in the branch's place, and the execution witness held that leaf as a digest only:
+    /// the storage root came out wrong. A post-state proof of 0xfb recovers the leaf.
+    #[test]
+    pub fn test_resolve_merged_siblings() {
+        use crate::EthereumState;
+        use alloy_primitives::{keccak256, Address, U256};
+        use alloy_rpc_types::{EIP1186AccountProofResponse, EIP1186StorageProof};
+        use reth_primitives_traits::Account;
+        use reth_trie::{HashedPostState, HashedStorage, TrieAccount};
+
+        let slot = |n: u64| B256::from(U256::from(n));
+        let mut storage = MptNode::default();
+        for (n, value) in [(0x6f, 7u64), (0xfa, 8), (0xfb, 9)] {
+            storage.insert_rlp(keccak256(slot(n)).as_slice(), U256::from(value)).unwrap();
+        }
+
+        // What the witness held: the same trie, with the leaf of 0x6f (at [3, 9]) a digest.
+        let mut witness_storage = storage.clone();
+        let MptNodeData::Branch(children) = &mut witness_storage.data else { panic!("root") };
+        let MptNodeData::Branch(below_3) = &mut children[3].as_mut().unwrap().data else {
+            panic!("branch at [3]")
+        };
+        let MptNodeReference::Digest(digest) = below_3[9].as_ref().unwrap().reference() else {
+            panic!("the leaf of 0x6f is inlined")
+        };
+        below_3[9] = Some(Box::new(MptNodeData::Digest(digest).into()));
+        assert_eq!(witness_storage.hash(), storage.hash());
+
+        // The post-state proof of 0xfb: the root, then the merged leaf of 0x6f at [3].
+        let mut post_storage = storage.clone();
+        post_storage.delete(keccak256(slot(0xfb)).as_slice()).unwrap();
+        let MptNodeData::Branch(post_children) = post_storage.as_data() else { panic!("root") };
+        let proof = vec![
+            alloy_rlp::encode(&post_storage).into(),
+            alloy_rlp::encode(post_children[3].as_ref().unwrap().as_ref()).into(),
+        ];
+
+        let address = Address::repeat_byte(0x97);
+        let hashed_address = keccak256(address);
+        let code_hash = B256::repeat_byte(0xb1);
+        let state = |storage_trie: MptNode| {
+            let mut state_trie = MptNode::default();
+            let account = TrieAccount {
+                nonce: 1,
+                balance: U256::ZERO,
+                storage_root: storage_trie.hash(),
+                code_hash,
+            };
+            state_trie.insert_rlp(hashed_address.as_slice(), account).unwrap();
+            let storage_tries = [(hashed_address, storage_trie)].into_iter().collect();
+            EthereumState { state_trie, storage_tries }
+        };
+        let mut post_state = HashedPostState::default();
+        post_state.accounts.insert(
+            hashed_address,
+            Some(Account { nonce: 1, balance: U256::ZERO, bytecode_hash: Some(code_hash) }),
+        );
+        post_state.storages.insert(
+            hashed_address,
+            HashedStorage::from_iter(false, [(keccak256(slot(0xfb)), U256::ZERO)]),
+        );
+        let root_after = |mut state: EthereumState| {
+            state.update(&post_state);
+            state.state_root()
+        };
+
+        let expected = root_after(state(storage));
+        assert_ne!(root_after(state(witness_storage.clone())), expected, "the bug reproduces");
+
+        let mut repaired = state(witness_storage);
+        let proofs = [EIP1186AccountProofResponse {
+            address,
+            storage_proof: vec![EIP1186StorageProof {
+                key: slot(0xfb).into(),
+                value: U256::ZERO,
+                proof,
+            }],
+            ..Default::default()
+        }];
+        assert_eq!(repaired.resolve_merged_siblings(&proofs).unwrap(), 1);
+        assert_eq!(root_after(repaired), expected);
+    }
 
     #[test]
     pub fn test_keccak_sponge_matches_alloy() {

@@ -29,8 +29,8 @@ pub use mpt::keccak256_zkvm;
 #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
 pub use mpt::keccak256_zkvm_into;
 use mpt::{
-    mpt_from_proof, parse_proof, proofs_to_tries, resolve_nodes, transition_proofs_to_tries,
-    MptNode,
+    add_orphaned_leafs, mpt_from_proof, parse_proof, proofs_to_tries, resolve_nodes,
+    transition_proofs_to_tries, MptNode,
 };
 
 /// Ethereum state trie and account storage tries.
@@ -147,6 +147,50 @@ impl EthereumState {
     /// Computes the state root.
     pub fn state_root(&self) -> B256 {
         self.state_trie.hash()
+    }
+
+    /// Resolves, from post-state proofs of the keys a block deletes, the siblings those
+    /// deletions merge into their parents. Returns how many trie nodes it resolved.
+    ///
+    /// A deletion that leaves a branch with one child puts that child in the branch's place,
+    /// which takes the child's node. An execution witness can hold the child as a digest only,
+    /// and [`Self::update`] then keeps it under an extension: right for a branch, wrong for a
+    /// leaf or an extension, and the root comes out wrong without an error. A post-state proof
+    /// of the deleted key ends at the merged child, and the shortened forms of that node include
+    /// the one the witness left out, as for [`Self::from_transition_proofs`].
+    pub fn resolve_merged_siblings(
+        &mut self,
+        proofs: &[EIP1186AccountProofResponse],
+    ) -> Result<usize, FromProofError> {
+        let before = self.size();
+        let mut state_nodes = HashMap::with_hasher(Default::default());
+        for proof in proofs {
+            add_orphaned_leafs(proof.address, &proof.account_proof, &mut state_nodes)?;
+
+            let mut storage_nodes = HashMap::with_hasher(Default::default());
+            for storage_proof in &proof.storage_proof {
+                add_orphaned_leafs(
+                    storage_proof.key.as_b256(),
+                    &storage_proof.proof,
+                    &mut storage_nodes,
+                )?;
+            }
+            if storage_nodes.is_empty() {
+                continue;
+            }
+            if let Some(storage_trie) = self.storage_tries.get_mut(&keccak256(proof.address)) {
+                *storage_trie = resolve_nodes(storage_trie, &storage_nodes);
+            }
+        }
+        if !state_nodes.is_empty() {
+            self.state_trie = resolve_nodes(&self.state_trie, &state_nodes);
+        }
+        Ok(self.size() - before)
+    }
+
+    /// The number of resolved nodes across the state trie and the storage tries.
+    fn size(&self) -> usize {
+        self.state_trie.size() + self.storage_tries.values().map(MptNode::size).sum::<usize>()
     }
 }
 
