@@ -114,10 +114,11 @@ impl EthProofsClient {
                 .map_err(|e| eyre!(e))
                 .and_then(|r| r.error_for_status().map_err(|e| eyre!(e)));
 
-            if let Err(err) = response {
-                error!("Failed to report proof proving: {}", err)
+            // Success is logged only on success: the line is what monitoring counts submissions by.
+            match response {
+                Ok(_) => info!(" Submit proof to the API Successfully"),
+                Err(err) => error!("Failed to report proof proving: {}", err),
             }
-            info!(" Submit proof to the API Successfully");
         });
     }
 }
