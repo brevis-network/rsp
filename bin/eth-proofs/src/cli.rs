@@ -58,6 +58,27 @@ pub struct Args {
     /// The gRPC endopoint to execute proving.
     #[clap(long, env)]
     pub witness_getaway_endpoint: String,
+
+    /// How often to ask the prover whether a block's proof is ready, in seconds.
+    #[clap(long, default_value_t = 2)]
+    pub prover_poll_secs: u64,
+
+    /// Resubmit a block that still has no proof this many seconds after it went in. The prover
+    /// refuses a block while another is in flight, so this never starts a second proof of a block
+    /// it is still working on; it restarts one the prover lost, as a restarted prover does.
+    #[clap(long, default_value_t = 120)]
+    pub prover_resubmit_secs: u64,
+
+    /// Give a block up after this many seconds without a proof, so one block cannot hold up all
+    /// the blocks behind it.
+    #[clap(long, default_value_t = 1800)]
+    pub prover_give_up_secs: u64,
+
+    /// The most blocks that may wait for the prover, the one being proved included. Past it, new
+    /// blocks are skipped rather than queued: each queued block holds its client input in memory,
+    /// and a longer backlog would keep proofs behind the chain long after the prover is back.
+    #[clap(long, default_value_t = 128)]
+    pub max_queued_blocks: usize,
 }
 
 impl Args {
