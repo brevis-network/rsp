@@ -7,7 +7,6 @@ use evm2::{
     evm::{DbRef, DynDatabase},
     install_crypto,
 };
-use itertools::Itertools;
 use reth_chainspec::ChainSpec;
 use reth_errors::BlockExecutionError;
 use reth_evm::{
@@ -166,22 +165,22 @@ where
                 .map_err(|_| ClientError::SignatureRecoveryFailed)
         })?;
 
-        // Validate the blocks.
+        // Validate the block, and its header against its parent's.
+        //
+        // The ancestors older than the parent are in the input for the hashes `BLOCKHASH`
+        // reads, and are not validated. `build_trie_db` holds every ancestor to the hash its
+        // child names, which makes them the ancestors of this block; whether one of them was
+        // valid against its own parent is for the proof of that block. reth's stateless
+        // validation asks the same of the headers it is given.
         profile_report!(VALIDATE_HEADER, {
             C::Primitives::validate_block(&block, self.chain_spec.clone())
                 .expect("The block is invalid");
 
-            for (header, parent) in sealed_headers.iter().tuple_windows() {
-                C::Primitives::validate_header(parent, self.chain_spec.clone())
-                    .expect("A parent header is invalid");
-
-                C::Primitives::validate_header_against_parent(
-                    header,
-                    parent,
-                    self.chain_spec.clone(),
-                )
+            let [header, parent, ..] = sealed_headers.as_slice() else {
+                panic!("The parent header is missing");
+            };
+            C::Primitives::validate_header_against_parent(header, parent, self.chain_spec.clone())
                 .expect("The header is invalid against its parent");
-            }
         });
 
         // The witnessed database borrows the tries, so execution is scoped to let the state
@@ -300,5 +299,149 @@ impl EthClientExecutor {
         let executor = Self::eth(Arc::new(chain_spec), input.custom_beneficiary);
         let header = executor.execute(input)?;
         Ok(CommittedHeader::new(header, config_digest))
+    }
+}
+
+/// What the client asks of the headers in its input, on blocks that need no state: empty blocks
+/// of the Paris period over the empty state, which the legacy backend holds without a witness.
+#[cfg(all(test, not(any(feature = "arena", feature = "flat"))))]
+mod header_tests {
+    use alloy_consensus::{constants::EMPTY_OMMER_ROOT_HASH, BlockBody};
+    use alloy_primitives::Bytes;
+    use reth_chainspec::EthChainSpec;
+    use reth_errors::ConsensusError;
+    use reth_ethereum_primitives::EthPrimitives;
+    use reth_primitives_traits::SealedHeader;
+    use reth_trie_common::EMPTY_ROOT_HASH;
+    use rsp_mpt::EthereumState;
+    use rsp_primitives::genesis::Genesis;
+
+    use super::*;
+    use crate::io::EthClientExecutorInput;
+
+    fn mainnet() -> Arc<ChainSpec> {
+        Arc::new((&Genesis::Mainnet).try_into().unwrap())
+    }
+
+    /// The header of an empty block over the empty state.
+    fn first_header() -> Header {
+        Header {
+            ommers_hash: EMPTY_OMMER_ROOT_HASH,
+            state_root: EMPTY_ROOT_HASH,
+            transactions_root: EMPTY_ROOT_HASH,
+            receipts_root: EMPTY_ROOT_HASH,
+            number: 16_000_000,
+            gas_limit: 30_000_000,
+            // The Merge (2022-09-15) is behind it and Shanghai (2023-04-12) ahead: no block
+            // reward, no withdrawals and no system call, so the state stays empty.
+            timestamp: 1_670_000_000,
+            base_fee_per_gas: Some(1_000_000_000),
+            ..Default::default()
+        }
+    }
+
+    /// The header of the empty block that follows `parent`.
+    fn child_of(parent: &Header) -> Header {
+        let timestamp = parent.timestamp + 12;
+        Header {
+            parent_hash: parent.hash_slow(),
+            number: parent.number + 1,
+            timestamp,
+            base_fee_per_gas: mainnet().next_block_base_fee(parent, timestamp),
+            ..parent.clone()
+        }
+    }
+
+    /// Four headers, each the child of the one before it.
+    fn chain() -> [Header; 4] {
+        let first = first_header();
+        let second = child_of(&first);
+        let third = child_of(&second);
+        let fourth = child_of(&third);
+        [first, second, third, fourth]
+    }
+
+    /// Executes the empty block of `header` with `ancestors` in the input, the parent first.
+    fn execute(header: Header, ancestors: Vec<Header>) -> Result<Header, ClientError> {
+        let input = EthClientExecutorInput {
+            current_block: alloy_consensus::Block {
+                header,
+                body: BlockBody { transactions: Vec::new(), ommers: Vec::new(), withdrawals: None },
+            },
+            ancestor_headers: ancestors,
+            parent_state: EthereumState {
+                state_trie: Default::default(),
+                storage_tries: Default::default(),
+            },
+            bytecodes: Vec::new(),
+            genesis: Genesis::Mainnet,
+            custom_beneficiary: None,
+            opcode_tracking: false,
+        };
+        EthClientExecutor::eth(mainnet(), None).execute(input)
+    }
+
+    #[test]
+    fn a_block_runs_on_its_ancestors() {
+        let [great_grandparent, grandparent, parent, block] = chain();
+
+        let derived = execute(block.clone(), vec![parent, grandparent, great_grandparent]).unwrap();
+        assert_eq!(derived.hash_slow(), block.hash_slow());
+    }
+
+    /// The block's header is held to its parent's.
+    #[test]
+    #[should_panic(expected = "The header is invalid against its parent")]
+    fn a_block_that_does_not_follow_from_its_parent_is_refused() {
+        let parent = first_header();
+        let block = Header { base_fee_per_gas: Some(7), ..child_of(&parent) };
+
+        let _ = execute(block, vec![parent]);
+    }
+
+    /// An ancestor older than the block is held to the hash its child names, and to nothing
+    /// else. The parent here has a base fee that does not follow from its own parent's, which
+    /// the validation of a header against its parent refuses, and the block runs on it.
+    #[test]
+    fn an_ancestor_is_not_validated_against_its_own_parent() {
+        let grandparent = first_header();
+        let parent = Header { base_fee_per_gas: Some(7), ..child_of(&grandparent) };
+        let block = child_of(&parent);
+
+        let refused = EthPrimitives::validate_header_against_parent(
+            &SealedHeader::seal_slow(parent.clone()),
+            &SealedHeader::seal_slow(grandparent.clone()),
+            mainnet(),
+        );
+        assert!(matches!(refused, Err(ConsensusError::BaseFeeDiff(_))), "{refused:?}");
+
+        let derived = execute(block.clone(), vec![parent, grandparent]).unwrap();
+        assert_eq!(derived.hash_slow(), block.hash_slow());
+    }
+
+    /// What holds the older ancestors: each is the header whose hash its child names.
+    #[test]
+    #[should_panic(expected = "InvalidHeaderParentHash")]
+    fn an_ancestor_its_child_does_not_name_is_refused() {
+        let [_, grandparent, parent, block] = chain();
+        let another = Header { extra_data: Bytes::from_static(b"another"), ..grandparent };
+
+        let _ = execute(block, vec![parent, another]);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidHeaderBlockNumber")]
+    fn an_ancestor_out_of_sequence_is_refused() {
+        let [great_grandparent, _, parent, block] = chain();
+
+        let _ = execute(block, vec![parent, great_grandparent]);
+    }
+
+    #[test]
+    #[should_panic(expected = "The parent header is missing")]
+    fn a_block_without_its_parent_is_refused() {
+        let [.., block] = chain();
+
+        let _ = execute(block, Vec::new());
     }
 }
