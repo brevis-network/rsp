@@ -25,10 +25,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      # eth-proofs compiles its gRPC definitions when it is built.
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       # `-p` rather than `--workspace`: the SP1 binaries need SP1's toolchain, and their tests
       # an Ethereum RPC.
       - run: cargo test --release -p rsp-mpt -p rsp-client-executor -p rsp-guest-mem
       - run: cargo test --release -p rsp-client-executor --features flat
+      - run: cargo test --release -p eth-proofs --features flat
 
   fmt:
     name: fmt
