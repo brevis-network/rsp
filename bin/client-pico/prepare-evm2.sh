@@ -11,14 +11,19 @@
 #
 # 0006 is for the Pico guest alone: MOD, ADDMOD and MULMOD run on its UINT256_MUL precompile.
 #
+# 0007 and 0008 are the opcodes that move a word between the memory and the stack, and the jumps.
+# 0007 reads and writes such a word by the alignment of its address. 0008 gives the tail-call
+# dispatch fast paths: on this target a handler that calls anything saves and restores registers
+# on every run, so the common case of MLOAD, MSTORE, CALLDATALOAD, JUMP, JUMPI and of PUSH2 with
+# the jump after it runs without a call, ahead of the handler.
+#
 # 0005 changes nothing in the guest. It adds a cfg with which a host build of the patched evm2
 # charges static gas as 0003 does, so that evm2's own unit tests and its EEST runner run that
 # code (on a nightly rustc, which gives the tail-call dispatch the guest uses):
 #   RUSTFLAGS="--cfg evm2_as_on_riscv64" cargo test -p evm2 --lib
 #
 # Re-run after changing REV or the patches: the checkout is rebuilt when either differs from what
-# it was prepared from. (A patch that adds a file leaves that file behind when it is later
-# removed from the series; delete ./evm2-pico by hand in that case.)
+# it was prepared from.
 set -euo pipefail
 cd "$(dirname "$0")"
 # The revision in reth v2.11.0's manifest, and the repository its patch section names.
@@ -37,6 +42,8 @@ if ! git -C "$DIR" cat-file -e "$REV^{commit}" 2>/dev/null; then
     git -C "$DIR" fetch -q --depth 1 "$URL" "$REV"
 fi
 git -C "$DIR" reset -q --hard "$REV"
+# The files an earlier series added, which the reset leaves where they are.
+git -C "$DIR" clean -q -f -d
 for patch in evm2-patches/*.patch; do
     git -C "$DIR" apply --whitespace=nowarn "../$patch"
 done
