@@ -3,7 +3,7 @@ use std::sync::Arc;
 use alloy_consensus::{Block, Header, TxEnvelope};
 use alloy_network::{Ethereum, Network};
 use alloy_primitives::B256;
-use reth_chainspec::{ChainSpec, EthChainSpec, NamedChain};
+use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, NamedChain};
 use reth_consensus::HeaderValidator;
 use reth_consensus_common::validation::validate_block_pre_execution;
 use reth_errors::ConsensusError;
@@ -11,6 +11,8 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_execution_types::BlockExecutionOutput;
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedHeader};
+
+use crate::receipts::receipts_root_and_logs_bloom;
 
 pub trait IntoPrimitives<N: Network>: NodePrimitives {
     fn into_primitive_block(block: N::BlockResponse) -> Self::Block;
@@ -116,11 +118,17 @@ impl BlockValidator<ChainSpec> for EthPrimitives {
         execution_output: &BlockExecutionOutput<Self::Receipt>,
         block_access_list_hash: Option<B256>,
     ) -> Result<(), ConsensusError> {
+        // The receipts root and the logs bloom by `crate::receipts`. reth compares them with
+        // the header's, where it would otherwise compute its own through alloy's encoder.
+        // Before Byzantium it looks at neither (EIP-658).
+        let receipt_root_bloom = chain_spec
+            .is_byzantium_active_at_block(block.header().number)
+            .then(|| receipts_root_and_logs_bloom(&execution_output.result.receipts));
         reth_ethereum_consensus::validate_block_post_execution(
             block,
             &chain_spec,
             &execution_output.result,
-            None,
+            receipt_root_bloom,
             block_access_list_hash,
         )
     }

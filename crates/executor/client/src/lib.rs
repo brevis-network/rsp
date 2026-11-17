@@ -16,4 +16,5 @@ pub mod modexp;
 pub mod stdin;
 
 mod into_primitives;
+mod receipts;
 pub use into_primitives::{BlockValidator, FromInput, IntoInput, IntoPrimitives};

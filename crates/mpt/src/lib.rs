@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 mod execution_witness;
 
 /// Keccak-256 over the keccak-permute syscall, for the Pico guest.
+/// The logs bloom, hashed through the guest's own keccak (see the module's docs).
+pub mod bloom;
+pub use bloom::logs_bloom;
+
 mod keccak;
 #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
 pub use keccak::{keccak256_zkvm, keccak256_zkvm_into};
