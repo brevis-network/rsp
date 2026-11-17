@@ -3,8 +3,11 @@
 # ./evm2-patches to it. The guest manifest patches evm2 to that directory.
 #
 # The changes are for this target only (riscv64im, no misaligned loads, no vector or byte-swap
-# instructions), where a few of evm2's opcode handlers compile to very slow code; they sit behind
-# `target_arch = "riscv64"` and change no behaviour. The host keeps upstream evm2.
+# instructions, branches that compare two registers, no address scale), where a few of evm2's
+# opcode handlers compile to very slow code and its dispatch pays on every opcode for a comparison
+# and a shift the target does not need. They sit behind `target_arch = "riscv64"` and change no
+# behaviour; the static gas charge relies on a gas counter below 2^63 and asserts it when a frame
+# starts to run. The host keeps upstream evm2.
 #
 # Re-run after changing REV or the patches: the checkout is rebuilt when either differs from what
 # it was prepared from. (A patch that adds a file leaves that file behind when it is later

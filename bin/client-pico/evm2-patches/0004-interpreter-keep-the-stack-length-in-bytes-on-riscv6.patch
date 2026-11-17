@@ -1,0 +1,44 @@
+From 23215a315357f69041296ca89a3f33cf5e5533fd Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Fri, 13 Nov 2026 23:59:58 +0000
+Subject: [PATCH] interpreter: keep the stack length in bytes on riscv64 as on
+ x86-64
+
+The tail-call dispatch carries the stack length in a register. On
+x86-64 it is kept in bytes, because an address scale stops at 8 and a
+length in words costs a shift at every use. RISC-V has no address scale
+at all: each handler that touches the stack computed `slli` then `add`
+where the length in bytes needs the `add`.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ crates/evm2/src/interpreter/stack.rs | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/crates/evm2/src/interpreter/stack.rs b/crates/evm2/src/interpreter/stack.rs
+index ed2a0156..afcf7c36 100644
+--- a/crates/evm2/src/interpreter/stack.rs
++++ b/crates/evm2/src/interpreter/stack.rs
+@@ -12,10 +12,16 @@ use core::{
+ pub type Word = U256;
+ 
+ /// Units of [`RawStack`]'s stored length per stack word: the word size in bytes for the tail-call
+-/// dispatch on x86-64, where an address scale stops at 8 and a word index costs a shift, and 1
+-/// elsewhere, where the scale is free or the table dispatch only reads the length at its entry.
++/// dispatch on x86-64, where an address scale stops at 8 and a word index costs a shift, and on
++/// riscv64, which has no address scale at all (`slli` then `add` in every handler that touches
++/// the stack, against the `add`); and 1 elsewhere, where the scale is free or the table dispatch
++/// only reads the length at its entry.
+ const RAW_LEN_SCALE: usize =
+-    if cfg!(all(tco, target_arch = "x86_64")) { size_of::<Word>() } else { 1 };
++    if cfg!(all(tco, any(target_arch = "x86_64", target_arch = "riscv64"))) {
++        size_of::<Word>()
++    } else {
++        1
++    };
+ 
+ /// Operand stack storage.
+ ///
+-- 
+2.43.0
+

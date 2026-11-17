@@ -1,7 +1,7 @@
-From 2dbfc1337edfc99837f5d1252986f06ab2e20934 Mon Sep 17 00:00:00 2001
+From b484ded2e9ae52756c731f02514a4aa53baef4c7 Mon Sep 17 00:00:00 2001
 From: claude-checkpoint <noreply@anthropic.com>
 Date: Fri, 13 Nov 2026 08:03:37 +0000
-Subject: [PATCH 2/2] interpreter: assemble big-endian words byte by byte on
+Subject: [PATCH] interpreter: assemble big-endian words byte by byte on
  riscv64
 
 u64::from_be_bytes is a little-endian load and a byte swap. riscv64im
@@ -48,7 +48,7 @@ index 283d517b..55d5ecaa 100644
  
      /// Writes bytes into memory.
 diff --git a/crates/evm2/src/interpreter/stack.rs b/crates/evm2/src/interpreter/stack.rs
-index 4ee84f68..a463840d 100644
+index f75d489e..ed2a0156 100644
 --- a/crates/evm2/src/interpreter/stack.rs
 +++ b/crates/evm2/src/interpreter/stack.rs
 @@ -538,7 +538,7 @@ impl<'a> StackMut<'a> {

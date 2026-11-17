@@ -1,4 +1,4 @@
-//! Word-at-a-time `memcmp`/`bcmp`/`memset` for the pico guest.
+//! Word-at-a-time `memcmp`/`bcmp`/`memset` for the pico guest, and its heap ([`heap`]).
 //!
 //! `compiler_builtins`' `memcmp` is a byte-at-a-time loop — seven instructions per byte on
 //! `riscv64im-pico-zkvm-elf`. It matters more here than it looks: because the target has no
@@ -18,6 +18,8 @@
 // The word-compare path derives the first differing byte from the least significant differing
 // bits, which is only correct on little-endian targets.
 const _: () = assert!(cfg!(target_endian = "little"));
+
+pub mod heap;
 
 const WORD: usize = core::mem::size_of::<usize>();
 
