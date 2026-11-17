@@ -1179,8 +1179,10 @@ version = "0.8.0"
 source = "git+https://github.com/brevis-network/bls12_381?branch=patch-v1.0.1-rv64#79fbbface08629528c9ef6e326d98e38901c39bf"
 dependencies = [
  "cfg-if",
+ "digest 0.10.7",
  "ff 0.13.1",
  "group 0.13.0",
+ "hex",
  "pairing 0.23.0",
  "pico-patch-libs",
  "rand_core 0.6.4",
@@ -1250,6 +1252,20 @@ name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
 
 [[package]]
 name = "byteorder"
@@ -2193,7 +2209,6 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "evm2"
 version = "0.1.0"
-source = "git+https://github.com/DaniPopes/evm2?rev=66687c18b34d3bdbb899f5eb7605070615c03475#66687c18b34d3bdbb899f5eb7605070615c03475"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -2230,7 +2245,6 @@ dependencies = [
 [[package]]
 name = "evm2-macros"
 version = "0.1.0"
-source = "git+https://github.com/DaniPopes/evm2?rev=66687c18b34d3bdbb899f5eb7605070615c03475#66687c18b34d3bdbb899f5eb7605070615c03475"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4935,10 +4949,13 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types",
+ "bls12_381 0.8.0",
  "bumpalo",
  "evm2",
  "itertools 0.13.0",
+ "k256 0.13.4",
  "kzg-rs",
+ "p256 0.13.2",
  "reth-chainspec",
  "reth-consensus",
  "reth-consensus-common",
@@ -4955,6 +4972,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "sha2 0.10.9",
+ "substrate-bn",
  "thiserror 1.0.69",
 ]
 
@@ -4966,9 +4985,14 @@ dependencies = [
  "log",
  "pico-sdk",
  "rsp-client-executor",
- "tiny-keccak",
+ "rsp-guest-mem",
+ "rsp-mpt",
  "tracing",
 ]
+
+[[package]]
+name = "rsp-guest-mem"
+version = "0.1.0"
 
 [[package]]
 name = "rsp-mpt"
@@ -5590,6 +5614,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "substrate-bn"
+version = "0.6.0"
+source = "git+https://github.com/brevis-network/bn?branch=patch-v1.0.2-rv64#1455d63953ba9f7231043c57c7077cee6a10dc89"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+ "cfg-if",
+ "crunchy",
+ "lazy_static",
+ "num-bigint 0.4.8",
+ "pico-patch-libs",
+ "rand 0.8.8",
+ "rustc-hex",
 ]
 
 [[package]]
@@ -6508,8 +6548,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "substrate-bn"
-version = "0.6.0"
-source = "git+https://github.com/brevis-network/bn?branch=patch-v1.0.2-rv64#1455d63953ba9f7231043c57c7077cee6a10dc89"

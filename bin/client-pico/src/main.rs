@@ -8,17 +8,21 @@ use rsp_client_executor::{
 };
 use std::sync::Arc;
 
-/// alloy's `native-keccak` hook: every `keccak256` alloy computes in the guest comes here. The
-/// sponge is tiny-keccak's, whose permutation is patched to Pico's keccak precompile.
+// Linked for its `memcmp`/`bcmp` symbols, which take the place of compiler-builtins'
+// byte-at-a-time ones, and for `__wrap_memset`. Nothing calls it directly.
+use rsp_guest_mem as _;
+
+/// alloy's `native-keccak` hook: every `keccak256` alloy computes in the guest (EVM opcodes,
+/// transaction hashing, trie nodes, the receipts root, bytecode hashing) comes here, to the
+/// sponge written directly over Pico's keccak-permute syscall.
 ///
 /// # Safety
 /// Called by alloy with a valid input range and a 32-byte output buffer.
 #[no_mangle]
 pub unsafe extern "C" fn native_keccak256(bytes: *const u8, len: usize, output: *mut u8) {
-    use tiny_keccak::{Hasher, Keccak};
-    let mut hasher = Keccak::v256();
-    hasher.update(core::slice::from_raw_parts(bytes, len));
-    hasher.finalize(core::slice::from_raw_parts_mut(output, 32));
+    let data = core::slice::from_raw_parts(bytes, len);
+    // Straight into alloy's buffer rather than through a `[u8; 32]` return value.
+    rsp_mpt::keccak256_zkvm_into(data, output);
 }
 
 pub fn main() {

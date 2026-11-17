@@ -1,0 +1,67 @@
+From 84111d39cea6a3084dd0573e28c9a9635fa9724b Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Fri, 13 Nov 2026 08:03:36 +0000
+Subject: [PATCH 1/2] interpreter: swap stack words as words on riscv64
+
+swap_nonoverlapping moves untyped byte chunks; on a target with no
+misaligned loads and no vector instructions that is 64 byte loads and
+64 byte stores for one SWAP. Measured in a Pico guest on 13 mainnet
+blocks: 231.6 M -> 213.8 M instructions a block.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ crates/evm2/src/interpreter/stack.rs | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/crates/evm2/src/interpreter/stack.rs b/crates/evm2/src/interpreter/stack.rs
+index 4c39d1eb..4ee84f68 100644
+--- a/crates/evm2/src/interpreter/stack.rs
++++ b/crates/evm2/src/interpreter/stack.rs
+@@ -594,10 +594,26 @@ unsafe fn swap_words(a: *mut Word, b: *mut Word) {
+             _mm256_storeu_si256(a.cast(), y);
+             _mm256_storeu_si256(b.cast(), x);
+         },
++        // No misaligned loads and no vector instructions (riscv64im in a zkVM guest):
++        // `swap_nonoverlapping` moves untyped byte chunks, which there is 64 byte loads and 64
++        // byte stores for one swap.
++        target_arch = "riscv64" => unsafe { swap_words_by_value(a, b) },
+         _ => unsafe { core::ptr::swap_nonoverlapping(a, b, 1) },
+     }
+ }
+ 
++/// Swaps two distinct stack words by reading and writing each as a word: 8 loads and 8 stores.
++#[cfg(any(test, target_arch = "riscv64"))]
++#[inline(always)]
++unsafe fn swap_words_by_value(a: *mut Word, b: *mut Word) {
++    unsafe {
++        let x = a.read();
++        let y = b.read();
++        a.write(y);
++        b.write(x);
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -741,6 +757,17 @@ mod tests {
+         assert_eq!(stack.peek(usize::MAX), None);
+     }
+ 
++    #[test]
++    fn swap_words_by_value_swaps() {
++        let x = Word::from_limbs([1, 2, 3, 4]);
++        let y = Word::from_limbs([u64::MAX, 6, 7, 1 << 63]);
++        let mut words = [x, Word::ZERO, y];
++        let base = words.as_mut_ptr();
++        // SAFETY: two distinct elements of one live array.
++        unsafe { swap_words_by_value(base, base.add(2)) };
++        assert_eq!(words, [y, Word::ZERO, x]);
++    }
++
+     #[test]
+     fn dup_swap_and_exchange() {
+         run_with_len(4, |stack| {
+-- 
+2.43.0
+

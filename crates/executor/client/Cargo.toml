@@ -40,7 +40,14 @@ reth-chainspec.workspace = true
 
 # evm2
 evm2.workspace = true
+
+# precompile cryptography, see `src/custom.rs`
+bls12_381.workspace = true
+bn.workspace = true
+k256.workspace = true
 kzg-rs.workspace = true
+p256.workspace = true
+sha2.workspace = true
 
 # alloy
 alloy-eip7928.workspace = true

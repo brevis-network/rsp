@@ -1,4 +1,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
+// `target_vendor = "pico"` comes from the custom riscv64im-pico-zkvm-elf target.
+#![allow(unexpected_cfgs)]
 
 use alloy_primitives::{keccak256, map::HashMap, Address, B256, U256};
 use alloy_rlp::Decodable;
@@ -8,6 +10,11 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "execution-witness")]
 mod execution_witness;
+
+/// Keccak-256 over the keccak-permute syscall, for the Pico guest.
+mod keccak;
+#[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+pub use keccak::{keccak256_zkvm, keccak256_zkvm_into};
 
 /// Module containing MPT code adapted from `zeth`.
 mod mpt;

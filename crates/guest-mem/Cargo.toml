@@ -1,0 +1,10 @@
+[package]
+name = "rsp-guest-mem"
+description = "Word-at-a-time mem* routines for the pico RV64 guest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]

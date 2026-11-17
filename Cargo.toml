@@ -5,13 +5,16 @@ members = [
     "bin/ethproofs",
     "crates/executor/client",
     "crates/executor/host",
+    "crates/guest-mem",
     "crates/mpt",
     "crates/primitives",
     "crates/provider",
     "crates/storage/rpc-db",
     "crates/storage/witness-db",
 ]
-exclude = []
+# The evm2 checkout the Pico guest builds against (bin/client-pico/prepare-evm2.sh) is a
+# workspace of its own.
+exclude = ["bin/client-pico/evm2-pico"]
 resolver = "2"
 
 [workspace.package]
@@ -126,6 +129,18 @@ alloy-trie = "0.9.9"
 
 # 0.2.8 is the newest version that has a Pico branch; the Pico guest patches it in.
 kzg-rs = "0.2.8"
+
+# Precompile cryptography in the versions Pico has accelerated patches for. evm2's own backends
+# are newer majors, so `rsp-client-executor` routes the precompiles to these (its `custom.rs`).
+k256 = { version = "0.13.4", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "0.10.9", default-features = false }
+# EIP-2537. From git outside the guest as well: the precompile code uses the field types, which
+# crates.io's bls12_381 keeps private. `experimental` is `hash_to_curve`'s map_to_curve.
+bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1-rv64", features = ["experimental"] }
+# bn254 (EIP-196, EIP-197). From git outside the guest as well: the precompile code adds and
+# multiplies affine G1 points, which crates.io's substrate-bn does not offer.
+bn = { git = "https://github.com/brevis-network/bn", branch = "patch-v1.0.2-rv64", package = "substrate-bn" }
 
 
 [workspace.lints]

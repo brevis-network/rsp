@@ -34,6 +34,8 @@ bytes.workspace = true
 [dev-dependencies]
 hex-literal.workspace = true
 bincode = "1.3"
+# keccak-f[1600] in software, the permutation the sponge's tests run over
+keccak = "0.1"
 
 [features]
 default = ["execution-witness"]

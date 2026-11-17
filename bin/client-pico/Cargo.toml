@@ -1,4 +1,7 @@
-[workspace.package]
+[workspace]
+# The evm2 checkout that `prepare-evm2.sh` makes is a workspace of its own.
+exclude = ["evm2-pico"]
+
 [package]
 name = "rsp-client-pico"
 description = "The RSP client (on evm2) as a Pico guest."
@@ -12,12 +15,14 @@ rsp-client-executor = { path = "../../crates/executor/client", default-features 
     "native-keccak",
 ] }
 
+# Linked for its `memcmp`/`bcmp`/`__wrap_memset` symbols; see `build-guest.sh`.
+rsp-guest-mem = { path = "../../crates/guest-mem" }
+
 # pico
 pico-sdk = { git = "https://github.com/brevis-network/pico", branch = "rv64" }
 
-# The `native_keccak256` hook below hashes with this; the patch at the bottom makes its
-# permutation a Pico precompile call.
-tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+# The `native_keccak256` hook is this crate's sponge over the keccak-permute syscall.
+rsp-mpt = { path = "../../crates/mpt" }
 
 # Statically turns off logging
 log = { version = "0.4", features = ["max_level_off", "release_max_level_off"] }
@@ -29,8 +34,11 @@ default = []
 arena = ["rsp-client-executor/arena"]
 
 # Same redirections as reth v2.11.0's own manifest (a separate workspace does not inherit the root's).
+# evm2 at the revision reth v2.11.0 pins, with the changes in `evm2-patches/` for this target.
+# `prepare-evm2.sh` (run by `build-guest.sh`) checks it out into `evm2-pico/`. The host keeps
+# upstream evm2.
 [patch."https://github.com/alloy-rs/evm2"]
-evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "66687c18b34d3bdbb899f5eb7605070615c03475" }
+evm2 = { path = "evm2-pico/crates/evm2" }
 
 [patch.crates-io]
 reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
@@ -39,7 +47,6 @@ reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev
 reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
 # Pico precompile patches, the same set our `pico-rv64` branch uses.
 bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1-rv64" }
-bn = { git = "https://github.com/brevis-network/bn", package = "substrate-bn", branch = "patch-v1.0.2-rv64" }
 k256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "k256-0.13.4-rv64" }
 p256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "p256-0.13.2-rv64" }
 sha2 = { git = "https://github.com/brevis-network/hashes.git", package = "sha2", branch = "sha2-0.10.9-rv64" }

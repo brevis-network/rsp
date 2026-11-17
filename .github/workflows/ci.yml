@@ -27,7 +27,7 @@ jobs:
           cache-on-failure: true
       # `-p` rather than `--workspace`: the SP1 binaries need SP1's toolchain, and their tests
       # an Ethereum RPC.
-      - run: cargo test --release -p rsp-mpt -p rsp-client-executor
+      - run: cargo test --release -p rsp-mpt -p rsp-client-executor -p rsp-guest-mem
 
   fmt:
     name: fmt
