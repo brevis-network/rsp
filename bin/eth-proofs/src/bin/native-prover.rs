@@ -3,8 +3,8 @@
 //! It serves the same gRPC service, so `eth-proofs` talks to it unchanged. For each block it is
 //! sent it reads the input exactly as the Pico guest does, executes the block with the client
 //! executor (the code the guest runs), and checks that the header it derives is the block's.
-//! Nothing is proved: what it returns as the proof is the bincode of the header the guest would
-//! commit, and its verifier id is `native-client`.
+//! Nothing is proved: what it returns as the proof is the bincode of what the guest would commit
+//! (the header and the config digest), and its verifier id is `native-client`.
 //!
 //! It is for running the whole fetching side against a node without a GPU: every block that
 //! passes here is an input the guest accepts. Build it with the same witness backend as the
@@ -23,12 +23,7 @@ use pb::{
     ErrCode, ErrMsg, GetProveResultRequest, GetProveResultResponse, ProofInfo, ProofType,
     ProvingRequest, ProvingResponse,
 };
-use reth_chainspec::ChainSpec;
-use rsp_client_executor::{
-    executor::EthClientExecutor,
-    io::{CommittedHeader, EthClientExecutorInput},
-    stdin,
-};
+use rsp_client_executor::{executor::EthClientExecutor, io::EthClientExecutorInput, stdin};
 use tonic::{codec::CompressionEncoding, transport::Server, Request, Response, Status};
 use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -85,15 +80,13 @@ fn execute(block: u64, buffer: Vec<u8>) -> Result<Vec<u8>, String> {
         return Err(format!("the request names block {block} and its input is block {number}"));
     }
     let expected = input.current_block.header.hash_slow();
-    let chain_spec: ChainSpec =
-        (&input.genesis).try_into().map_err(|err| format!("chain spec: {err:?}"))?;
-    let executor = EthClientExecutor::eth(Arc::new(chain_spec), input.custom_beneficiary);
-    let header = executor.execute(input).map_err(|err| format!("the client failed: {err}"))?;
-    let derived = header.hash_slow();
+    let committed = EthClientExecutor::execute_committed(input)
+        .map_err(|err| format!("the client failed: {err}"))?;
+    let derived = committed.header.hash_slow();
     if derived != expected {
         return Err(format!("the client's header hashes to {derived}, the block is {expected}"));
     }
-    bincode::serialize(&CommittedHeader::from(header)).map_err(|err| err.to_string())
+    bincode::serialize(&committed).map_err(|err| err.to_string())
 }
 
 fn refusal(code: ErrCode, msg: String) -> Option<ErrMsg> {

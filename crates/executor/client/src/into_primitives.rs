@@ -5,7 +5,7 @@ use alloy_network::{Ethereum, Network};
 use alloy_primitives::B256;
 use reth_chainspec::{ChainSpec, EthChainSpec, NamedChain};
 use reth_consensus::HeaderValidator;
-use reth_consensus_common::validation::validate_body_against_header;
+use reth_consensus_common::validation::validate_block_pre_execution;
 use reth_errors::ConsensusError;
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_ethereum_primitives::EthPrimitives;
@@ -89,7 +89,13 @@ impl BlockValidator<ChainSpec> for EthPrimitives {
     ) -> Result<(), ConsensusError> {
         Self::validate_header(recovered.sealed_header(), chain_spec.clone())?;
 
-        validate_body_against_header(recovered.body(), recovered.header())?;
+        // What a block has to satisfy before it is executed, as reth checks it when it imports
+        // one. Comparing the body with the header's roots (`validate_body_against_header`) is
+        // only part of that: this also holds the header's `blob_gas_used` to the blob gas of
+        // the transactions (Cancun) and the block to the size limit (Osaka). Neither is
+        // looked at again later -- the header the client commits takes `blob_gas_used` from
+        // the input -- so without it a header that disagrees with its body is proved as it is.
+        validate_block_pre_execution(recovered.sealed_block(), chain_spec.as_ref())?;
 
         Ok(())
     }
@@ -146,5 +152,51 @@ fn handle_custom_chains(
             }
         }
         _ => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_consensus::{BlockBody, Header};
+    use reth_trie_common::EMPTY_ROOT_HASH;
+    use rsp_primitives::genesis::Genesis;
+
+    use super::*;
+
+    /// A mainnet block of the Cancun period with no transactions, whose header claims
+    /// `blob_gas_used`.
+    fn cancun_block(blob_gas_used: u64) -> RecoveredBlock<reth_ethereum_primitives::Block> {
+        let header = Header {
+            number: 20_000_000,
+            // Cancun (2024-03-13) is active, Prague (2025-05-07) is not.
+            timestamp: 1_720_000_000,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1_000_000_000),
+            withdrawals_root: Some(EMPTY_ROOT_HASH),
+            blob_gas_used: Some(blob_gas_used),
+            excess_blob_gas: Some(0),
+            parent_beacon_block_root: Some(B256::ZERO),
+            ..Default::default()
+        };
+        let body = BlockBody {
+            transactions: Vec::new(),
+            ommers: Vec::new(),
+            withdrawals: Some(Default::default()),
+        };
+        RecoveredBlock::new_unhashed(Block { header, body }, Vec::new())
+    }
+
+    /// The header's `blob_gas_used` is held to what the transactions use. The client copies the
+    /// field into the header it commits, and nothing after this point compares the two.
+    #[test]
+    fn a_header_whose_blob_gas_is_not_its_bodys_is_refused() {
+        let chain_spec: Arc<ChainSpec> = Arc::new((&Genesis::Mainnet).try_into().unwrap());
+
+        // No blob transaction, and a header that says so.
+        EthPrimitives::validate_block(&cancun_block(0), chain_spec.clone()).unwrap();
+
+        // No blob transaction, and a header that claims one blob's gas.
+        let refused = EthPrimitives::validate_block(&cancun_block(131_072), chain_spec);
+        assert!(matches!(refused, Err(ConsensusError::BlobGasUsedDiff(_))), "{refused:?}");
     }
 }

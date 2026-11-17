@@ -1,11 +1,12 @@
-//! Runs the client natively on saved inputs (the files a host wrote for the zkVM guest) and checks
-//! that the header it derives hashes to the hash of the block inside the input.
+//! Runs the client natively on saved inputs (the files a host wrote for the zkVM guest), through
+//! the entry point the guest uses, and checks that the header it derives hashes to the hash of
+//! the block inside the input. Prints the config digest the guest would commit with it.
 //!
 //! usage: exec_input <input.bin>...
 //! Each file is the one buffer a Pico guest reads from stdin (`rsp_client_executor::stdin`), and
 //! must come from a host built with the same witness backend.
 
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 
 use rsp_client_executor::{executor::EthClientExecutor, io::EthClientExecutorInput, stdin};
 
@@ -26,26 +27,23 @@ fn main() {
         let gas_used = input.current_block.header.gas_used;
         let transactions = input.current_block.body.transactions.len();
 
-        let executor = EthClientExecutor::eth(
-            Arc::new((&input.genesis).try_into().unwrap()),
-            input.custom_beneficiary,
-        );
         let started = Instant::now();
-        let outcome = executor.execute(input);
+        let outcome = EthClientExecutor::execute_committed(input);
         let seconds = started.elapsed().as_secs_f64();
         match outcome {
-            Ok(header) if header.hash_slow() == expected => {
+            Ok(committed) if committed.header.hash_slow() == expected => {
                 passed += 1;
                 println!(
-                    "{number} ok hash={expected} gas={:.1}M txs={transactions} client={seconds:.2}s",
-                    gas_used as f64 / 1e6
+                    "{number} ok hash={expected} gas={:.1}M txs={transactions} config={} client={seconds:.2}s",
+                    gas_used as f64 / 1e6,
+                    committed.config_digest
                 );
             }
-            Ok(header) => {
+            Ok(committed) => {
                 failed += 1;
                 println!(
                     "{number} FAILED header hashes to {}, the block is {expected}",
-                    header.hash_slow()
+                    committed.header.hash_slow()
                 );
             }
             Err(err) => {

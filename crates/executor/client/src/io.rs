@@ -62,13 +62,19 @@ mod block_rlp {
 
 /// Serde for contract code as its raw bytes.
 ///
-/// The code is analysed (jump table and all) when the input is read, in the client, so nothing
-/// about how it executes is taken from the host, and the wire format does not depend on the EVM
-/// implementation's own types.
+/// The wire form is the preimage of the code hash and nothing else. What kind of code it is (an
+/// EIP-7702 delegation or plain code), the address a delegation names and the jump table are all
+/// derived from those bytes in the client, so nothing about how the code executes is taken from
+/// the host: two values with the same hash are the same bytes, and so the same [`Bytecode`]. Our
+/// `pico-rv64` branch found what the alternative costs, where an analysed form on the wire let a
+/// forged jump table or delegation address execute under a legitimate contract's hash.
+///
+/// Bytes that start with the EIP-7702 magic and are not a delegation designator are refused, as
+/// an error of the decode.
 mod raw_bytecode {
     use alloy_primitives::Bytes;
     use evm2::bytecode::Bytecode;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
     use serde_with::{DeserializeAs, SerializeAs};
 
     pub(crate) struct RawBytecode;
@@ -84,9 +90,33 @@ mod raw_bytecode {
 
     impl<'de> DeserializeAs<'de, Bytecode> for RawBytecode {
         fn deserialize_as<D: Deserializer<'de>>(deserializer: D) -> Result<Bytecode, D::Error> {
-            Ok(Bytecode::new_raw(Bytes::deserialize(deserializer)?))
+            Bytecode::new_raw_checked(Bytes::deserialize(deserializer)?).map_err(D::Error::custom)
         }
     }
+}
+
+/// Domain tag for [`ClientExecutorInput::config_digest`]'s keccak preimage. Versioned, so that
+/// changing what the digest covers does not silently keep the old value valid.
+pub const CONFIG_DIGEST_DOMAIN: &[u8] = b"rsp/config-digest/v1";
+
+/// The digest over the three wire fields that change execution and leave no trace in the
+/// committed header. See [`CommittedHeader`].
+///
+/// Two distinct properties. Bincode's tuple framing length-delimits the fields, so no two
+/// configurations share an encoding -- but that says nothing about anything *outside* this
+/// preimage, and the guest keccaks trie nodes, bytecodes and trie keys with the same function.
+/// [`CONFIG_DIGEST_DOMAIN`] supplies the separation; being fixed-length, the split between tag
+/// and payload is unambiguous.
+///
+/// Fallible because `Genesis::Custom(ChainConfig)` carries prover-supplied structure.
+pub fn config_digest(
+    genesis: &Genesis,
+    custom_beneficiary: &Option<Address>,
+    opcode_tracking: bool,
+) -> Result<B256, ClientError> {
+    let mut preimage = Vec::from(CONFIG_DIGEST_DOMAIN);
+    bincode::serialize_into(&mut preimage, &(genesis, custom_beneficiary, opcode_tracking))?;
+    Ok(keccak256(preimage))
 }
 
 pub type EthClientExecutorInput = ClientExecutorInput<EthPrimitives>;
@@ -137,6 +167,12 @@ impl<P: NodePrimitives> ClientExecutorInput<P> {
     #[inline(always)]
     pub fn parent_header(&self) -> &Header {
         &self.ancestor_headers[0]
+    }
+
+    /// The digest of the fields of this input that configure the run: [`config_digest`] over
+    /// `genesis`, `custom_beneficiary` and `opcode_tracking`.
+    pub fn config_digest(&self) -> Result<B256, ClientError> {
+        config_digest(&self.genesis, &self.custom_beneficiary, self.opcode_tracking)
     }
 
     /// Creates a [`TrieDB`] backed by the legacy pointer-based [`EthereumState`].
@@ -207,17 +243,40 @@ impl<P: NodePrimitives> WitnessInput for ClientExecutorInput<P> {
     }
 }
 
-// The headed committed at the end of execution
+/// What the guest commits: the derived header, **and a digest of the wire fields that change
+/// execution but are invisible in it**.
+///
+/// The header alone does not identify the statement proved. Every field but the state root is
+/// copied verbatim from the prover's block header, so the header says "this input is
+/// self-consistent", not "this is mainnet block N". Pinning the header hash against a canonical
+/// block closes most of that, but three wire fields leave no trace in it at all:
+///
+/// * [`ClientExecutorInput::genesis`] becomes the whole `ChainSpec`: a chain id with the fork
+///   ladder lowered or raised runs the block under other rules, and the header it derives can be
+///   the same.
+/// * [`ClientExecutorInput::custom_beneficiary`] replaces the block's beneficiary for the whole
+///   execution, while the committed header takes `beneficiary` from the block header. (This
+///   build refuses one; the field is on the wire and stays in the digest.)
+/// * [`ClientExecutorInput::opcode_tracking`] selects another execution path. (Refused by this
+///   build too.)
+///
+/// The digest says which configuration ran; what a verifier should *accept* is integration
+/// policy. The layout is the one our `pico-rv64` branch commits, and the digest of a mainnet run
+/// is the same value there and here.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommittedHeader {
     #[serde_as(as = "alloy_consensus::serde_bincode_compat::Header")]
     pub header: Header,
+    /// `keccak256` of [`CONFIG_DIGEST_DOMAIN`] followed by the bincode encoding of
+    /// `(genesis, custom_beneficiary, opcode_tracking)`; see [`config_digest`].
+    pub config_digest: B256,
 }
 
-impl From<Header> for CommittedHeader {
-    fn from(header: Header) -> Self {
-        CommittedHeader { header }
+impl CommittedHeader {
+    /// Builds the committed value from a derived header and the configuration it ran under.
+    pub fn new(header: Header, config_digest: B256) -> Self {
+        Self { header, config_digest }
     }
 }
 
@@ -342,4 +401,139 @@ pub trait WitnessInput {
     /// Gets an iterator over references to a consecutive, reverse-chronological block headers
     /// starting from the current block header.
     fn sealed_headers(&self) -> impl Iterator<Item = SealedHeader>;
+}
+
+#[cfg(test)]
+mod raw_bytecode_tests {
+    use alloy_primitives::{address, bytes, Bytes};
+
+    use super::*;
+
+    /// A list of codes on the wire, as [`ClientExecutorInput::bytecodes`] is.
+    #[serde_as]
+    #[derive(Serialize, Deserialize)]
+    struct Codes(#[serde_as(as = "Vec<raw_bytecode::RawBytecode>")] Vec<Bytecode>);
+
+    fn over_the_wire(codes: Vec<Bytecode>) -> Result<Vec<Bytecode>, bincode::Error> {
+        let wire = bincode::serialize(&Codes(codes))?;
+        bincode::deserialize::<Codes>(&wire).map(|codes| codes.0)
+    }
+
+    /// What arrives is a function of the bytes the code hash covers: the wire carries them and
+    /// nothing else, so there is nothing to vary while holding the hash fixed.
+    #[test]
+    fn the_wire_form_is_the_hashed_preimage() {
+        // PUSH1 4 JUMP INVALID JUMPDEST STOP, then a PUSH32 cut short at the end of the code
+        let plain = bytes!("600456fe5b007f0102");
+        let delegation =
+            Bytecode::new_eip7702(address!("00000000000000000000000000000000cafebabe"));
+        let codes = vec![
+            Bytecode::new_raw(plain.clone()),
+            delegation.clone(),
+            Bytecode::new_raw(Bytes::new()),
+        ];
+
+        // On the wire: a count, then each code as its length and its bytes.
+        let wire = bincode::serialize(&Codes(codes.clone())).unwrap();
+        let mut expected = 3u64.to_le_bytes().to_vec();
+        for code in &codes {
+            let raw = code.original_bytes();
+            expected.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+            expected.extend_from_slice(&raw);
+        }
+        assert_eq!(wire, expected);
+
+        let received = over_the_wire(codes.clone()).unwrap();
+        assert_eq!(received.len(), 3);
+        for (sent, got) in codes.iter().zip(&received) {
+            assert_eq!(got.original_bytes(), sent.original_bytes());
+            assert_eq!(got.hash_slow(), keccak256(sent.original_bytes()));
+        }
+        // The kind and the delegated address come out of the bytes.
+        assert_eq!(received[0].eip7702_address(), None);
+        assert_eq!(received[1].eip7702_address(), delegation.eip7702_address());
+        assert!(received[1].eip7702_address().is_some());
+    }
+
+    /// Bytes with the EIP-7702 magic that are not a delegation designator are refused by the
+    /// decode, as an error rather than a panic.
+    #[test]
+    fn a_malformed_7702_designator_is_refused() {
+        let designator =
+            Bytecode::new_eip7702(address!("00000000000000000000000000000000cafebabe"))
+                .original_bytes();
+        // one byte short, one byte long, and an unknown version
+        let mut wrong_version = designator.to_vec();
+        wrong_version[2] = 1;
+        for malformed in [
+            designator.slice(..designator.len() - 1),
+            [&designator[..], &[0u8][..]].concat().into(),
+            Bytes::from(wrong_version),
+        ] {
+            // `Bytecode::new_legacy` takes any bytes, which is how one gets onto the wire.
+            let sent = vec![Bytecode::new_legacy(malformed)];
+            assert!(over_the_wire(sent).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod committed_header_tests {
+    use alloy_primitives::address;
+
+    use super::*;
+
+    /// Each of the three wire fields the committed header cannot show must move the digest.
+    ///
+    /// This is the property that makes the commitment say *which chain's rules ran*: without
+    /// it, `genesis` could be swapped for one whose fork ladder differs and the committed header
+    /// would be identical.
+    #[test]
+    fn the_config_digest_separates_every_field_it_covers() {
+        let base = config_digest(&Genesis::Mainnet, &None, false).unwrap();
+
+        assert_ne!(config_digest(&Genesis::Sepolia, &None, false).unwrap(), base, "genesis");
+        assert_ne!(
+            config_digest(&Genesis::Linea, &None, false).unwrap(),
+            base,
+            "genesis (the custom-chain escape hatch)"
+        );
+
+        let beneficiary = Some(address!("00000000000000000000000000000000cafebabe"));
+        let with_beneficiary = config_digest(&Genesis::Mainnet, &beneficiary, false).unwrap();
+        assert_ne!(with_beneficiary, base, "custom_beneficiary");
+        let other = Some(address!("00000000000000000000000000000000cafebabf"));
+        assert_ne!(
+            config_digest(&Genesis::Mainnet, &other, false).unwrap(),
+            with_beneficiary,
+            "custom_beneficiary value"
+        );
+
+        assert_ne!(config_digest(&Genesis::Mainnet, &None, true).unwrap(), base, "opcode_tracking");
+    }
+
+    /// The preimage is domain-separated. Bincode length-delimits *within* the tuple; it cannot
+    /// stop the encoding from also being a valid preimage somewhere else in a guest that keccaks
+    /// trie nodes, bytecodes and trie keys with the same function.
+    #[test]
+    fn the_config_digest_preimage_is_domain_tagged() {
+        let bare = bincode::serialize(&(&Genesis::Mainnet, &None::<Address>, false)).unwrap();
+        let digest = config_digest(&Genesis::Mainnet, &None, false).unwrap();
+        assert_ne!(digest, keccak256(&bare), "the digest is keccak of the untagged encoding");
+
+        let mut tagged = Vec::from(CONFIG_DIGEST_DOMAIN);
+        tagged.extend_from_slice(&bare);
+        assert_eq!(digest, keccak256(&tagged));
+    }
+
+    /// The digest of a mainnet run is the value our `pico-rv64` branch commits for one, so
+    /// whatever pins it there keeps holding. (Its `Genesis` has `OpMainnet` between `Mainnet` and
+    /// `Sepolia`; a Sepolia run therefore has another digest here than there.)
+    #[test]
+    fn the_mainnet_digest_is_the_one_our_pico_rv64_branch_commits() {
+        // variant 0 of the enum, no beneficiary, no opcode tracking
+        let mut preimage = Vec::from(CONFIG_DIGEST_DOMAIN);
+        preimage.extend_from_slice(&[0u8; 4 + 1 + 1]);
+        assert_eq!(config_digest(&Genesis::Mainnet, &None, false).unwrap(), keccak256(&preimage));
+    }
 }

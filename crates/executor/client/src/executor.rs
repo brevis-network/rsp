@@ -22,7 +22,7 @@ use crate::{
     custom::CustomCrypto,
     error::ClientError,
     into_primitives::FromInput,
-    io::{ClientExecutorInput, WitnessInput},
+    io::{ClientExecutorInput, CommittedHeader, WitnessInput},
     BlockValidator,
 };
 
@@ -283,5 +283,22 @@ impl EthClientExecutor {
         install_crypto(CustomCrypto::default());
 
         Self { evm_config: EthEvmConfig::new(chain_spec.clone()), chain_spec }
+    }
+
+    /// Executes `input` under the configuration it names, and returns what a guest commits: the
+    /// header it derives, with the digest of that configuration.
+    ///
+    /// The executor is built here, from the input's own `genesis` and `custom_beneficiary`, so
+    /// the digest covers exactly what configured the run, and a guest that goes through this
+    /// cannot leave the digest off. `genesis`, `custom_beneficiary` and `opcode_tracking` change
+    /// execution and appear nowhere in the header; see [`CommittedHeader`].
+    pub fn execute_committed(
+        input: crate::io::EthClientExecutorInput,
+    ) -> Result<CommittedHeader, ClientError> {
+        let config_digest = input.config_digest()?;
+        let chain_spec: ChainSpec = (&input.genesis).try_into()?;
+        let executor = Self::eth(Arc::new(chain_spec), input.custom_beneficiary);
+        let header = executor.execute(input)?;
+        Ok(CommittedHeader::new(header, config_digest))
     }
 }

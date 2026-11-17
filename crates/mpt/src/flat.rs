@@ -979,8 +979,9 @@ impl FlatStateViews<'_> {
             HashMap::with_capacity_and_hasher(self.storage.len(), Default::default());
         for (hashed_address, view) in &self.storage {
             let trie = match post_state.storages.get(hashed_address) {
-                // The slots of a wiped storage are applied to the empty trie.
-                Some(_) if wiped.contains(hashed_address) => MptNode::default(),
+                // The slots of a wiped storage, if the block wrote any, are applied to the
+                // empty trie.
+                _ if wiped.contains(hashed_address) => MptNode::default(),
                 Some(st) => {
                     let keys: Vec<(B256, bool)> =
                         st.storage.iter().map(|(k, v)| (*k, v.is_zero())).collect();
@@ -1688,6 +1689,104 @@ mod tests {
             views.post_state_root(&post_wiped, &[contract]).unwrap(),
             overlay_root(&post_wiped, &[contract]).unwrap()
         );
+    }
+
+    /// An account destroyed in the block and alive at its end starts over from the empty storage
+    /// trie, whether or not the post state has a `storages` entry for it, and on both paths.
+    ///
+    /// The client gives every destroyed account an entry (`hashed_post_state`), so what this
+    /// pins is that the answer does not depend on it: without one, the row used to keep the
+    /// storage root the account had before it was destroyed.
+    #[test]
+    fn a_wiped_account_starts_from_the_empty_storage_trie() {
+        let mut storage = MptNode::default();
+        for i in 0..40usize {
+            storage.insert_rlp(&keccak(i.to_be_bytes()), U256::from(i + 3)).unwrap();
+        }
+        let storage_root = storage.hash();
+        assert_ne!(storage_root, EMPTY_ROOT);
+
+        let witnessed = B256::from(keccak(b"destroyed, storage trie in the witness"));
+        let unwitnessed = B256::from(keccak(b"destroyed, no storage trie in the witness"));
+        let mut state_trie = MptNode::default();
+        for address in [witnessed, unwitnessed] {
+            state_trie
+                .insert_rlp(
+                    address.as_slice(),
+                    TrieAccount {
+                        nonce: 1,
+                        balance: U256::from(100),
+                        storage_root,
+                        code_hash: B256::repeat_byte(0xcd),
+                    },
+                )
+                .unwrap();
+        }
+        for i in 0..30usize {
+            state_trie
+                .insert_rlp(
+                    &keccak((2000 + i).to_be_bytes()),
+                    TrieAccount {
+                        nonce: i as u64,
+                        balance: U256::from(i),
+                        storage_root: EMPTY_ROOT,
+                        code_hash: KECCAK_EMPTY,
+                    },
+                )
+                .unwrap();
+        }
+
+        let flat = FlatEthereumState {
+            state_nodes: Cow::Owned(flatten_trie(&state_trie)),
+            storage_tries: vec![FlatStorageEntry {
+                hashed_address: witnessed,
+                nodes: Cow::Owned(flatten_trie(&storage)),
+            }],
+        };
+        let views = flat.views().unwrap();
+        let overlay_root = |p: &HashedPostState, wiped: &[B256]| -> Result<B256, Error> {
+            let mut overlay = views.materialize_overlay(p, wiped)?;
+            overlay.update(p);
+            Ok(overlay.state_root())
+        };
+
+        // Both accounts were destroyed and created again; nothing was written to their storage.
+        let recreated = || Account { nonce: 1, balance: U256::from(7), bytecode_hash: None };
+        let mut post = HashedPostState::default();
+        post.accounts.insert(witnessed, Some(recreated()));
+        post.accounts.insert(unwitnessed, Some(recreated()));
+        let wiped = [witnessed, unwitnessed];
+
+        let row = |storage_root| TrieAccount {
+            nonce: 1,
+            balance: U256::from(7),
+            storage_root,
+            code_hash: KECCAK_EMPTY,
+        };
+        let mut expected = state_trie.clone();
+        for address in wiped {
+            expected.insert_rlp(address.as_slice(), row(EMPTY_ROOT)).unwrap();
+        }
+
+        // without `storages` entries
+        assert_eq!(views.post_state_root(&post, &wiped).unwrap(), expected.hash());
+        assert_eq!(overlay_root(&post, &wiped).unwrap(), expected.hash());
+
+        // with empty ones, as the client passes them
+        let mut with_entries = post.clone();
+        for address in wiped {
+            with_entries.storages.insert(address, HashedStorage::default());
+        }
+        assert_eq!(views.post_state_root(&with_entries, &wiped).unwrap(), expected.hash());
+        assert_eq!(overlay_root(&with_entries, &wiped).unwrap(), expected.hash());
+
+        // And the same post state for accounts that were not destroyed keeps their storage.
+        let mut kept = state_trie.clone();
+        for address in wiped {
+            kept.insert_rlp(address.as_slice(), row(storage_root)).unwrap();
+        }
+        assert_eq!(views.post_state_root(&post, &[]).unwrap(), kept.hash());
+        assert_eq!(overlay_root(&post, &[]).unwrap(), kept.hash());
     }
 
     /// Applies ops to a graph trie (reference) and via delta_root; roots must agree.
@@ -2692,6 +2791,11 @@ impl FlatStateViews<'_> {
                                 }
                             }
                         }
+                        // A destroyed account that no slot was written to since starts over
+                        // from the empty trie. The client gives every destroyed account an
+                        // entry in `storages`, which takes the arm above; this keeps the answer
+                        // right for a caller that does not.
+                        None if wiped.contains(hashed_address) => FLAT_EMPTY_ROOT,
                         // Unchanged storage: the row keeps the root it already had. Taking
                         // `EMPTY_ROOT` when there is no witnessed trie wipes it instead.
                         None => match self.storage.get(hashed_address) {

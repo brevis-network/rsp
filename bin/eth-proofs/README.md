@@ -47,6 +47,12 @@ that many proofs.
 The input is one buffer: the witness blob, the bincode-serialized client input, and the blob's
 length (`rsp_client_executor::stdin`).
 
+The service reads the system's CA certificates when it starts, for plain `http://` and `ws://`
+endpoints too: the HTTP client loads them when it is built, and without them the service stops
+with `No CA certificates were loaded from the system`. A container image that has none needs
+`ca-certificates` installed or the host's bundle mounted
+(`-v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro`).
+
 The node has to serve `debug_executionWitness` (`--state-backend execution-witness`, the
 default). On reth that request is cheap at the head and grows with the block's distance from
 it, so a service that falls far behind should skip blocks, which `--max-queued-blocks` does,
