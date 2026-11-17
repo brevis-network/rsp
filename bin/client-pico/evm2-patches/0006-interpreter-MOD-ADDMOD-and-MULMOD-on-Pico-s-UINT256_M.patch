@@ -1,0 +1,395 @@
+From f0afbe1b8d71ea1d7368543ed41891d2d9f4674c Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Sat, 14 Nov 2026 11:55:44 +0000
+Subject: [PATCH] interpreter: MOD, ADDMOD and MULMOD on Pico's UINT256_MUL
+ precompile
+
+ruint divides 512 bits by 256 in software: over a thousand riscv64im
+instructions for one MULMOD, and ADDMOD reduces an operand at or above
+the modulus with the same division. In a Pico guest (x * y) % m is one
+call of the UINT256_MUL precompile, and a reduction is that call with
+y = 1.
+
+Two rules of the precompile decide how it is called. A modulus of 0
+means 2^256 to it, and the opcodes define a modulus of 0 to give 0, so
+that case never reaches it. Its chip proves x * y = q * m + r with q in
+256 bits, so it can prove a call only when the product is below
+m * 2^256: that holds when one operand is below the modulus, and MULMOD
+with both at or above it reduces one first. An operand below 2n is
+reduced by a subtraction, and a numerator below 2^128 over a divisor
+below 2^32 by four hardware remainders, without a call.
+
+DIV, SDIV and SMOD stay on ruint. Off the Pico guest nothing changes;
+with --cfg evm2_as_on_riscv64 a host runs the same code over a model of
+the precompile that refuses a call its chip could not prove.
+
+Measured in a Pico guest: 158.489 M to 158.130 M instructions a block
+on 13 mainnet blocks, where the three opcodes run 1,136 times a block,
+and 570.2 M to 540.5 M on 45 Sepolia blocks, where they run 55,592
+times.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ crates/evm2/build.rs                          |   3 +-
+ .../interpreter/instructions/arithmetic.rs    | 295 +++++++++++++++++-
+ 2 files changed, 294 insertions(+), 4 deletions(-)
+
+diff --git a/crates/evm2/build.rs b/crates/evm2/build.rs
+index d8897a7e..e77714c3 100644
+--- a/crates/evm2/build.rs
++++ b/crates/evm2/build.rs
+@@ -8,7 +8,8 @@ fn main() {
+     }
+     // Set by hand (`RUSTFLAGS="--cfg evm2_as_on_riscv64"`): takes, on any target, the paths that
+     // are otherwise riscv64's and do not depend on the target, so that the test suites of a host
+-    // run them.
++    // run them. MOD, ADDMOD and MULMOD then run as in a Pico guest, over a model of its
++    // UINT256_MUL precompile.
+     println!("cargo:rustc-check-cfg=cfg(evm2_as_on_riscv64)");
+     println!("cargo:rerun-if-changed=build.rs");
+ 
+diff --git a/crates/evm2/src/interpreter/instructions/arithmetic.rs b/crates/evm2/src/interpreter/instructions/arithmetic.rs
+index d84c91c8..4b6062d3 100644
+--- a/crates/evm2/src/interpreter/instructions/arithmetic.rs
++++ b/crates/evm2/src/interpreter/instructions/arithmetic.rs
+@@ -29,7 +29,7 @@ pub fn sdiv([a, b]: [Word]) -> out {
+ 
+ #[instruction]
+ pub fn rem([a, b]: [Word]) -> out {
+-    out.write(if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) });
++    out.write(if b.is_zero() { Word::ZERO } else { rem_nonzero(*a, *b) });
+ }
+ 
+ #[instruction]
+@@ -39,12 +39,195 @@ pub fn smod([a, b]: [Word]) -> out {
+ 
+ #[instruction]
+ pub fn addmod([a, b, n]: [Word]) -> out {
+-    out.write(a.add_mod(*b, *n));
++    out.write(add_mod(*a, *b, *n));
+ }
+ 
+ #[instruction]
+ pub fn mulmod([a, b, n]: [Word]) -> out {
+-    out.write(a.mul_mod(*b, *n));
++    out.write(mul_mod(*a, *b, *n));
++}
++
++// ---- MOD, ADDMOD and MULMOD ---------------------------------------------------------------
++//
++// ruint divides 512 bits by 256 in software. On riscv64im that is over a thousand instructions
++// for one MULMOD, and ADDMOD reduces an operand at or above the modulus with the same division.
++// In a Pico guest `(x * y) % m` is one call of the UINT256_MUL precompile, and a reduction is
++// that call with `y = 1`.
++//
++// Two rules of the precompile decide how it is called.
++//
++// A modulus of 0 means 2^256 to it. The opcodes define a modulus of 0 to give 0, so that case
++// never reaches it.
++//
++// Its chip proves `x * y = q * m + r` with `q` in 256 bits, so it can prove a call only when the
++// product is below `m * 2^256`. That holds when one operand is below the modulus, which covers
++// `a * 1` for every `a`. MULMOD with both operands at or above the modulus reduces one first.
++//
++// DIV, SDIV and SMOD stay on ruint: the precompile has no quotient to give, and the signed pair
++// is rare.
++//
++// Off the Pico guest nothing changes, unless the build asks for the guest's paths
++// (`--cfg evm2_as_on_riscv64`). Then the same code runs over a model of the precompile that
++// refuses a call its chip could not prove, which is how the tests of a host reach it.
++
++/// `a % n` for a non-zero `n`.
++#[cfg(not(any(all(target_os = "zkvm", target_vendor = "pico"), evm2_as_on_riscv64)))]
++#[inline(always)]
++fn rem_nonzero(a: Word, n: Word) -> Word {
++    a.wrapping_rem(n)
++}
++
++/// `(a + b) % n` as ADDMOD defines it: 0 when `n` is 0.
++#[cfg(not(any(all(target_os = "zkvm", target_vendor = "pico"), evm2_as_on_riscv64)))]
++#[inline(always)]
++fn add_mod(a: Word, b: Word, n: Word) -> Word {
++    a.add_mod(b, n)
++}
++
++/// `(a * b) % n` as MULMOD defines it: 0 when `n` is 0.
++#[cfg(not(any(all(target_os = "zkvm", target_vendor = "pico"), evm2_as_on_riscv64)))]
++#[inline(always)]
++fn mul_mod(a: Word, b: Word, n: Word) -> Word {
++    a.mul_mod(b, n)
++}
++
++#[cfg(any(all(target_os = "zkvm", target_vendor = "pico"), evm2_as_on_riscv64))]
++use uint256_mul::{add_mod, mul_mod, rem_nonzero};
++
++#[cfg(any(all(target_os = "zkvm", target_vendor = "pico"), evm2_as_on_riscv64))]
++mod uint256_mul {
++    use super::Word;
++    use core::num::NonZeroU64;
++
++    #[cfg(all(target_os = "zkvm", target_vendor = "pico"))]
++    unsafe extern "C" {
++        /// pico-sdk's `riscv_ecalls/uint256_mul.rs`, which every Pico guest links. `x` becomes
++        /// `(x * y) % m`, where `y` points at `y` and then `m`: eight little-endian limbs.
++        fn syscall_uint256_mulmod(x: *mut [u64; 4], y: *const [u64; 4]);
++    }
++
++    /// The precompile, for a host: `x` becomes `(x * y) % m`, where a modulus of 0 stands for
++    /// 2^256. It panics on a call the chip could not prove, one whose quotient has more than
++    /// 256 bits, so that a test which makes such a call fails.
++    #[cfg(not(all(target_os = "zkvm", target_vendor = "pico")))]
++    unsafe fn syscall_uint256_mulmod(x: *mut [u64; 4], y: *const [u64; 4]) {
++        use alloy_primitives::U512;
++        // SAFETY: the caller passes four limbs at `x` and eight at `y`.
++        let (a, ym) = unsafe { (Word::from_limbs(*x), &*y.cast::<[u64; 8]>()) };
++        let b = Word::from_limbs([ym[0], ym[1], ym[2], ym[3]]);
++        let m = Word::from_limbs([ym[4], ym[5], ym[6], ym[7]]);
++        let product = a.widening_mul::<256, 4, 512, 8>(b);
++        let remainder = if m.is_zero() {
++            product
++        } else {
++            let (quotient, remainder) = product.div_rem(U512::from(m));
++            assert!(
++                quotient.bit_len() <= 256,
++                "UINT256_MUL cannot prove ({a} * {b}) % {m}: the quotient has {} bits",
++                quotient.bit_len()
++            );
++            remainder
++        };
++        // The low 256 bits: all of a remainder, and the product modulo 2^256.
++        let limbs = remainder.as_limbs();
++        // SAFETY: as above.
++        unsafe { *x = [limbs[0], limbs[1], limbs[2], limbs[3]] };
++    }
++
++    /// `(x * y) % m` in one call, for a non-zero `m` and `x * y < m * 2^256`.
++    #[inline(always)]
++    fn call(x: Word, y: Word, m: Word) -> Word {
++        let mut out = x.into_limbs();
++        let [y0, y1, y2, y3] = y.into_limbs();
++        let [m0, m1, m2, m3] = m.into_limbs();
++        let y_and_m = [y0, y1, y2, y3, m0, m1, m2, m3];
++        // SAFETY: `out` is four limbs and `y_and_m` eight, both aligned to eight bytes, which is
++        // what the precompile reads and writes.
++        unsafe { syscall_uint256_mulmod(&mut out, y_and_m.as_ptr().cast()) };
++        Word::from_limbs(out)
++    }
++
++    /// `a % n` for a non-zero `n`: nothing for an operand below `n`, one subtraction for one
++    /// below `2n`, a call for the rest.
++    #[inline(always)]
++    fn reduce(a: Word, n: Word) -> Word {
++        if a < n {
++            return a;
++        }
++        let once = a.wrapping_sub(n);
++        if once < n { once } else { call(a, Word::ONE, n) }
++    }
++
++    /// `n % d` for `n = n1 * 2^64 + n0` and a `d` below 2^32: long division over four 32-bit
++    /// digits, each step one hardware remainder. A step divides `r * 2^32 + digit` with
++    /// `r < d`, which is below `d * 2^32` and so fits 64 bits.
++    #[inline(always)]
++    fn rem_128_by_32(n0: u64, n1: u64, d: NonZeroU64) -> u64 {
++        const DIGIT: u64 = 0xffff_ffff;
++        let mut r = (n1 >> 32) % d;
++        r = ((r << 32) | (n1 & DIGIT)) % d;
++        r = ((r << 32) | (n0 >> 32)) % d;
++        ((r << 32) | (n0 & DIGIT)) % d
++    }
++
++    /// `a % n` for a non-zero `n`.
++    ///
++    /// A numerator below 2^128 over a divisor below 2^32 never reaches the precompile: riscv64
++    /// has a 64-bit divider and no wider one, and this shape is four of its remainders.
++    #[inline(always)]
++    pub(super) fn rem_nonzero(a: Word, n: Word) -> Word {
++        let (al, nl) = (a.as_limbs(), n.as_limbs());
++        if (al[2] | al[3] | nl[1] | nl[2] | nl[3] | (nl[0] >> 32)) == 0
++            && let Some(d) = NonZeroU64::new(nl[0])
++        {
++            return Word::from_limbs([rem_128_by_32(al[0], al[1], d), 0, 0, 0]);
++        }
++        reduce(a, n)
++    }
++
++    /// `(a + b) % n` as ADDMOD defines it: 0 when `n` is 0.
++    #[inline(always)]
++    pub(super) fn add_mod(a: Word, b: Word, n: Word) -> Word {
++        if n.is_zero() {
++            return Word::ZERO;
++        }
++        let (a, b) = (reduce(a, n), reduce(b, n));
++        // Both are below `n`, so the sum is below `2n` and one subtraction ends it. A carry out
++        // of bit 255 means the sum is at least `n`.
++        let (sum, carry) = a.overflowing_add(b);
++        if carry || sum >= n { sum.wrapping_sub(n) } else { sum }
++    }
++
++    /// `(a * b) % n` as MULMOD defines it: 0 when `n` is 0.
++    #[inline(always)]
++    pub(super) fn mul_mod(a: Word, b: Word, n: Word) -> Word {
++        if n.is_zero() {
++            return Word::ZERO;
++        }
++        // One operand below `n` is what the precompile needs.
++        let a = if a >= n && b >= n { reduce(a, n) } else { a };
++        call(a, b, n)
++    }
++
++    #[cfg(test)]
++    mod tests {
++        use super::{Word, call};
++
++        /// What MULMOD's first reduction is for: with both operands at or above the modulus
++        /// the quotient has more than 256 bits, and the precompile's chip cannot prove the call.
++        #[test]
++        #[should_panic(expected = "UINT256_MUL cannot prove")]
++        fn a_call_with_both_operands_above_the_modulus_is_refused() {
++            call(Word::MAX, Word::MAX, Word::from(3));
++        }
++
++        #[test]
++        fn a_call_with_one_operand_below_the_modulus_is_not() {
++            let n = Word::MAX - Word::from(188);
++            assert_eq!(call(n - Word::ONE, Word::MAX, n), (n - Word::ONE).mul_mod(Word::MAX, n));
++            assert_eq!(call(Word::MAX, Word::ONE, Word::from(3)), Word::MAX % Word::from(3));
++        }
++    }
+ }
+ 
+ #[instruction(dynamic_gas)]
+@@ -115,6 +298,9 @@ mod tests {
+         assert_stack!(MOD(7, 3), 1);
+         assert_stack!(MOD(7, 0), 0);
+         assert_stack!(MOD(9, 3), 0);
++        assert_stack!(MOD(neg(1), 0xffff_ffffu64), 0);
++        assert_stack!(MOD(neg(1), neg(2)), 1);
++        assert_stack!(MOD(neg(1), neg(1) >> 1usize), 1);
+     }
+ 
+     #[test]
+@@ -130,6 +316,9 @@ mod tests {
+         assert_stack!(ADDMOD(5, 6, 7), 4);
+         assert_stack!(ADDMOD(neg(1), 1, 9), 7);
+         assert_stack!(ADDMOD(1, 2, 0), 0);
++        assert_stack!(ADDMOD(neg(1), neg(1), neg(1)), 0);
++        assert_stack!(ADDMOD(neg(1), neg(2), neg(1)), neg(2));
++        assert_stack!(ADDMOD(neg(2), neg(2), neg(1)), neg(3));
+     }
+ 
+     #[test]
+@@ -137,6 +326,10 @@ mod tests {
+         assert_stack!(MULMOD(5, 6, 7), 2);
+         assert_stack!(MULMOD(neg(1), 2, 9), 3);
+         assert_stack!(MULMOD(2, 3, 0), 0);
++        assert_stack!(MULMOD(neg(1), neg(1), neg(1)), 0);
++        assert_stack!(MULMOD(neg(1), neg(1), 3), 0);
++        assert_stack!(MULMOD(neg(1), neg(1), neg(2)), 1);
++        assert_stack!(MULMOD(neg(2), neg(3), neg(1)), 2);
+     }
+ 
+     #[test]
+@@ -179,3 +372,99 @@ mod tests {
+         assert_stack!(SIGNEXTEND(31, 0x80), 0x80);
+     }
+ }
++
++/// MOD, ADDMOD and MULMOD against ruint, whichever way this build computes them. With
++/// `--cfg evm2_as_on_riscv64` that is the Pico guest's way, over the model of the precompile.
++#[cfg(test)]
++mod modular_tests {
++    use super::{add_mod, mul_mod, rem_nonzero};
++    use crate::interpreter::Word;
++    use alloc::vec::Vec;
++
++    struct Rng(u64);
++
++    impl Rng {
++        fn next(&mut self) -> u64 {
++            self.0 ^= self.0 << 13;
++            self.0 ^= self.0 >> 7;
++            self.0 ^= self.0 << 17;
++            self.0
++        }
++
++        /// A word of a random width, so that short, middling and full operands all come up.
++        fn word(&mut self) -> Word {
++            let word = Word::from_limbs([self.next(), self.next(), self.next(), self.next()]);
++            match self.next() % 258 {
++                0 => Word::ZERO,
++                257 => Word::MAX,
++                bits => word >> (256 - bits as usize),
++            }
++        }
++    }
++
++    fn check(a: Word, b: Word, n: Word) {
++        if !n.is_zero() {
++            assert_eq!(rem_nonzero(a, n), a.wrapping_rem(n), "{a} % {n}");
++        }
++        assert_eq!(add_mod(a, b, n), a.add_mod(b, n), "({a} + {b}) % {n}");
++        assert_eq!(mul_mod(a, b, n), a.mul_mod(b, n), "({a} * {b}) % {n}");
++    }
++
++    /// The values the three cases of a reduction turn on, and those the short division does.
++    fn edges() -> Vec<Word> {
++        let mut edges = Vec::new();
++        for bits in [0usize, 1, 2, 31, 32, 33, 63, 64, 65, 127, 128, 129, 191, 192, 255] {
++            let power = Word::ONE << bits;
++            edges.extend([power - Word::ONE, power, power + Word::ONE]);
++        }
++        edges.extend([Word::MAX - Word::ONE, Word::MAX]);
++        edges.sort();
++        edges.dedup();
++        edges
++    }
++
++    #[test]
++    fn at_the_edges() {
++        let edges = edges();
++        assert_eq!(edges.len(), 44);
++        for &a in &edges {
++            for &b in &edges {
++                for &n in &edges {
++                    check(a, b, n);
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn on_random_operands() {
++        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
++        for _ in 0..200_000 {
++            let (a, b, n) = (rng.word(), rng.word(), rng.word());
++            check(a, b, n);
++        }
++    }
++
++    /// Operands one step to either side of the modulus and of twice the modulus, where a
++    /// reduction changes from nothing to a subtraction to a call.
++    #[test]
++    fn around_the_modulus() {
++        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
++        let near = |n: Word, rng: &mut Rng| {
++            let k = Word::from(rng.next() % 3);
++            match rng.next() % 6 {
++                0 => n.wrapping_sub(k),
++                1 => n.wrapping_add(k),
++                2 => n.wrapping_add(n).wrapping_sub(k),
++                3 => n.wrapping_add(n).wrapping_add(k),
++                4 => n.wrapping_mul(Word::from(rng.next())).wrapping_add(k),
++                _ => rng.word(),
++            }
++        };
++        for _ in 0..200_000 {
++            let n = rng.word();
++            let (a, b) = (near(n, &mut rng), near(n, &mut rng));
++            check(a, b, n);
++        }
++    }
++}
+-- 
+2.43.0
+

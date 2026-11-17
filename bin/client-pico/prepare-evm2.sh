@@ -9,6 +9,8 @@
 # behaviour; the static gas charge relies on a gas counter below 2^63 and asserts it when a frame
 # starts to run. The host keeps upstream evm2.
 #
+# 0006 is for the Pico guest alone: MOD, ADDMOD and MULMOD run on its UINT256_MUL precompile.
+#
 # 0005 changes nothing in the guest. It adds a cfg with which a host build of the patched evm2
 # charges static gas as 0003 does, so that evm2's own unit tests and its EEST runner run that
 # code (on a nightly rustc, which gives the tail-call dispatch the guest uses):

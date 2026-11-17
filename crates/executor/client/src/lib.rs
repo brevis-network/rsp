@@ -12,6 +12,7 @@ pub mod custom;
 pub mod eip2537;
 pub mod error;
 pub mod executor;
+pub mod modexp;
 pub mod stdin;
 
 mod into_primitives;

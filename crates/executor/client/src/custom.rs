@@ -6,7 +6,8 @@
 //! [`CustomCrypto`] sends each of those precompiles there; left to evm2 they would run in
 //! software. Outside the guest the same code runs as plain Rust.
 //!
-//! The KZG point evaluation is on kzg-rs.
+//! The KZG point evaluation is on kzg-rs. MODEXP of at most 256 bits runs on the UINT256_MUL
+//! precompile, in the guest only; see [`crate::modexp`].
 
 use alloy_primitives::keccak256;
 use evm2::precompiles::{Crypto, PrecompileHalt};
@@ -80,6 +81,16 @@ impl Crypto for CustomCrypto {
     #[cfg(target_os = "zkvm")]
     fn bn254_pairing_check(&self, pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
         crate::bn254::pairing_check(pairs)
+    }
+
+    // MODEXP of at most 256 bits, in the guest only; see `crate::modexp`.
+
+    #[cfg(target_os = "zkvm")]
+    fn modexp(&self, base: &[u8], exp: &[u8], modulus: &[u8]) -> Result<Vec<u8>, PrecompileHalt> {
+        match crate::modexp::on_uint256_mul(base, exp, modulus) {
+            Some(output) => Ok(output),
+            None => evm2::precompiles::DefaultCrypto::new().modexp(base, exp, modulus),
+        }
     }
 
     // EIP-2537; see `crate::eip2537`.
