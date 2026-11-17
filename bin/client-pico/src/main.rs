@@ -57,19 +57,11 @@ mod zkvm_generated_main {
 
 pub fn main() {
     // Read the input. brevis-vm's provers hand the guest one buffer for a block: the witness
-    // blob (of the arena and flat backends), the bincode-serialized input, and the blob's length
-    // (`rsp_client_executor::stdin`). The blob stays where it was read; nothing copies it.
-    let input = profile_report!(DESERIALZE_INPUTS, {
-        let (input, witness) = stdin::split(pico_sdk::io::read_vec(), |bytes| {
-            bincode::deserialize::<EthClientExecutorInput>(bytes).unwrap()
-        })
-        .expect("the input is not a joined buffer");
-        #[cfg(any(feature = "arena", feature = "flat"))]
-        let input = EthClientExecutorInput { parent_state: witness, ..input };
-        // A blob here means the host was built with another witness backend than this guest.
-        #[cfg(not(any(feature = "arena", feature = "flat")))]
-        assert!(witness.is_empty(), "the default backend takes no witness blob");
-        input
+    // blob (of the arena and flat backends), the contract codes, and the bincode-serialized rest
+    // (`rsp_client_executor::stdin`). The blob and the codes stay where they were read; nothing
+    // copies them.
+    let input: EthClientExecutorInput = profile_report!(DESERIALZE_INPUTS, {
+        stdin::read(pico_sdk::io::read_vec().into()).expect("the input does not read")
     });
 
     // Execute the block under the chain configuration the input names.

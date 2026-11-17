@@ -8,6 +8,7 @@ pub mod io;
 #[macro_use]
 pub mod utils;
 pub mod bn254;
+pub mod codes;
 pub mod custom;
 pub mod eip2537;
 pub mod error;

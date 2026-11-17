@@ -14,14 +14,8 @@ fn main() {
     let (mut passed, mut failed) = (0u32, 0u32);
     for path in std::env::args().skip(1) {
         let buffer = std::fs::read(&path).expect("read input");
-        let (input, witness) = stdin::split(buffer, |bytes| {
-            bincode::deserialize::<EthClientExecutorInput>(bytes).expect("decode input")
-        })
-        .expect("the file is not a joined input buffer");
-        #[cfg(any(feature = "arena", feature = "flat"))]
-        let input = EthClientExecutorInput { parent_state: witness, ..input };
-        #[cfg(not(any(feature = "arena", feature = "flat")))]
-        assert!(witness.is_empty(), "the default backend takes no witness blob");
+        let input: EthClientExecutorInput =
+            stdin::read(buffer.into()).expect("the file does not read as an input");
         let expected = input.current_block.header.hash_slow();
         let number = input.current_block.header.number;
         let gas_used = input.current_block.header.gas_used;

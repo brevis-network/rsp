@@ -26,7 +26,7 @@ pub fn main() {
         {
             let header_bytes = sp1_zkvm::io::read_vec();
             let mut input: EthClientExecutorInput = bincode::deserialize(&header_bytes).unwrap();
-            input.parent_state = sp1_zkvm::io::read_vec();
+            input.parent_state = sp1_zkvm::io::read_vec().into();
             input
         }
     });

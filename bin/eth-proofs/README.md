@@ -44,8 +44,9 @@ another chain. `--stdin-dir` keeps every input as the prover was sent it (`<bloc
 brevis-vm's `MLE_INPUT_DIR` reads), `--proof-dir` every proof, and `--max-blocks` stops after
 that many proofs.
 
-The input is one buffer: the witness blob, the bincode-serialized client input, and the blob's
-length (`rsp_client_executor::stdin`).
+The input is one buffer: the witness blob, the contract codes laid out for the guest to run them
+where they are, and the bincode-serialized rest of the client input
+(`rsp_client_executor::stdin`).
 
 The service reads the system's CA certificates when it starts, for plain `http://` and `ws://`
 endpoints too: the HTTP client loads them when it is built, and without them the service stops

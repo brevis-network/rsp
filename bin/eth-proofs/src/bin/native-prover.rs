@@ -60,20 +60,8 @@ struct Service {
 
 /// What the guest does with its input, up to the header it commits.
 fn execute(block: u64, buffer: Vec<u8>) -> Result<Vec<u8>, String> {
-    let (input, witness) =
-        stdin::split(buffer, |bytes| bincode::deserialize::<EthClientExecutorInput>(bytes))
-            .ok_or("the input is not a joined buffer")?;
-    let input = input.map_err(|err| format!("the input does not decode: {err}"))?;
-    #[cfg(any(feature = "arena", feature = "flat"))]
-    let input = EthClientExecutorInput { parent_state: witness, ..input };
-    #[cfg(not(any(feature = "arena", feature = "flat")))]
-    {
-        if !witness.is_empty() {
-            return Err("the input carries a witness blob, which the default backend does not \
-                        take; was the host built with another backend?"
-                .into());
-        }
-    }
+    let input: EthClientExecutorInput =
+        stdin::read(buffer.into()).map_err(|err| err.to_string())?;
 
     let number = input.current_block.header.number;
     if number != block {

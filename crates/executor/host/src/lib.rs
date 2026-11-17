@@ -42,18 +42,22 @@ pub fn create_eth_block_execution_strategy_factory(
 }
 
 /// The client input as the one buffer a Pico guest reads from stdin: the witness blob (of the
-/// `arena` and `flat` backends), the bincode-serialized input, and the blob's length. See
-/// [`rsp_client_executor::stdin`].
+/// `arena` and `flat` backends), the contract codes, and the bincode-serialized rest of the
+/// input. See [`rsp_client_executor::stdin`].
 pub fn single_buffer_stdin<P>(client_input: &ClientExecutorInput<P>) -> bincode::Result<Vec<u8>>
 where
     P: NodePrimitives,
-    ClientExecutorInput<P>: serde::Serialize,
+    ClientExecutorInput<P>: serde::Serialize + Clone,
 {
     #[cfg(any(feature = "arena", feature = "flat"))]
     let witness: &[u8] = &client_input.parent_state;
     #[cfg(not(any(feature = "arena", feature = "flat")))]
     let witness: &[u8] = &[];
-    Ok(rsp_client_executor::stdin::join(&bincode::serialize(client_input)?, witness))
+    // The codes go in their own section, laid out for the guest to run them in place.
+    let codes = rsp_client_executor::codes::write(&client_input.bytecodes);
+    let mut rest = client_input.clone();
+    rest.bytecodes = Vec::new();
+    Ok(rsp_client_executor::stdin::join(&bincode::serialize(&rest)?, witness, &codes))
 }
 
 /// How the host fetches the state needed to execute a block.

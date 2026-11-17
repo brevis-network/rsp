@@ -2,6 +2,8 @@ use std::iter::once;
 
 use alloy_consensus::{Block, BlockHeader, Header};
 use alloy_primitives::map::HashMap;
+#[cfg(any(feature = "arena", feature = "flat"))]
+use alloy_primitives::Bytes;
 use alloy_primitives::{keccak256, Address, B256, U256};
 use evm2::{
     bytecode::Bytecode,
@@ -150,7 +152,7 @@ pub struct ClientExecutorInput<P: NodePrimitives> {
     pub parent_state: EthereumState,
     #[cfg(any(feature = "arena", feature = "flat"))]
     #[serde(skip, default)]
-    pub parent_state: Vec<u8>,
+    pub parent_state: Bytes,
     /// Account bytecodes, on the wire as raw bytes.
     #[serde_as(as = "Vec<raw_bytecode::RawBytecode>")]
     pub bytecodes: Vec<Bytecode>,
