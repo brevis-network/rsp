@@ -3,8 +3,8 @@
 use alloy_consensus::Header;
 use alloy_provider::Network;
 use async_trait::async_trait;
-use revm_database::{BundleState, DatabaseRef};
-use revm_state::Bytecode;
+use evm2::{bytecode::Bytecode, evm::DatabaseRef};
+use reth_evm::BundleState;
 use rsp_mpt::EthereumState;
 
 mod basic;

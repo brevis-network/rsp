@@ -1,12 +1,33 @@
+/// Prints the marker that opens a profiled span in the zkVM's output. SP1 has two spellings
+/// (`report` adds the span to its execution report); Pico's cycle tracker knows one.
+#[cfg(target_os = "zkvm")]
+pub fn span_start(name: &str, report: bool) {
+    if cfg!(target_vendor = "pico") || !report {
+        println!("cycle-tracker-start: {name}");
+    } else {
+        println!("cycle-tracker-report-start: {name}");
+    }
+}
+
+/// Prints the marker that closes a span opened with [`span_start`].
+#[cfg(target_os = "zkvm")]
+pub fn span_end(name: &str, report: bool) {
+    if cfg!(target_vendor = "pico") || !report {
+        println!("cycle-tracker-end: {name}");
+    } else {
+        println!("cycle-tracker-report-end: {name}");
+    }
+}
+
 /// Profile the given code block cycle count.
 #[macro_export]
 macro_rules! profile {
     ($name:expr, $block:block) => {{
         #[cfg(target_os = "zkvm")]
         {
-            println!("cycle-tracker-start: {}", $name);
+            $crate::utils::span_start($name, false);
             let result = (|| $block)();
-            println!("cycle-tracker-end: {}", $name);
+            $crate::utils::span_end($name, false);
             result
         }
 
@@ -23,9 +44,9 @@ macro_rules! profile_report {
     ($name:expr, $block:block) => {{
         #[cfg(target_os = "zkvm")]
         {
-            println!("cycle-tracker-report-start: {}", $name);
+            $crate::utils::span_start($name, true);
             let result = (|| $block)();
-            println!("cycle-tracker-report-end: {}", $name);
+            $crate::utils::span_end($name, true);
             result
         }
 

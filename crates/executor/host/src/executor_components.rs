@@ -8,7 +8,9 @@ use reth_ethereum_primitives::EthPrimitives;
 use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::EthEvmConfig;
 use reth_primitives_traits::NodePrimitives;
-use rsp_client_executor::{custom::CustomEvmFactory, BlockValidator, IntoInput, IntoPrimitives};
+use rsp_client_executor::{
+    executor::ExecutorFactoryAccess, BlockValidator, IntoInput, IntoPrimitives,
+};
 use rsp_primitives::genesis::Genesis;
 use serde::de::DeserializeOwned;
 use sp1_sdk::{env::EnvProver, Prover};
@@ -26,7 +28,7 @@ pub trait ExecutorComponents {
         + IntoInput
         + BlockValidator<Self::ChainSpec>;
 
-    type EvmConfig: ConfigureEvm<Primitives = Self::Primitives>;
+    type EvmConfig: ConfigureEvm<Primitives = Self::Primitives> + ExecutorFactoryAccess;
 
     type ChainSpec;
 
@@ -51,7 +53,7 @@ where
 
     type Primitives = EthPrimitives;
 
-    type EvmConfig = EthEvmConfig<ChainSpec, CustomEvmFactory>;
+    type EvmConfig = EthEvmConfig<ChainSpec>;
 
     type ChainSpec = ChainSpec;
 

@@ -2,28 +2,25 @@ use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader, Header, TxReceipt};
 use alloy_network::BlockResponse;
-use alloy_primitives::{Bloom, Sealable};
+use alloy_primitives::{Address, Bloom, Sealable};
 use alloy_provider::{Network, Provider};
+use evm2::evm::{DatabaseRef, DbRef};
 use reth_chainspec::ChainSpec;
-use reth_evm::{
-    execute::{BasicBlockExecutor, Executor},
-    ConfigureEvm,
-};
+use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::EthEvmConfig;
 use reth_primitives_traits::{Block, BlockBody, NodePrimitives, SealedHeader};
 use reth_storage_errors::provider::ProviderError;
-use reth_trie::{HashedPostState, KeccakKeyHasher};
-use revm::{database::CacheDB, DatabaseRef};
-use revm_primitives::Address;
 use rsp_client_executor::{
-    custom::CustomEvmFactory, io::ClientExecutorInput, BlockValidator, IntoInput, IntoPrimitives,
+    executor::{execute_block, hashed_post_state, ExecutorFactoryAccess},
+    io::ClientExecutorInput,
+    BlockValidator, IntoInput, IntoPrimitives,
 };
 use rsp_primitives::genesis::Genesis;
 use rsp_rpc_db::RpcDb;
 
 use crate::{HostError, StateBackend};
 
-pub type EthHostExecutor = HostExecutor<EthEvmConfig<ChainSpec, CustomEvmFactory>, ChainSpec>;
+pub type EthHostExecutor = HostExecutor<EthEvmConfig<ChainSpec>, ChainSpec>;
 
 /// An executor that fetches data from a [Provider] to execute blocks in the [ClientExecutor].
 #[derive(Debug, Clone)]
@@ -33,18 +30,14 @@ pub struct HostExecutor<C: ConfigureEvm, CS> {
 }
 
 impl EthHostExecutor {
+    /// `custom_beneficiary` is for Clique chains, which this build does not support.
     pub fn eth(chain_spec: Arc<ChainSpec>, custom_beneficiary: Option<Address>) -> Self {
-        Self {
-            evm_config: EthEvmConfig::new_with_evm_factory(
-                chain_spec.clone(),
-                CustomEvmFactory::new(custom_beneficiary),
-            ),
-            chain_spec,
-        }
+        assert!(custom_beneficiary.is_none(), "a custom beneficiary is not supported on evm2");
+        Self { evm_config: EthEvmConfig::new(chain_spec.clone()), chain_spec }
     }
 }
 
-impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
+impl<C: ExecutorFactoryAccess, CS> HostExecutor<C, CS> {
     /// Creates a new [HostExecutor].
     pub fn new(evm_config: C, chain_spec: Arc<CS>) -> Self {
         Self { evm_config, chain_spec }
@@ -143,10 +136,6 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
     {
         let block_number = current_block.header().number();
 
-        let cache_db = CacheDB::new(&rpc_db);
-
-        let block_executor = BasicBlockExecutor::new(self.evm_config.clone(), cache_db);
-
         // Execute the block and fetch all the necessary data along the way.
         tracing::info!(
             "executing the block with rpc db: block_number={}, transaction_count={}",
@@ -168,7 +157,10 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             self.chain_spec.clone(),
         )?;
 
-        let execution_output = block_executor.execute(&block)?;
+        // evm2's state layer keeps every account, bytecode and slot it has read for the rest of
+        // the block, so each is fetched once and no cache is needed in front of the RPC database.
+        let (execution_output, block_access_list_hash) =
+            execute_block(&self.evm_config, &block, DbRef::new(&rpc_db))?;
 
         // Validate the block post execution.
         tracing::info!("validating the block post execution");
@@ -176,6 +168,7 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             &block,
             self.chain_spec.clone(),
             &execution_output,
+            block_access_list_hash,
         )?;
 
         // Accumulate the logs bloom.
@@ -191,9 +184,11 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
         tracing::info!("verifying the state root");
         let state_root = {
             let mut mutated_state = state.clone();
-            mutated_state.update(&HashedPostState::from_bundle_state::<KeccakKeyHasher>(
-                &execution_output.state.state,
-            ));
+            let (post_state, wiped_storages) = hashed_post_state(&execution_output.state);
+            for hashed_address in wiped_storages {
+                mutated_state.clear_storage(hashed_address);
+            }
+            mutated_state.update(&post_state);
             mutated_state.state_root()
         };
         if state_root != current_block.header().state_root() {
@@ -228,8 +223,8 @@ impl<C: ConfigureEvm, CS> HostExecutor<C, CS> {
             excess_blob_gas: current_block.header().excess_blob_gas(),
             parent_beacon_block_root: current_block.header().parent_beacon_block_root(),
             requests_hash: current_block.header().requests_hash(),
-            block_access_list_hash: None,
-            slot_number: None,
+            block_access_list_hash: current_block.header().block_access_list_hash(),
+            slot_number: current_block.header().slot_number(),
         };
 
         let ancestor_headers = rpc_db.ancestor_headers().await?;

@@ -11,8 +11,12 @@ pub enum ClientError {
     MismatchedStateRoot,
     #[error("Mismatched storage root after executing the block")]
     MismatchedStorageRoot,
+    #[error("The block access list has {} items, the block gas limit allows {}", .0, .1)]
+    BlockAccessListTooLarge(u64, u64),
     #[error("unknown chain ID: {}", .0)]
     UnknownChainId(u64),
+    #[error("opcode tracking is not available on evm2")]
+    OpcodeTrackingUnsupported,
     #[error("Missing bytecode for account {}", .0)]
     MissingBytecode(Address),
     #[error("Missing trie for address {}", .0)]

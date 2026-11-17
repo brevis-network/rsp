@@ -1,11 +1,10 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use alloy_chains::Chain;
+use alloy_primitives::Address;
 pub use error::Error as HostError;
 use reth_chainspec::ChainSpec;
 use reth_evm_ethereum::EthEvmConfig;
-use revm_primitives::Address;
-use rsp_client_executor::custom::CustomEvmFactory;
 use rsp_primitives::genesis::Genesis;
 use sp1_sdk::SP1ProofMode;
 use std::{path::PathBuf, sync::Arc};
@@ -28,13 +27,16 @@ pub use hooks::ExecutionHooks;
 mod host_executor;
 pub use host_executor::{EthHostExecutor, HostExecutor};
 
+/// `custom_beneficiary` is for Clique chains, which this build does not support: it runs reth's
+/// stock Ethereum EVM configuration.
 pub fn create_eth_block_execution_strategy_factory(
     genesis: &Genesis,
     custom_beneficiary: Option<Address>,
-) -> EthEvmConfig<ChainSpec, CustomEvmFactory> {
+) -> EthEvmConfig<ChainSpec> {
+    assert!(custom_beneficiary.is_none(), "a custom beneficiary is not supported on evm2");
     let chain_spec: Arc<ChainSpec> = Arc::new(genesis.try_into().unwrap());
 
-    EthEvmConfig::new_with_evm_factory(chain_spec, CustomEvmFactory::new(custom_beneficiary))
+    EthEvmConfig::new(chain_spec)
 }
 
 /// How the host fetches the state needed to execute a block.

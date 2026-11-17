@@ -17,7 +17,5 @@ alloy-primitives = { workspace = true, features = ["serde"] }
 # reth
 reth-storage-errors.workspace = true
 
-# revm
-revm-database-interface.workspace = true
-revm-primitives.workspace = true
-revm-state = { workspace = true, features = ["serde"] }
+# evm2
+evm2 = { workspace = true, features = ["serde"] }

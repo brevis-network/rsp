@@ -2,16 +2,16 @@ use std::iter::once;
 
 use alloy_consensus::{Block, BlockHeader, Header};
 use alloy_primitives::map::HashMap;
+use alloy_primitives::{keccak256, Address, B256, U256};
+use evm2::{
+    bytecode::Bytecode,
+    evm::{AccountInfo, DatabaseRef},
+};
 use itertools::Itertools;
 use reth_errors::ProviderError;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_primitives_traits::{NodePrimitives, SealedHeader};
-use reth_trie::EMPTY_ROOT_HASH;
-use revm::{
-    state::{AccountInfo, Bytecode},
-    DatabaseRef,
-};
-use revm_primitives::{keccak256, Address, B256, U256};
+use reth_trie_common::EMPTY_ROOT_HASH;
 use rsp_mpt::StateTries;
 use rsp_primitives::genesis::Genesis;
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,35 @@ mod block_rlp {
     }
 }
 
+/// Serde for contract code as its raw bytes.
+///
+/// The code is analysed (jump table and all) when the input is read, in the client, so nothing
+/// about how it executes is taken from the host, and the wire format does not depend on the EVM
+/// implementation's own types.
+mod raw_bytecode {
+    use alloy_primitives::Bytes;
+    use evm2::bytecode::Bytecode;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_with::{DeserializeAs, SerializeAs};
+
+    pub(crate) struct RawBytecode;
+
+    impl SerializeAs<Bytecode> for RawBytecode {
+        fn serialize_as<S: Serializer>(
+            source: &Bytecode,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            source.original_bytes().serialize(serializer)
+        }
+    }
+
+    impl<'de> DeserializeAs<'de, Bytecode> for RawBytecode {
+        fn deserialize_as<D: Deserializer<'de>>(deserializer: D) -> Result<Bytecode, D::Error> {
+            Ok(Bytecode::new_raw(Bytes::deserialize(deserializer)?))
+        }
+    }
+}
+
 pub type EthClientExecutorInput = ClientExecutorInput<EthPrimitives>;
 
 /// The input for the client to execute a block and fully verify the STF (state transition
@@ -88,7 +117,8 @@ pub struct ClientExecutorInput<P: NodePrimitives> {
     #[cfg(feature = "arena")]
     #[serde(skip, default)]
     pub parent_state: Vec<u8>,
-    /// Account bytecodes.
+    /// Account bytecodes, on the wire as raw bytes.
+    #[serde_as(as = "Vec<raw_bytecode::RawBytecode>")]
     pub bytecodes: Vec<Bytecode>,
     /// The genesis block, as a json string.
     pub genesis: Genesis,
@@ -168,7 +198,7 @@ impl From<Header> for CommittedHeader {
     }
 }
 
-/// Witness-backed database revm reads from during execution. Generic over the state-trie backend
+/// Witness-backed database the EVM reads from during execution. Generic over the state-trie backend
 /// `T` (the legacy [`EthereumState`] or the arena [`ArenaTries`]) via the [`StateTries`] trait.
 #[derive(Debug)]
 pub struct TrieDB<'a, T: StateTries> {
@@ -192,41 +222,42 @@ impl<T: StateTries> DatabaseRef for TrieDB<'_, T> {
     type Error = ProviderError;
 
     /// Get basic account information.
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+    fn get_account(&self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
         let account_in_trie = self.inner.account(keccak256(address));
 
-        let account = account_in_trie.map(|account_in_trie| AccountInfo {
-            balance: account_in_trie.balance,
-            nonce: account_in_trie.nonce,
-            code_hash: account_in_trie.code_hash,
-            account_id: None,
-            code: None,
+        let account = account_in_trie.map(|account_in_trie| {
+            AccountInfo::new(
+                account_in_trie.balance,
+                account_in_trie.nonce,
+                account_in_trie.code_hash,
+                None,
+            )
         });
 
         Ok(account)
     }
 
     /// Get account code by its hash.
-    fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, Self::Error> {
-        Ok(self.bytecode_by_hash.get(&hash).map(|code| (*code).clone()).unwrap())
+    fn get_code_by_hash(&self, hash: &B256) -> Result<Bytecode, Self::Error> {
+        Ok(self.bytecode_by_hash.get(hash).map(|code| (*code).clone()).unwrap())
     }
 
     /// Get storage value of address at index.
-    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
+    fn get_storage(&self, address: &Address, index: &U256) -> Result<U256, Self::Error> {
         Ok(self.inner.storage_value(keccak256(address), keccak256(index.to_be_bytes::<32>())))
     }
 
     /// Get block hash by block number.
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+    fn get_block_hash(&self, number: &U256) -> Result<B256, Self::Error> {
         Ok(*self
             .block_hashes
-            .get(&number)
+            .get(&number.to::<u64>())
             .expect("A block hash must be provided for each block number"))
     }
 }
 
 /// Verifies the state/storage roots, ancestor headers and account bytecodes of a [`StateTries`]
-/// backend, and constructs the [`TrieDB`] revm reads against during execution.
+/// backend, and constructs the [`TrieDB`] the EVM reads against during execution.
 ///
 /// NOTE: For some unknown reasons, calling this via a bare trait method (rather than from a method
 /// on the input type) causes a zkVM run to cost over 5M cycles more. The per-backend `witness_db`

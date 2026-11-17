@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use alloy_consensus::{Block, Header, TxEnvelope};
 use alloy_network::{Ethereum, Network};
+use alloy_primitives::B256;
 use reth_chainspec::{ChainSpec, EthChainSpec, NamedChain};
 use reth_consensus::HeaderValidator;
 use reth_consensus_common::validation::validate_body_against_header;
@@ -39,10 +40,13 @@ pub trait BlockValidator<CS>: NodePrimitives {
         chain_spec: Arc<CS>,
     ) -> Result<(), ConsensusError>;
 
+    /// `block_access_list_hash` is the hash of the access list that executing the block
+    /// produced (EIP-7928); `None` before Amsterdam.
     fn validate_block_post_execution(
         block: &RecoveredBlock<Self::Block>,
         chain_spec: Arc<CS>,
         execution_output: &BlockExecutionOutput<Self::Receipt>,
+        block_access_list_hash: Option<B256>,
     ) -> Result<(), ConsensusError>;
 }
 
@@ -104,12 +108,14 @@ impl BlockValidator<ChainSpec> for EthPrimitives {
         block: &RecoveredBlock<Self::Block>,
         chain_spec: Arc<ChainSpec>,
         execution_output: &BlockExecutionOutput<Self::Receipt>,
+        block_access_list_hash: Option<B256>,
     ) -> Result<(), ConsensusError> {
         reth_ethereum_consensus::validate_block_post_execution(
             block,
             &chain_spec,
             &execution_output.result,
             None,
+            block_access_list_hash,
         )
     }
 }
@@ -131,8 +137,8 @@ fn handle_custom_chains(
             // Skip extra data and Merge difficulty checks for Linea chains
             if matches!(
                 err,
-                ConsensusError::ExtraDataExceedsMax { .. } |
-                    ConsensusError::TheMergeDifficultyIsNotZero
+                ConsensusError::ExtraDataExceedsMax { .. }
+                    | ConsensusError::TheMergeDifficultyIsNotZero
             ) {
                 Ok(())
             } else {

@@ -9,7 +9,7 @@ use reth_chainspec::{
     holesky::{HOLESKY_BPO1_TIMESTAMP, HOLESKY_BPO2_TIMESTAMP},
     mainnet::{MAINNET_BPO1_TIMESTAMP, MAINNET_BPO2_TIMESTAMP},
     sepolia::{SEPOLIA_BPO1_TIMESTAMP, SEPOLIA_BPO2_TIMESTAMP},
-    BaseFeeParams, BaseFeeParamsKind, Chain, ChainSpec, EthereumHardfork,
+    BaseFeeParams, BaseFeeParamsKind, Chain, ChainSpec, DepositContract, EthereumHardfork,
     MAINNET_PRUNE_DELETE_LIMIT,
 };
 use serde::{Deserialize, Serialize};
@@ -104,7 +104,15 @@ impl TryFrom<&Genesis> for ChainSpec {
                     genesis_header: Default::default(),
                     paris_block_and_final_difficulty: Default::default(),
                     hardforks: EthereumHardfork::sepolia().into(),
-                    deposit_contract: Default::default(),
+                    // Same as reth's `SEPOLIA` spec. Left unset, deposits would be looked for at
+                    // the mainnet deposit contract address.
+                    deposit_contract: Some(DepositContract::new(
+                        alloy_primitives::address!("0x7f02c3e3c98b133055b8b348b2ac625669ed295d"),
+                        1273020,
+                        alloy_primitives::b256!(
+                            "0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5"
+                        ),
+                    )),
                     base_fee_params: BaseFeeParamsKind::Constant(BaseFeeParams::ethereum()),
                     prune_delete_limit: 10000,
                     blob_params: BlobScheduleBlobParams::default().with_scheduled([

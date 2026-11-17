@@ -1,6 +1,6 @@
 use alloy_primitives::{map::HashMap, B256, U256};
 use reth_primitives_traits::Account;
-use reth_trie::{HashedPostState, HashedStorage};
+use reth_trie_common::{HashedPostState, HashedStorage};
 use rsp_mpt::EthereumState;
 
 fn main() {
@@ -25,7 +25,7 @@ fn main() {
     );
 
     // Add storage to create storage tries with multiple slots
-    let mut storage = HashedStorage::new(false);
+    let mut storage = HashedStorage::default();
     storage.storage.insert(B256::from([0x01; 32]), U256::from(100));
     storage.storage.insert(B256::from([0x02; 32]), U256::from(200));
     post_state.storages.insert(B256::from([0xAA; 32]), storage);

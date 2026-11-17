@@ -1,0 +1,55 @@
+[workspace.package]
+[package]
+name = "rsp-client-pico"
+description = "The RSP client (on evm2) as a Pico guest."
+edition = "2021"
+
+[dependencies]
+bincode = "1.3.3"
+
+# workspace
+rsp-client-executor = { path = "../../crates/executor/client", default-features = false, features = [
+    "native-keccak",
+] }
+
+# pico
+pico-sdk = { git = "https://github.com/brevis-network/pico", branch = "rv64" }
+
+# The `native_keccak256` hook below hashes with this; the patch at the bottom makes its
+# permutation a Pico precompile call.
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+
+# Statically turns off logging
+log = { version = "0.4", features = ["max_level_off", "release_max_level_off"] }
+tracing = { version = "0.1", features = ["max_level_off", "release_max_level_off"] }
+
+[features]
+default = []
+# Arena-based MPT backend; the host must emit the matching witness (`rsp-host-executor/arena`).
+arena = ["rsp-client-executor/arena"]
+
+# Same redirections as reth v2.11.0's own manifest (a separate workspace does not inherit the root's).
+[patch."https://github.com/alloy-rs/evm2"]
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "66687c18b34d3bdbb899f5eb7605070615c03475" }
+
+[patch.crates-io]
+reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+# Pico precompile patches, the same set our `pico-rv64` branch uses.
+bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1-rv64" }
+bn = { git = "https://github.com/brevis-network/bn", package = "substrate-bn", branch = "patch-v1.0.2-rv64" }
+k256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "k256-0.13.4-rv64" }
+p256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "p256-0.13.2-rv64" }
+sha2 = { git = "https://github.com/brevis-network/hashes.git", package = "sha2", branch = "sha2-0.10.9-rv64" }
+sha3 = { git = "https://github.com/brevis-network/hashes.git", branch = "sha3-0.10.8-v1.0.0-rv64" }
+tiny-keccak = { git = "https://github.com/brevis-network/tiny-keccak", branch = "patch-v1.0.0-rv64" }
+# crates.io's kzg-rs is built on SP1's bls12_381 and SP1 syscalls; this branch uses the patched bls12_381 above.
+kzg-rs = { git = "https://github.com/brevis-network/kzg-rs", branch = "pico-v0.2.8-rv64" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = true

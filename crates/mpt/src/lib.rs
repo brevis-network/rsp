@@ -3,7 +3,7 @@
 use alloy_primitives::{keccak256, map::HashMap, Address, B256, U256};
 use alloy_rlp::Decodable;
 use alloy_rpc_types::EIP1186AccountProofResponse;
-use reth_trie::{AccountProof, HashedPostState, HashedStorage, TrieAccount};
+use reth_trie_common::{AccountProof, HashedPostState, TrieAccount};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "execution-witness")]
@@ -96,16 +96,25 @@ impl EthereumState {
         Self { state_trie, storage_tries }
     }
 
+    /// Empties the storage trie of an account that was destroyed during the block.
+    ///
+    /// reth's [`HashedPostState`] no longer carries a per-storage `wiped` marker (it did up to
+    /// reth 2.2), so the caller has to say which storages were wiped: call this for every
+    /// destroyed account before [`Self::update`], and give the account an (empty) entry in
+    /// `post_state.storages` so that `update` rebuilds its storage root from the emptied trie.
+    pub fn clear_storage(&mut self, hashed_address: B256) {
+        self.storage_tries.insert(hashed_address, MptNode::default());
+    }
+
     /// Mutates state based on diffs provided in [`HashedPostState`].
+    ///
+    /// Storages of destroyed accounts must have been emptied with [`Self::clear_storage`] first.
     pub fn update(&mut self, post_state: &HashedPostState) {
         for (hashed_address, account) in post_state.accounts.iter() {
             match account {
                 Some(account) => {
-                    let state_storage = &post_state
-                        .storages
-                        .get(hashed_address)
-                        .cloned()
-                        .unwrap_or_else(|| HashedStorage::new(false));
+                    let state_storage =
+                        &post_state.storages.get(hashed_address).cloned().unwrap_or_default();
                     let storage_root = {
                         let storage_trie =
                             self.storage_tries.entry(*hashed_address).or_insert_with(|| {
@@ -114,10 +123,6 @@ impl EthereumState {
                                     hashed_address,
                                 ))
                             });
-
-                        if state_storage.wiped {
-                            storage_trie.clear();
-                        }
 
                         for (key, value) in state_storage.storage.iter() {
                             let key = key.as_slice();
@@ -308,6 +313,12 @@ impl<'a> ArenaTries<'a> {
 }
 
 impl ArenaTries<'_> {
+    /// Empties the storage trie of an account that was destroyed during the block (mirrors
+    /// [`EthereumState::clear_storage`]; see there for why the caller has to do this).
+    pub fn clear_storage(&mut self, hashed_address: B256) {
+        self.storage_tries.insert(hashed_address, arena::Mpt::new(self.bump));
+    }
+
     /// Mutates state based on diffs provided in [`HashedPostState`] (mirrors
     /// [`EthereumState::update`] on the arena tries).
     ///
@@ -322,7 +333,7 @@ impl ArenaTries<'_> {
         type AcctRef<'a> = (
             &'a B256,
             Option<&'a reth_primitives_traits::Account>,
-            Option<&'a reth_trie::HashedStorage>,
+            Option<&'a reth_trie_common::HashedStorage>,
         );
 
         let mut accounts_sorted: Vec<AcctRef<'_>> = post_state
@@ -347,7 +358,7 @@ impl ArenaTries<'_> {
         for entry in &accounts_sorted {
             let hashed_address: &B256 = entry.0;
             let Some(account) = entry.1 else { continue };
-            let storage_change: Option<&reth_trie::HashedStorage> = entry.2;
+            let storage_change: Option<&reth_trie_common::HashedStorage> = entry.2;
 
             let storage_root = if let Some(ss) = storage_change {
                 // Storage touched — apply two-pass canonical update to the storage trie.
@@ -355,10 +366,6 @@ impl ArenaTries<'_> {
                     .storage_tries
                     .entry(*hashed_address)
                     .or_insert_with(|| arena::Mpt::new(self.bump));
-                if ss.wiped {
-                    *storage_trie = arena::Mpt::new(self.bump);
-                }
-
                 slot_inserts.clear();
                 slot_deletes.clear();
                 for (k, v) in ss.storage.iter() {
@@ -391,7 +398,7 @@ impl ArenaTries<'_> {
                 // and into the final state root — caught by the executor's
                 // `MismatchedStateRoot` check. See the field doc + executor `SOUNDNESS:` tag.
                 let target = hashed_address.as_slice();
-                let mut found = reth_trie::EMPTY_ROOT_HASH;
+                let mut found = reth_trie_common::EMPTY_ROOT_HASH;
                 while psr_idx < psr_count {
                     let off = psr_idx * PSR_ENTRY;
                     let key = &psr[off..off + 32];
@@ -535,7 +542,7 @@ impl core::fmt::Debug for EthereumState {
 mod arena_integration_tests {
     use alloy_primitives::{keccak256, U256};
     use bumpalo::Bump;
-    use reth_trie::EMPTY_ROOT_HASH;
+    use reth_trie_common::EMPTY_ROOT_HASH;
 
     use super::*;
 
@@ -728,7 +735,7 @@ mod arena_integration_tests {
 mod update_tests {
     use alloy_primitives::{keccak256, B256, U256};
     use reth_primitives_traits::Account;
-    use reth_trie::{HashedPostState, HashedStorage, TrieAccount, EMPTY_ROOT_HASH};
+    use reth_trie_common::{HashedPostState, HashedStorage, TrieAccount, EMPTY_ROOT_HASH};
 
     use super::*;
 
@@ -807,7 +814,7 @@ mod update_tests {
         let mut post_state = post(contract, 2, 2000);
         post_state
             .storages
-            .insert(contract, HashedStorage::from_iter(false, [(slot(99), U256::from(7u64))]));
+            .insert(contract, HashedStorage::from_iter([(slot(99), U256::from(7u64))]));
         state.update(&post_state);
     }
 
@@ -826,8 +833,8 @@ mod update_tests {
         post_state
             .accounts
             .insert(eoa, Some(Account { nonce: 1, balance: U256::ZERO, bytecode_hash: None }));
-        post_state.storages.insert(created, HashedStorage::from_iter(false, slots));
-        post_state.storages.insert(eoa, HashedStorage::from_iter(false, slots));
+        post_state.storages.insert(created, HashedStorage::from_iter(slots));
+        post_state.storages.insert(eoa, HashedStorage::from_iter(slots));
         state.update(&post_state);
 
         assert_eq!(storage_root_of(&state, created), expected.hash());
@@ -840,7 +847,8 @@ mod update_tests {
         let mut post_state = post(contract, 2, 2000);
         post_state
             .storages
-            .insert(contract, HashedStorage::from_iter(true, [(slot(42), U256::from(1u64))]));
+            .insert(contract, HashedStorage::from_iter([(slot(42), U256::from(1u64))]));
+        state.clear_storage(contract);
         state.update(&post_state);
 
         let mut expected = MptNode::default();

@@ -32,24 +32,26 @@ reth-ethereum-consensus.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-execution-types.workspace = true
 reth-primitives-traits.workspace = true
-reth-trie.workspace = true
+reth-trie-common.workspace = true
 reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-errors.workspace = true
 reth-chainspec.workspace = true
 
-# revm
-revm.workspace = true
-revm-primitives.workspace = true
+# evm2
+evm2.workspace = true
 kzg-rs.workspace = true
 
 # alloy
-alloy-evm.workspace = true
+alloy-eip7928.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-network.workspace = true
 alloy-rpc-types.workspace = true
 alloy-rlp.workspace = true
+
+[dev-dependencies]
+bincode = "1.3.3"
 
 [features]
 default = ["sha3-keccak"]

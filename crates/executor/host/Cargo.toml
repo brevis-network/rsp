@@ -38,14 +38,12 @@ reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits  = { workspace = true, features = ["secp256k1"] }
-reth-trie.workspace = true
 reth-errors.workspace = true
 reth-storage-errors.workspace = true
 reth-chainspec.workspace = true
 
-# revm
-revm.workspace = true
-revm-primitives.workspace = true
+# evm2
+evm2.workspace = true
 
 # alloy
 alloy-chains.workspace = true
