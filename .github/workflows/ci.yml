@@ -33,6 +33,14 @@ jobs:
       - run: cargo test --release -p rsp-client-executor --features flat
       - run: cargo test --release -p eth-proofs --features flat
 
+  locks:
+    name: host and guest agree on the git dependencies they share
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - run: ./.github/scripts/check-locks.sh
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest

@@ -48,6 +48,7 @@ reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", rev = "
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
 reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
 # Pico precompile patches, the same set our `pico-rv64` branch uses.
+# Pinned by the lock file at 8ce21c5; the workspace manifest says why it stays there.
 bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1-rv64" }
 k256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "k256-0.13.4-rv64" }
 p256 = { git = "https://github.com/brevis-network/elliptic-curves", branch = "p256-0.13.2-rv64" }

@@ -9,6 +9,11 @@
 # behaviour; the static gas charge relies on a gas counter below 2^63 and asserts it when a frame
 # starts to run. The host keeps upstream evm2.
 #
+# 0005 changes nothing in the guest. It adds a cfg with which a host build of the patched evm2
+# charges static gas as 0003 does, so that evm2's own unit tests and its EEST runner run that
+# code (on a nightly rustc, which gives the tail-call dispatch the guest uses):
+#   RUSTFLAGS="--cfg evm2_as_on_riscv64" cargo test -p evm2 --lib
+#
 # Re-run after changing REV or the patches: the checkout is rebuilt when either differs from what
 # it was prepared from. (A patch that adds a file leaves that file behind when it is later
 # removed from the series; delete ./evm2-pico by hand in that case.)

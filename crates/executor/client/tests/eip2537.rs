@@ -440,3 +440,57 @@ fn map_fp2_to_g2_matches_evm2() {
     }
     tally.assert_both_sides("map_fp2_to_g2");
 }
+
+/// What a random draw never gives: both coordinates of `u` among 0, 1 and p - 1. At `u = 0`
+/// zkcrypto's simplified SWU compared 0 with 0, took the branch for a non-square and returned the
+/// point at infinity. Our fork maps it as RFC 9380 says from 8ce21c5 on, the commit the lock files
+/// pin.
+#[test]
+fn map_fp2_to_g2_at_the_edges_of_the_field_matches_evm2() {
+    let crypto = CustomCrypto::default();
+    let zero = [0u8; 48];
+    let edges = [zero, be_add(zero, 1), be_add(P, -1)];
+    for c0 in edges {
+        for c1 in edges {
+            let ours = crypto.bls12_381_fp2_to_g2((c0, c1));
+            assert!(
+                ours.is_ok(),
+                "map_fp2_to_g2({}, {}): {ours:?}",
+                hex::encode(c0),
+                hex::encode(c1)
+            );
+            assert_eq!(
+                ours,
+                DefaultCrypto::new().bls12_381_fp2_to_g2((c0, c1)),
+                "map_fp2_to_g2({}, {})",
+                hex::encode(c0),
+                hex::encode(c1)
+            );
+        }
+    }
+    // MAP_FP2_TO_G2(0, 0) as blst and arkworks compute it: x.c0, x.c1, y.c0, y.c1.
+    let at_zero = hex!(
+        "018320896ec9eef9d5e619848dc29ce266f413d02dd31d9b9d44ec0c79cd61f18b075ddba6d7bd20b7ff27a4b324bfce"
+        "0a67d12118b5a35bb02d2e86b3ebfa7e23410db93de39fb06d7025fa95e96ffa428a7a27c3ae4dd4b40bd251ac658892"
+        "0260e03644d1a2c321256b3246bad2b895cad13890cbe6f85df55106a0d334604fb143c7a042d878006271865bc35941"
+        "04c69777a43f0bda07679d5805e63f18cf4e0e7c6112ac7f70266d199b4f76ae27c6269a3ceebdae30806e9a76aadf5c"
+    );
+    assert_eq!(crypto.bls12_381_fp2_to_g2((zero, zero)), Ok(at_zero));
+}
+
+/// The same edges for G1's map.
+#[test]
+fn map_fp_to_g1_at_the_edges_of_the_field_matches_evm2() {
+    let crypto = CustomCrypto::default();
+    let zero = [0u8; 48];
+    for u in [zero, be_add(zero, 1), be_add(P, -1)] {
+        let ours = crypto.bls12_381_fp_to_g1(&u);
+        assert!(ours.is_ok(), "map_fp_to_g1({}): {ours:?}", hex::encode(u));
+        assert_eq!(
+            ours,
+            DefaultCrypto::new().bls12_381_fp_to_g1(&u),
+            "map_fp_to_g1({})",
+            hex::encode(u)
+        );
+    }
+}

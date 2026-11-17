@@ -23,6 +23,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ./prepare-evm2.sh
 
+# The guest's lock file and the workspace's agree on the git dependencies they share: the
+# client's tests run on the workspace's, and what is proved is built from this directory's.
+../../.github/scripts/check-locks.sh
+
 if [ -n "${PICO_RUSTC:-}" ]; then
     export RUSTC=$PICO_RUSTC
     CARGO=("${PICO_CARGO:-cargo}")

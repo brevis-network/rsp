@@ -138,6 +138,10 @@ p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
 sha2 = { version = "0.10.9", default-features = false }
 # EIP-2537. From git outside the guest as well: the precompile code uses the field types, which
 # crates.io's bls12_381 keeps private. `experimental` is `hash_to_curve`'s map_to_curve.
+# The lock files pin the branch at 8ce21c5, which maps u = 0 on G2 as RFC 9380 says (79fbbfa
+# returned the point at infinity). Do not move them past it before Pico has G2 add and double
+# precompiles: from 5dbe03f on, G2 arithmetic in the guest calls `syscall_bls12381_g2_add` and
+# `syscall_bls12381_g2_double`, which no pico-sdk defines yet, so the guest would not link.
 bls12_381 = { git = "https://github.com/brevis-network/bls12_381", branch = "patch-v1.0.1-rv64", features = ["experimental"] }
 # bn254 (EIP-196, EIP-197). From git outside the guest as well: the precompile code adds and
 # multiplies affine G1 points, which crates.io's substrate-bn does not offer.
