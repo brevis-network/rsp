@@ -4,6 +4,7 @@ pico_sdk::entrypoint!(main);
 use rsp_client_executor::{
     executor::{EthClientExecutor, DESERIALZE_INPUTS},
     io::{CommittedHeader, EthClientExecutorInput},
+    stdin,
     utils::profile_report,
 };
 use std::sync::Arc;
@@ -26,21 +27,20 @@ pub unsafe extern "C" fn native_keccak256(bytes: *const u8, len: usize, output: 
 }
 
 pub fn main() {
-    // Read the input: one bincode item for the pointer-based state, and for the arena backend
-    // a second item with the witness blob (see the SP1 client for the same layout).
+    // Read the input. brevis-vm's provers hand the guest one buffer for a block: the witness
+    // blob (of the arena and flat backends), the bincode-serialized input, and the blob's length
+    // (`rsp_client_executor::stdin`). The blob stays where it was read; nothing copies it.
     let input = profile_report!(DESERIALZE_INPUTS, {
-        #[cfg(not(feature = "arena"))]
-        {
-            let input = pico_sdk::io::read_vec();
-            bincode::deserialize::<EthClientExecutorInput>(&input).unwrap()
-        }
-        #[cfg(feature = "arena")]
-        {
-            let header_bytes = pico_sdk::io::read_vec();
-            let mut input: EthClientExecutorInput = bincode::deserialize(&header_bytes).unwrap();
-            input.parent_state = pico_sdk::io::read_vec();
-            input
-        }
+        let (input, witness) = stdin::split(pico_sdk::io::read_vec(), |bytes| {
+            bincode::deserialize::<EthClientExecutorInput>(bytes).unwrap()
+        })
+        .expect("the input is not a joined buffer");
+        #[cfg(any(feature = "arena", feature = "flat"))]
+        let input = EthClientExecutorInput { parent_state: witness, ..input };
+        // A blob here means the host was built with another witness backend than this guest.
+        #[cfg(not(any(feature = "arena", feature = "flat")))]
+        assert!(witness.is_empty(), "the default backend takes no witness blob");
+        input
     });
 
     // Execute the block.

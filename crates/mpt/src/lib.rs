@@ -2,7 +2,11 @@
 // `target_vendor = "pico"` comes from the custom riscv64im-pico-zkvm-elf target.
 #![allow(unexpected_cfgs)]
 
-use alloy_primitives::{keccak256, map::HashMap, Address, B256, U256};
+use alloy_primitives::{
+    keccak256,
+    map::{B256Map, HashMap},
+    Address, B256, U256,
+};
 use alloy_rlp::Decodable;
 use alloy_rpc_types::EIP1186AccountProofResponse;
 use reth_trie_common::{AccountProof, HashedPostState, TrieAccount};
@@ -19,6 +23,13 @@ pub use keccak::{keccak256_zkvm, keccak256_zkvm_into};
 /// Module containing MPT code adapted from `zeth`.
 mod mpt;
 pub use mpt::Error;
+
+/// Flat RLP wire format for the witness tries (see module docs).
+mod flat;
+pub use flat::{
+    cow_bytes as serde_cow_bytes, flatten_trie, FlatEthereumState, FlatStateViews,
+    FlatStorageEntry, FlatTrieView,
+};
 
 /// Arena-based, zero-copy MPT used as the witness format on the host->guest boundary
 /// (ported from `openvm-eth`). This is the alternative backend to the pointer-based
@@ -533,6 +544,107 @@ impl StateTries for ArenaTries<'_> {
     }
 }
 
+/// The flat-RLP witness (see the `flat` module) as a [`StateTries`] backend.
+///
+/// Reads walk the verified node blobs in place. The post-state root is computed from the blobs
+/// and the block's changes without building a trie ([`FlatStateViews::post_state_root`]), so
+/// [`Self::update`] only records that root: reads after it still see the parent state.
+#[derive(Debug)]
+pub struct FlatTries<'a> {
+    views: FlatStateViews<'a>,
+    /// The account rows of the accounts that have a witnessed storage trie, read once here
+    /// because both the storage-root check and execution ask for them: in the guest a walk of
+    /// the state trie costs about 1,460 instructions, this lookup about 40. A miss falls
+    /// through to the trie.
+    accounts: B256Map<Option<TrieAccount>>,
+    /// Accounts whose storage starts over from the empty trie (destroyed in the block).
+    wiped: Vec<B256>,
+    /// The state root after [`Self::update`].
+    post_root: Option<B256>,
+}
+
+impl<'a> FlatTries<'a> {
+    /// Parses the witness, checking every node against the root of its trie.
+    ///
+    /// Anchoring the state root to the parent header, and each storage root to its account, is
+    /// the caller's part; the client's `build_trie_db` does both through [`StateTries`].
+    pub fn new(state: &'a FlatEthereumState<'_>) -> Result<Self, Error> {
+        let views = state.views()?;
+        let mut accounts =
+            B256Map::with_capacity_and_hasher(views.storage.len(), Default::default());
+        for hashed_address in views.storage.keys() {
+            let account = views
+                .state
+                .get(hashed_address.as_slice())?
+                .map(|mut bytes| TrieAccount::decode(&mut bytes))
+                .transpose()?;
+            accounts.insert(*hashed_address, account);
+        }
+        Ok(Self { views, accounts, wiped: Vec::new(), post_root: None })
+    }
+
+    /// Makes the storage of `hashed_address` start over from the empty trie in [`Self::update`].
+    pub fn clear_storage(&mut self, hashed_address: B256) {
+        self.wiped.push(hashed_address);
+    }
+
+    /// Computes the state root that `post_state` leads to.
+    ///
+    /// # Panics
+    ///
+    /// If the witness does not cover what the block changed.
+    pub fn update(&mut self, post_state: &HashedPostState) {
+        let root = self
+            .views
+            .post_state_root(post_state, &self.wiped)
+            .expect("the witness does not cover what the block changed");
+        self.post_root = Some(root);
+    }
+
+    /// The state root: of the parent state, or after [`Self::update`] of the post state.
+    pub fn state_root(&self) -> B256 {
+        self.post_root.unwrap_or(self.views.state.root_hash)
+    }
+}
+
+impl StateTries for FlatTries<'_> {
+    fn state_root(&self) -> B256 {
+        FlatTries::state_root(self)
+    }
+
+    fn account(&self, hashed_address: B256) -> Option<TrieAccount> {
+        if let Some(account) = self.accounts.get(&hashed_address) {
+            return account.clone();
+        }
+        // An `Err` is a key whose path leaves the witnessed part of the trie.
+        self.views
+            .state
+            .get(hashed_address.as_slice())
+            .expect("the witness does not cover this account")
+            .map(|mut bytes| TrieAccount::decode(&mut bytes).expect("an account row decodes"))
+    }
+
+    fn storage_value(&self, hashed_address: B256, hashed_slot: B256) -> U256 {
+        let view = self
+            .views
+            .storage
+            .get(&hashed_address)
+            .expect("A storage trie must be provided for each account");
+        view.get(hashed_slot.as_slice())
+            .expect("the witness does not cover this slot")
+            .map(|mut bytes| U256::decode(&mut bytes).expect("a storage value decodes"))
+            .unwrap_or_default()
+    }
+
+    fn storage_roots(&self) -> impl Iterator<Item = (B256, B256)> + '_ {
+        self.views.storage.iter().map(|(hashed_address, view)| (*hashed_address, view.root_hash))
+    }
+
+    fn update(&mut self, post_state: &HashedPostState) {
+        FlatTries::update(self, post_state)
+    }
+}
+
 impl core::fmt::Debug for EthereumState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut ds = f.debug_struct("EthereumState");
@@ -846,6 +958,45 @@ mod update_tests {
 
         assert_eq!(storage_root_of(&state, created), expected.hash());
         assert_eq!(storage_root_of(&state, eoa), expected.hash());
+    }
+
+    /// The flat backend answers reads and computes the post-state root as the pointer-based one
+    /// does, with and without a storage wipe.
+    #[test]
+    fn flat_tries_match_the_pointer_based_state() {
+        let (state, contract, contract_root) = fixture(true);
+        let flat = FlatEthereumState::from_state(&state);
+        let mut tries = FlatTries::new(&flat).unwrap();
+
+        assert_eq!(StateTries::state_root(&tries), state.state_root());
+        assert_eq!(StateTries::account(&tries, contract), StateTries::account(&state, contract));
+        let eoa = keccak256([2u8; 20]);
+        assert_eq!(StateTries::account(&tries, eoa), StateTries::account(&state, eoa));
+        for i in 0..10u64 {
+            assert_eq!(tries.storage_value(contract, slot(i)), U256::from(i + 1));
+        }
+        assert_eq!(tries.storage_value(contract, slot(77)), U256::ZERO);
+        assert_eq!(tries.storage_roots().collect::<Vec<_>>(), vec![(contract, contract_root)]);
+
+        // A slot write, a slot delete and a balance change.
+        let mut post_state = post(contract, 2, 2000);
+        post_state.storages.insert(
+            contract,
+            HashedStorage::from_iter([(slot(3), U256::ZERO), (slot(42), U256::from(7u64))]),
+        );
+        let mut expected = state.clone();
+        expected.update(&post_state);
+        tries.update(&post_state);
+        assert_eq!(StateTries::state_root(&tries), expected.state_root());
+
+        // The same changes on a storage that the block wiped first.
+        let mut tries = FlatTries::new(&flat).unwrap();
+        let mut expected = state.clone();
+        expected.clear_storage(contract);
+        expected.update(&post_state);
+        tries.clear_storage(contract);
+        tries.update(&post_state);
+        assert_eq!(StateTries::state_root(&tries), expected.state_root());
     }
 
     #[test]

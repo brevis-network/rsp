@@ -18,7 +18,7 @@
 # rustup, name the two programs instead: PICO_RUSTC, Pico's rustc, and PICO_CARGO, a nightly
 # cargo to drive it (the build uses `-Z build-std`). TARGET_DIR moves cargo's target directory.
 #
-# usage: build-guest.sh [extra cargo args, e.g. --features arena]
+# usage: build-guest.sh [extra cargo args, e.g. --features flat]
 set -euo pipefail
 cd "$(dirname "$0")"
 ./prepare-evm2.sh

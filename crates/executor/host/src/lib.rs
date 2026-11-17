@@ -5,6 +5,8 @@ use alloy_primitives::Address;
 pub use error::Error as HostError;
 use reth_chainspec::ChainSpec;
 use reth_evm_ethereum::EthEvmConfig;
+use reth_primitives_traits::NodePrimitives;
+use rsp_client_executor::io::ClientExecutorInput;
 use rsp_primitives::genesis::Genesis;
 use sp1_sdk::SP1ProofMode;
 use std::{path::PathBuf, sync::Arc};
@@ -37,6 +39,21 @@ pub fn create_eth_block_execution_strategy_factory(
     let chain_spec: Arc<ChainSpec> = Arc::new(genesis.try_into().unwrap());
 
     EthEvmConfig::new(chain_spec)
+}
+
+/// The client input as the one buffer a Pico guest reads from stdin: the witness blob (of the
+/// `arena` and `flat` backends), the bincode-serialized input, and the blob's length. See
+/// [`rsp_client_executor::stdin`].
+pub fn single_buffer_stdin<P>(client_input: &ClientExecutorInput<P>) -> bincode::Result<Vec<u8>>
+where
+    P: NodePrimitives,
+    ClientExecutorInput<P>: serde::Serialize,
+{
+    #[cfg(any(feature = "arena", feature = "flat"))]
+    let witness: &[u8] = &client_input.parent_state;
+    #[cfg(not(any(feature = "arena", feature = "flat")))]
+    let witness: &[u8] = &[];
+    Ok(rsp_client_executor::stdin::join(&bincode::serialize(client_input)?, witness))
 }
 
 /// How the host fetches the state needed to execute a block.

@@ -17,8 +17,10 @@ use rsp_primitives::genesis::Genesis;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-#[cfg(not(feature = "arena"))]
+#[cfg(not(any(feature = "arena", feature = "flat")))]
 use rsp_mpt::EthereumState;
+#[cfg(feature = "flat")]
+use rsp_mpt::{FlatEthereumState, FlatTries};
 #[cfg(feature = "arena")]
 use {bumpalo::Bump, rsp_mpt::ArenaTries};
 
@@ -112,9 +114,11 @@ pub struct ClientExecutorInput<P: NodePrimitives> {
     ///   `#[serde(skip)]`ped here so bincode only handles the small header; the guest fills this
     ///   field from `sp1_zkvm::io::read_vec()` before executing and decodes it zero-copy (see
     ///   [`ArenaTries::decode`]).
-    #[cfg(not(feature = "arena"))]
+    /// - `flat` backend: the flat-RLP witness ([`FlatEthereumState`], bincode), a separate stdin
+    ///   item like the arena blob; [`Self::flat_state`] borrows the node blobs out of it.
+    #[cfg(not(any(feature = "arena", feature = "flat")))]
     pub parent_state: EthereumState,
-    #[cfg(feature = "arena")]
+    #[cfg(any(feature = "arena", feature = "flat"))]
     #[serde(skip, default)]
     pub parent_state: Vec<u8>,
     /// Account bytecodes, on the wire as raw bytes.
@@ -136,7 +140,7 @@ impl<P: NodePrimitives> ClientExecutorInput<P> {
     }
 
     /// Creates a [`TrieDB`] backed by the legacy pointer-based [`EthereumState`].
-    #[cfg(not(feature = "arena"))]
+    #[cfg(not(any(feature = "arena", feature = "flat")))]
     #[inline(always)]
     pub fn witness_db(
         &self,
@@ -152,6 +156,25 @@ impl<P: NodePrimitives> ClientExecutorInput<P> {
     #[inline(always)]
     pub fn tries<'a>(&'a self, bump: &'a Bump) -> Result<ArenaTries<'a>, ClientError> {
         ArenaTries::decode(bump, &self.parent_state).map_err(|_| ClientError::MismatchedStateRoot)
+    }
+
+    /// Reads the flat witness out of `parent_state`. Its node blobs are borrowed from that
+    /// buffer, and the returned state must outlive the [`FlatTries`] built over it.
+    #[cfg(feature = "flat")]
+    #[inline(always)]
+    pub fn flat_state(&self) -> Result<FlatEthereumState<'_>, ClientError> {
+        bincode::deserialize(&self.parent_state).map_err(|_| ClientError::MismatchedStateRoot)
+    }
+
+    /// Creates a [`TrieDB`] backed by the flat tries built over [`Self::flat_state`].
+    #[cfg(feature = "flat")]
+    #[inline(always)]
+    pub fn witness_db<'a, 'b>(
+        &'a self,
+        tries: &'a FlatTries<'b>,
+        sealed_headers: &[SealedHeader],
+    ) -> Result<TrieDB<'a, FlatTries<'b>>, ClientError> {
+        build_trie_db(tries, self.state_anchor(), self.bytecodes(), sealed_headers)
     }
 
     /// Creates a [`TrieDB`] backed by the arena tries decoded via [`Self::tries`].

@@ -32,6 +32,8 @@ tracing = { version = "0.1", features = ["max_level_off", "release_max_level_off
 default = []
 # Arena-based MPT backend; the host must emit the matching witness (`rsp-host-executor/arena`).
 arena = ["rsp-client-executor/arena"]
+# Flat-RLP witness backend; the host must emit the matching witness (`rsp-host-executor/flat`).
+flat = ["rsp-client-executor/flat"]
 
 # Same redirections as reth v2.11.0's own manifest (a separate workspace does not inherit the root's).
 # evm2 at the revision reth v2.11.0 pins, with the changes in `evm2-patches/` for this target.

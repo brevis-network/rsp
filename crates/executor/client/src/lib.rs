@@ -1,5 +1,8 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+#[cfg(all(feature = "arena", feature = "flat"))]
+compile_error!("the `arena` and `flat` witness backends exclude each other");
+
 /// Client program input data types.
 pub mod io;
 #[macro_use]
@@ -9,6 +12,7 @@ pub mod custom;
 pub mod eip2537;
 pub mod error;
 pub mod executor;
+pub mod stdin;
 
 mod into_primitives;
 pub use into_primitives::{BlockValidator, FromInput, IntoInput, IntoPrimitives};

@@ -2,24 +2,25 @@
 //! that the header it derives hashes to the hash of the block inside the input.
 //!
 //! usage: exec_input <input.bin>...
-//! With the `arena` feature the witness blob is read from the file with the same name and the
-//! extension `.blob`.
+//! Each file is the one buffer a Pico guest reads from stdin (`rsp_client_executor::stdin`), and
+//! must come from a host built with the same witness backend.
 
 use std::{sync::Arc, time::Instant};
 
-use rsp_client_executor::{executor::EthClientExecutor, io::EthClientExecutorInput};
+use rsp_client_executor::{executor::EthClientExecutor, io::EthClientExecutorInput, stdin};
 
 fn main() {
     let (mut passed, mut failed) = (0u32, 0u32);
     for path in std::env::args().skip(1) {
-        let bytes = std::fs::read(&path).expect("read input");
-        #[allow(unused_mut)]
-        let mut input: EthClientExecutorInput = bincode::deserialize(&bytes).expect("decode input");
-        #[cfg(feature = "arena")]
-        {
-            input.parent_state =
-                std::fs::read(path.replace(".bin", ".blob")).expect("read witness blob");
-        }
+        let buffer = std::fs::read(&path).expect("read input");
+        let (input, witness) = stdin::split(buffer, |bytes| {
+            bincode::deserialize::<EthClientExecutorInput>(bytes).expect("decode input")
+        })
+        .expect("the file is not a joined input buffer");
+        #[cfg(any(feature = "arena", feature = "flat"))]
+        let input = EthClientExecutorInput { parent_state: witness, ..input };
+        #[cfg(not(any(feature = "arena", feature = "flat")))]
+        assert!(witness.is_empty(), "the default backend takes no witness blob");
         let expected = input.current_block.header.hash_slow();
         let number = input.current_block.header.number;
         let gas_used = input.current_block.header.gas_used;

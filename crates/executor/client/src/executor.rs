@@ -133,7 +133,7 @@ where
 {
     // Under the `arena` backend `input` is only ever read (the tries live in a separate
     // bump-scoped value), so the `mut` binding needed by the legacy in-place update is unused.
-    #[cfg_attr(feature = "arena", allow(unused_mut))]
+    #[cfg_attr(any(feature = "arena", feature = "flat"), allow(unused_mut))]
     pub fn execute(
         &self,
         mut input: ClientExecutorInput<C::Primitives>,
@@ -153,6 +153,12 @@ where
         let bump = bumpalo::Bump::new();
         #[cfg(feature = "arena")]
         let mut tries = input.tries(&bump).unwrap();
+        // The flat witness is read in place: `flat_state` borrows the node blobs out of the input
+        // and the tries verify them once, here.
+        #[cfg(feature = "flat")]
+        let flat_state = input.flat_state().unwrap();
+        #[cfg(feature = "flat")]
+        let mut tries = rsp_mpt::FlatTries::new(&flat_state).unwrap();
 
         let block = profile_report!(RECOVER_SENDERS, {
             C::Primitives::from_input_block(input.current_block.clone())
@@ -183,9 +189,9 @@ where
         let (execution_output, block_access_list_hash) = {
             // Initialize the witnessed database with verified storage proofs.
             let db = profile_report!(INIT_WITNESS_DB, {
-                #[cfg(not(feature = "arena"))]
+                #[cfg(not(any(feature = "arena", feature = "flat")))]
                 let trie_db = input.witness_db(&sealed_headers).unwrap();
-                #[cfg(feature = "arena")]
+                #[cfg(any(feature = "arena", feature = "flat"))]
                 let trie_db = input.witness_db(&tries, &sealed_headers).unwrap();
                 DbRef::new(trie_db)
             });
@@ -214,7 +220,7 @@ where
         // here as `MismatchedStateRoot` and no proof is produced.
         let state_root = profile_report!(COMPUTE_STATE_ROOT, {
             let (post_state, wiped_storages) = hashed_post_state(&execution_output.state);
-            #[cfg(not(feature = "arena"))]
+            #[cfg(not(any(feature = "arena", feature = "flat")))]
             {
                 for hashed_address in wiped_storages {
                     input.parent_state.clear_storage(hashed_address);
@@ -222,7 +228,7 @@ where
                 input.parent_state.update(&post_state);
                 input.parent_state.state_root()
             }
-            #[cfg(feature = "arena")]
+            #[cfg(any(feature = "arena", feature = "flat"))]
             {
                 for hashed_address in wiped_storages {
                     tries.clear_storage(hashed_address);

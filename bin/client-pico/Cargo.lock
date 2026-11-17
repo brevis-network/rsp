@@ -4949,6 +4949,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types",
+ "bincode",
  "bls12_381 0.8.0",
  "bumpalo",
  "evm2",

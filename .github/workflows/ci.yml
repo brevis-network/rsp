@@ -28,6 +28,7 @@ jobs:
       # `-p` rather than `--workspace`: the SP1 binaries need SP1's toolchain, and their tests
       # an Ethereum RPC.
       - run: cargo test --release -p rsp-mpt -p rsp-client-executor -p rsp-guest-mem
+      - run: cargo test --release -p rsp-client-executor --features flat
 
   fmt:
     name: fmt

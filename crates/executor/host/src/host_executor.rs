@@ -247,10 +247,14 @@ impl<C: ExecutorFactoryAccess, CS> HostExecutor<C, CS> {
         // Create the client input. The host always builds the pointer-based `EthereumState`;
         // under the `arena` backend it is re-encoded into the flat arena-codec witness blob that
         // the guest decodes zero-copy (the `parent_state` field is `Vec<u8>` in that config).
-        #[cfg(not(feature = "arena"))]
+        #[cfg(not(any(feature = "arena", feature = "flat")))]
         let parent_state = state;
         #[cfg(feature = "arena")]
         let parent_state = state.to_arena_witness();
+        // The flat-RLP witness, framed with bincode; the guest borrows the node blobs out of it.
+        #[cfg(feature = "flat")]
+        let parent_state = bincode::serialize(&rsp_mpt::FlatEthereumState::from_state(&state))
+            .expect("the flat witness serializes");
 
         let client_input = ClientExecutorInput {
             current_block: C::Primitives::into_input_block(current_block),

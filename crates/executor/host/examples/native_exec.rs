@@ -6,7 +6,8 @@
 //! header it returns with the block hash the node reports.
 //!
 //! usage: native_exec <rpc-url> <mainnet|sepolia> <block | from..to>...
-//! Set DUMP_DIR to also write each block's client input to `<DUMP_DIR>/<block>.bin`.
+//! Set DUMP_DIR to also write each block's client input to `<DUMP_DIR>/<block>.bin`, as the one
+//! buffer a Pico guest reads from stdin (`rsp_host_executor::single_buffer_stdin`).
 //! Set STATE_BACKEND=proofs to fetch state with `eth_getProof` instead of
 //! `debug_executionWitness`.
 
@@ -15,7 +16,7 @@ use std::{sync::Arc, time::Instant};
 use alloy_provider::{network::Ethereum, Provider, RootProvider};
 use reth_chainspec::ChainSpec;
 use rsp_client_executor::executor::EthClientExecutor;
-use rsp_host_executor::{EthHostExecutor, StateBackend};
+use rsp_host_executor::{single_buffer_stdin, EthHostExecutor, StateBackend};
 use rsp_primitives::genesis::Genesis;
 use url::Url;
 
@@ -82,15 +83,12 @@ fn main() {
         };
         let host_seconds = started.elapsed().as_secs_f64();
 
-        let serialized = bincode::serialize(&input).unwrap();
-        // With DUMP_DIR set, keep the input: it is exactly what the zkVM guest reads from stdin.
+        let stdin = single_buffer_stdin(&input).unwrap();
+        // With DUMP_DIR set, keep it: it is exactly what the Pico guest reads from stdin.
         if let Ok(dir) = std::env::var("DUMP_DIR") {
-            std::fs::write(format!("{dir}/{block_number}.bin"), &serialized).unwrap();
-            // The arena backend passes the witness as a second stdin item, outside bincode.
-            #[cfg(feature = "arena")]
-            std::fs::write(format!("{dir}/{block_number}.blob"), &input.parent_state).unwrap();
+            std::fs::write(format!("{dir}/{block_number}.bin"), &stdin).unwrap();
         }
-        let input_bytes = serialized.len();
+        let input_bytes = stdin.len();
         let gas_used = input.current_block.header.gas_used;
         let transactions = input.current_block.body.transactions.len();
         let access_list_hash = input.current_block.header.block_access_list_hash;
