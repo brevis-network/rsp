@@ -17,6 +17,10 @@
 # on every run, so the common case of MLOAD, MSTORE, CALLDATALOAD, JUMP, JUMPI and of PUSH2 with
 # the jump after it runs without a call, ahead of the handler.
 #
+# 0009 is the pass over a code that finds its jump destinations, which evm2 makes before the code
+# runs. Its loop takes three branches for an instruction of the code, and the prover proves a
+# comparison for each of them; the patch takes one and an eighth, in as many instructions.
+#
 # 0005 changes nothing in the guest. It adds a cfg with which a host build of the patched evm2
 # charges static gas as 0003 does, so that evm2's own unit tests and its EEST runner run that
 # code (on a nightly rustc, which gives the tail-call dispatch the guest uses):
