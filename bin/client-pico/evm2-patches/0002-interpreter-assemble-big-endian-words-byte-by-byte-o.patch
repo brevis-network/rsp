@@ -1,0 +1,171 @@
+From b484ded2e9ae52756c731f02514a4aa53baef4c7 Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Fri, 13 Nov 2026 08:03:37 +0000
+Subject: [PATCH] interpreter: assemble big-endian words byte by byte on
+ riscv64
+
+u64::from_be_bytes is a little-endian load and a byte swap. riscv64im
+has no byte-swap instruction and, without misaligned loads, reads the
+bytes one at a time anyway. MLOAD, PUSHn and CALLDATALOAD now place each
+byte as it is read. Measured in a Pico guest on 13 mainnet blocks:
+210.2 M -> 206.6 M instructions a block.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../evm2/src/interpreter/instructions/env.rs  |  2 +-
+ crates/evm2/src/interpreter/memory.rs         |  5 +-
+ crates/evm2/src/interpreter/stack.rs          |  8 +--
+ crates/evm2/src/utils.rs                      | 65 +++++++++++++++++++
+ 4 files changed, 74 insertions(+), 6 deletions(-)
+
+diff --git a/crates/evm2/src/interpreter/instructions/env.rs b/crates/evm2/src/interpreter/instructions/env.rs
+index deb064ca..5344721d 100644
+--- a/crates/evm2/src/interpreter/instructions/env.rs
++++ b/crates/evm2/src/interpreter/instructions/env.rs
+@@ -72,7 +72,7 @@ pub fn callvalue(cx: _) -> out {
+ #[instruction]
+ pub fn calldataload(cx: _, [offset]: [Word]) -> out {
+     let offset = offset.to_usize_saturated();
+-    *out = read_word_padded(cx.state.input(), offset).into();
++    *out = crate::utils::word_from_be_bytes(&read_word_padded(cx.state.input(), offset).0);
+ }
+ 
+ #[instruction]
+diff --git a/crates/evm2/src/interpreter/memory.rs b/crates/evm2/src/interpreter/memory.rs
+index 283d517b..55d5ecaa 100644
+--- a/crates/evm2/src/interpreter/memory.rs
++++ b/crates/evm2/src/interpreter/memory.rs
+@@ -173,7 +173,10 @@ impl Memory {
+     #[inline]
+     #[cfg_attr(debug_assertions, track_caller)]
+     pub fn get_word(&self, offset: usize) -> Word {
+-        Word::from_be_slice(self.slice_range(offset..offset + 32))
++        match self.slice_range(offset..offset + 32).first_chunk() {
++            Some(bytes) => crate::utils::word_from_be_bytes(bytes),
++            None => debug_unreachable!("a 32-byte range is 32 bytes long"),
++        }
+     }
+ 
+     /// Writes bytes into memory.
+diff --git a/crates/evm2/src/interpreter/stack.rs b/crates/evm2/src/interpreter/stack.rs
+index f75d489e..ed2a0156 100644
+--- a/crates/evm2/src/interpreter/stack.rs
++++ b/crates/evm2/src/interpreter/stack.rs
+@@ -538,7 +538,7 @@ impl<'a> StackMut<'a> {
+         if slice.len() <= 8 {
+             let mut buf = [0; 8];
+             buf[8 - slice.len()..].copy_from_slice(slice);
+-            return self.push_u64(u64::from_be_bytes(buf));
++            return self.push_u64(crate::utils::limb_from_be_bytes(&buf));
+         }
+ 
+         let n_words = slice.len().div_ceil(32);
+@@ -556,19 +556,19 @@ impl<'a> StackMut<'a> {
+ 
+             let (words, partial_last_word) = slice.as_chunks::<32>();
+             for (i, word) in words.iter().enumerate() {
+-                write_word(dst.add(i), Word::from_be_bytes(*word));
++                write_word(dst.add(i), crate::utils::word_from_be_bytes(word));
+             }
+ 
+             if !partial_last_word.is_empty() {
+                 let (partial_last_limb, full_limbs) = partial_last_word.as_rchunks::<8>();
+                 let mut limbs = [0; 4];
+                 for (limb, l) in limbs.iter_mut().zip(full_limbs.iter().rev()) {
+-                    *limb = u64::from_be_bytes(*l);
++                    *limb = crate::utils::limb_from_be_bytes(l);
+                 }
+                 if !partial_last_limb.is_empty() {
+                     let mut tmp = [0u8; 8];
+                     tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
+-                    limbs[full_limbs.len()] = u64::from_be_bytes(tmp);
++                    limbs[full_limbs.len()] = crate::utils::limb_from_be_bytes(&tmp);
+                 }
+                 write_word(dst.add(words.len()), Word::from_limbs(limbs));
+             }
+diff --git a/crates/evm2/src/utils.rs b/crates/evm2/src/utils.rs
+index 6e2b936b..036605ba 100644
+--- a/crates/evm2/src/utils.rs
++++ b/crates/evm2/src/utils.rs
+@@ -23,6 +23,54 @@ pub const fn b256_to_word(value: B256) -> Word {
+     Word::from_be_bytes(value.0)
+ }
+ 
++/// One limb from 8 big-endian bytes.
++///
++/// `u64::from_be_bytes` is a little-endian load followed by a byte swap. riscv64im has no
++/// byte-swap instruction, and a target without misaligned loads (a zkVM guest) reads the eight
++/// bytes one at a time anyway, so there the swap is pure overhead: about 40 instructions a limb,
++/// against 22 for putting each byte where it belongs as it is read.
++#[inline(always)]
++pub(crate) fn limb_from_be_bytes(b: &[u8; 8]) -> u64 {
++    core::cfg_select! {
++        target_arch = "riscv64" => limb_from_be_bytes_bytewise(b),
++        _ => u64::from_be_bytes(*b),
++    }
++}
++
++/// A word from 32 big-endian bytes; see [`limb_from_be_bytes`].
++#[inline(always)]
++pub(crate) fn word_from_be_bytes(b: &[u8; 32]) -> Word {
++    core::cfg_select! {
++        target_arch = "riscv64" => word_from_be_bytes_bytewise(b),
++        _ => Word::from_be_bytes(*b),
++    }
++}
++
++#[cfg(any(test, target_arch = "riscv64"))]
++#[inline(always)]
++const fn limb_from_be_bytes_bytewise(b: &[u8; 8]) -> u64 {
++    (b[0] as u64) << 56
++        | (b[1] as u64) << 48
++        | (b[2] as u64) << 40
++        | (b[3] as u64) << 32
++        | (b[4] as u64) << 24
++        | (b[5] as u64) << 16
++        | (b[6] as u64) << 8
++        | b[7] as u64
++}
++
++#[cfg(any(test, target_arch = "riscv64"))]
++#[inline(always)]
++fn word_from_be_bytes_bytewise(b: &[u8; 32]) -> Word {
++    let (limbs, _) = b.as_chunks::<8>();
++    Word::from_limbs([
++        limb_from_be_bytes_bytewise(&limbs[3]),
++        limb_from_be_bytes_bytewise(&limbs[2]),
++        limb_from_be_bytes_bytewise(&limbs[1]),
++        limb_from_be_bytes_bytewise(&limbs[0]),
++    ])
++}
++
+ /// Extension methods for stack words.
+ ///
+ /// This trait is sealed and only implemented for [`Word`].
+@@ -365,6 +413,23 @@ mod tests {
+     use super::*;
+     use core::assert_matches;
+ 
++    #[test]
++    fn bytewise_big_endian_matches_from_be_bytes() {
++        let patterns: [[u8; 32]; 4] = [
++            [0; 32],
++            [0xff; 32],
++            core::array::from_fn(|i| i as u8 + 1),
++            core::array::from_fn(|i| (i as u8).wrapping_mul(37) ^ 0x80),
++        ];
++        for bytes in patterns {
++            assert_eq!(word_from_be_bytes_bytewise(&bytes), Word::from_be_bytes(bytes));
++            assert_eq!(word_from_be_bytes(&bytes), Word::from_be_bytes(bytes));
++            let limb: [u8; 8] = bytes[5..13].try_into().unwrap();
++            assert_eq!(limb_from_be_bytes_bytewise(&limb), u64::from_be_bytes(limb));
++            assert_eq!(limb_from_be_bytes(&limb), u64::from_be_bytes(limb));
++        }
++    }
++
+     #[test]
+     fn read_word_with_padding() {
+         let data: [u8; 40] = core::array::from_fn(|i| i as u8 + 1);
+-- 
+2.43.0
+

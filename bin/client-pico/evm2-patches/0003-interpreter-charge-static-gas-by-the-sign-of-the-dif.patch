@@ -1,0 +1,138 @@
+From 6f73845a7e6ed16644ada4ac0fd8c11d326841fb Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Fri, 13 Nov 2026 23:52:41 +0000
+Subject: [PATCH] interpreter: charge static gas by the sign of the difference
+ on riscv64
+
+A RISC-V branch compares two registers, so `remaining < cost` keeps the
+counter from before the subtraction and loads the constant: mv, li,
+addi, bgeu on every opcode. Below 2^63 the same question is the sign of
+the difference, which the subtraction leaves in the counter's own
+register: addi, bltz.
+
+The counter is below 2^63 when a frame starts (no block has more gas,
+EIP-1985; the tail-call dispatch asserts it on riscv64) and only goes
+down inside a frame. Other targets and the dynamic charges are
+unchanged.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ crates/evm2/src/interpreter/dispatch/tco.rs |  7 +-
+ crates/evm2/src/interpreter/gas.rs          | 71 +++++++++++++++++++++
+ 2 files changed, 77 insertions(+), 1 deletion(-)
+
+diff --git a/crates/evm2/src/interpreter/dispatch/tco.rs b/crates/evm2/src/interpreter/dispatch/tco.rs
+index 868b89ee..d78e93b5 100644
+--- a/crates/evm2/src/interpreter/dispatch/tco.rs
++++ b/crates/evm2/src/interpreter/dispatch/tco.rs
+@@ -32,6 +32,11 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
+     interpreter: &mut Interpreter<'_, '_, T>,
+     instructions: &RawInstrTable<T>,
+ ) -> InstrStop {
++    // On riscv64 an opcode's static charge tests the sign of the counter
++    // (`RemainingGas::spend_static`), which is the comparison it stands for below 2^63. No
++    // block has gas above that (EIP-1985), so a frame that would start with it does not run.
++    #[cfg(target_arch = "riscv64")]
++    assert!(interpreter.gas.remaining() <= i64::MAX as u64, "the gas counter is above 2^63 - 1");
+     let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
+     let (state, pc, stack) = run_state(interpreter);
+     let op = pc.op();
+@@ -152,5 +157,5 @@ const fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
+     remaining_gas: &mut RemainingGas,
+     opcode: u8,
+ ) -> Result {
+-    remaining_gas.spend(C::OPCODE_CONFIG.static_gas(opcode) as _)
++    remaining_gas.spend_static(C::OPCODE_CONFIG.static_gas(opcode) as _)
+ }
+diff --git a/crates/evm2/src/interpreter/gas.rs b/crates/evm2/src/interpreter/gas.rs
+index 88e97536..277d56af 100644
+--- a/crates/evm2/src/interpreter/gas.rs
++++ b/crates/evm2/src/interpreter/gas.rs
+@@ -525,6 +525,42 @@ impl RemainingGas {
+             Ok(())
+         }
+     }
++
++    /// Spends the static gas of an opcode: [`Self::spend`], for a counter below 2^63.
++    ///
++    /// A RISC-V branch compares two registers, so `remaining < cost` keeps the counter from
++    /// before the subtraction and loads the constant: `mv`, `li`, `addi`, `bgeu`, on every
++    /// opcode. Below 2^63 the same question is the sign of the difference, which the
++    /// subtraction leaves in the counter's own register: `addi`, `bltz`.
++    ///
++    /// The counter is below 2^63 when a frame starts running (the tail-call dispatch checks it
++    /// on riscv64) and only goes down inside a frame.
++    #[inline(always)]
++    pub(crate) const fn spend_static(&mut self, cost: u64) -> Result {
++        core::cfg_select! {
++            target_arch = "riscv64" => self.spend_by_sign(cost),
++            _ => self.spend(cost),
++        }
++    }
++
++    /// [`Self::spend`] by the sign of the difference: the same result and the same counter
++    /// after it, for a counter and a cost that are both below 2^63.
++    #[cfg(any(test, target_arch = "riscv64"))]
++    #[inline(always)]
++    const fn spend_by_sign(&mut self, cost: u64) -> Result {
++        if cost == 0 {
++            // `remaining < 0` is never true, and there would be a test of the sign left here.
++            return Ok(());
++        }
++        let remaining = self.0.wrapping_sub(cost);
++        self.0 = remaining;
++        if (remaining as i64) < 0 {
++            cold_path();
++            Err(InstrStop::OutOfGas)
++        } else {
++            Ok(())
++        }
++    }
+ }
+ 
+ /// Interpreter gas state.
+@@ -775,6 +811,41 @@ mod tests {
+     use super::*;
+     use core::assert_matches;
+ 
++    /// The riscv64 static charge against the comparison it stands for, with both below 2^63:
++    /// every opcode's static cost and larger ones, counters at and around each cost and up to
++    /// the bound.
++    #[test]
++    fn spending_by_sign_is_spending_below_2_pow_63() {
++        let top = i64::MAX as u64;
++        let costs = [0, 1, 2, 3, 5, 8, 10, 20, 30, 375, 2100, 2600, 9000, 20_000, 32_000];
++        let big = [1 << 32, (1 << 62) + 1, top - 1, top];
++        let mut cases = 0;
++        for cost in costs.into_iter().chain(big) {
++            let near = [cost.saturating_sub(2), cost.saturating_sub(1), cost, cost + 1, cost + 2];
++            let far = [0, 1, 4, 30_000_000, 1 << 40, top - 1, top];
++            for remaining in near.into_iter().chain(far).filter(|remaining| *remaining <= top) {
++                let mut compared = RemainingGas::new(remaining);
++                let mut by_sign = RemainingGas::new(remaining);
++                let expected = compared.spend(cost);
++                assert_eq!(expected.is_err(), remaining < cost);
++                assert_eq!(by_sign.spend_by_sign(cost), expected, "{remaining} - {cost}");
++                assert_eq!(by_sign.get(), compared.get(), "{remaining} - {cost}");
++                cases += 1;
++            }
++        }
++        assert!(cases > 200);
++    }
++
++    /// Why the dispatch checks the counter when a frame starts: above 2^63 the sign says
++    /// out of gas for a counter that has plenty.
++    #[test]
++    fn above_2_pow_63_the_sign_is_not_the_comparison() {
++        let mut compared = RemainingGas::new(u64::MAX);
++        let mut by_sign = RemainingGas::new(u64::MAX);
++        assert_eq!(compared.spend(3), Ok(()));
++        assert_eq!(by_sign.spend_by_sign(3), Err(InstrStop::OutOfGas));
++    }
++
+     #[test]
+     fn test_new_used_gas_saturates_remaining() {
+         let gas = GasTracker::new_used_gas(100, 101, 50);
+-- 
+2.43.0
+

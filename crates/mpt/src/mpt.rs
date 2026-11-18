@@ -27,7 +27,7 @@ use core::{
     fmt::{Debug, Write},
     iter, mem,
 };
-use reth_trie::{AccountProof, Nibbles};
+use reth_trie_common::{AccountProof, Nibbles};
 use std::sync::Mutex;
 
 use rlp::{Decodable, DecoderError, Prototype, Rlp};
@@ -79,9 +79,33 @@ pub const KECCAK_EMPTY: B256 =
 /// - Consider switching the return type to `B256` for consistency with other parts of the codebase.
 #[inline]
 pub fn keccak(data: impl AsRef<[u8]>) -> [u8; 32] {
-    // TODO: Remove this benchmarking code once performance testing is complete.
-    // std::hint::black_box(sha2::Sha256::digest(&data));
-    *alloy_primitives::utils::keccak256(data)
+    // In the Pico guest, straight to the sponge over the keccak-permute syscall.
+    #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+    {
+        crate::keccak::keccak(data)
+    }
+    #[cfg(not(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64")))]
+    {
+        *alloy_primitives::utils::keccak256(data)
+    }
+}
+
+/// Keccak-256 of `data` written into an existing `B256`.
+///
+/// The flat trie's verification pass hashes every node blob and then either compares the digest
+/// against a reference or stores it; in the guest, going through a `[u8; 32]` return value costs
+/// it a byte-wise copy of the digest.
+#[inline]
+pub(crate) fn keccak_into_b256(data: &[u8], out: &mut B256) {
+    #[cfg(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64"))]
+    // SAFETY: `out` is a live `B256`, i.e. 32 writable bytes.
+    unsafe {
+        crate::keccak::keccak_into(data, out.0.as_mut_ptr())
+    };
+    #[cfg(not(all(target_os = "zkvm", target_vendor = "pico", target_arch = "riscv64")))]
+    {
+        *out = B256::from(keccak(data));
+    }
 }
 
 /// Represents the root node of a sparse Merkle Patricia Trie.
@@ -152,6 +176,9 @@ pub enum Error {
     /// errors.
     #[error("RLP error")]
     LegacyRlp(#[from] DecoderError),
+    /// A malformed flat-RLP trie wire encoding.
+    #[error("malformed flat trie: {0}")]
+    FlatTrie(&'static str),
 }
 
 /// Represents the various types of data that can be stored within a node in the sparse
@@ -934,7 +961,7 @@ pub fn to_encoded_path(mut nibs: &[u8], is_leaf: bool) -> Vec<u8> {
 }
 
 /// Returns the length of the common prefix.
-fn lcp(a: &[u8], b: &[u8]) -> usize {
+pub(crate) fn lcp(a: &[u8], b: &[u8]) -> usize {
     for (i, (a, b)) in iter::zip(a, b).enumerate() {
         if a != b {
             return i;
@@ -943,7 +970,7 @@ fn lcp(a: &[u8], b: &[u8]) -> usize {
     cmp::min(a.len(), b.len())
 }
 
-fn prefix_nibs(prefix: &[u8]) -> Vec<u8> {
+pub(crate) fn prefix_nibs(prefix: &[u8]) -> Vec<u8> {
     let (extension, tail) = prefix.split_first().unwrap();
     // the first bit of the first nibble denotes the parity
     let is_odd = extension & (1 << 4) != 0;
@@ -1255,6 +1282,15 @@ fn add_orphaned_leafs(
     }
 
     Ok(())
+}
+
+/// Creates an MPT node with a pre-computed reference cache. The caller must guarantee that
+/// `reference` is the reference of `data` as encoded.
+pub(crate) fn node_with_cached_reference(
+    data: MptNodeData,
+    reference: MptNodeReference,
+) -> MptNode {
+    MptNode { data, cached_reference: Mutex::new(Some(reference)) }
 }
 
 /// Creates a new MPT node from a digest.

@@ -22,6 +22,9 @@ latest_proof.json
 # SP1 ELF files
 elf
 
+# evm2 as the Pico guest builds it (bin/client-pico/prepare-evm2.sh)
+/bin/client-pico/evm2-pico
+
 **.csv
 
 input/

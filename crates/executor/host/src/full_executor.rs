@@ -69,8 +69,8 @@ pub trait BlockExecutor<C: ExecutorComponents> {
     ) -> eyre::Result<SP1Stdin> {
         let mut stdin = SP1Stdin::new();
         stdin.write_vec(bincode::serialize(client_input)?);
-        #[cfg(feature = "arena")]
-        stdin.write_vec(client_input.parent_state.clone());
+        #[cfg(any(feature = "arena", feature = "flat"))]
+        stdin.write_vec(client_input.parent_state.to_vec());
         Ok(stdin)
     }
 

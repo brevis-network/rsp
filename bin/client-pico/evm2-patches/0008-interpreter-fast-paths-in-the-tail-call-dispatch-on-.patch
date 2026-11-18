@@ -1,0 +1,1208 @@
+From 3bc88b8d19f54aa35af1e9abe27fbb38d4fe5820 Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 02:38:40 +0000
+Subject: [PATCH 8/8] interpreter: fast paths in the tail-call dispatch on
+ riscv64
+
+On riscv64 a handler of the tail-call dispatch that calls anything, on
+a cold path as well, saves the registers it keeps across the call when
+it is entered and restores them when it leaves: 22 instructions in
+MSTORE, around its own work. An instruction too large to be inlined
+into its handler is called from it, and that costs the same again.
+
+A fast path is the common case of an opcode, written without a call.
+The handler tries it first. Where its conditions do not hold it has
+changed nothing, and the handler leaves with a tail call to
+dispatch_generic, which runs the instruction as any other is run, with
+its checks and its failures. Six opcodes have one:
+
+- MLOAD and MSTORE of a word at a multiple of 8 that the memory holds,
+  or can be grown to hold in the room its buffer has. The growth is
+  charged as Memory::resize_evm charges it.
+- CALLDATALOAD of a word within the call data, at a multiple of 4.
+- JUMP and a taken JUMPI end after the JUMPDEST they land on, whose
+  gas they charge with their own: one dispatch less.
+- PUSH2 runs the JUMP or JUMPI that follows it, which is how solc
+  reaches a label. The target is the operand, so no word is written
+  to the stack and read back, and one step takes the place of three.
+
+The step leaves the pc, the stack and the gas as the separate handlers
+do. Without the gas for all of it, with a full or an empty stack, or
+with a target that is no JUMPDEST, the opcode runs alone and the next
+handler reports what there is to report.
+
+Off with an inspector, and for an opcode that a config overrides or
+whose fast path runs one that it overrides. A table rebuilds the
+handlers of PUSH2, JUMP and JUMPI when an opcode they run changes.
+riscv64 only, and hosts built with --cfg evm2_as_on_riscv64.
+
+Instructions a block in a Pico guest of RSP, before and after:
+  13 mainnet blocks   155.667 M -> 149.793 M  (-3.77 %)
+  3 Sepolia blocks    430.330 M -> 425.443 M  (-1.14 %)
+  45 Sepolia blocks   536.225 M -> 527.649 M  (-1.60 %)
+The guests commit the same values on all 61 blocks.
+
+Tests, for every dispatch backend. Programs over the opcodes around a
+jump against a model that runs them one opcode at a time: every case
+of a PUSH2 with a jump after it, at every gas limit and at the stack
+depths that decide (0, 1, 2, 1022, 1023, 1024), then 200,000 random
+programs. The model counts the pairs by case and the tests require
+every case. A digest over what the interpreter leaves behind is the
+same for the tail-call dispatch with and without the fast paths and
+for the packed table. 20,000 programs that store and load words at
+offsets of every alignment, inside the memory and past its end,
+against a memory kept as bytes, a quarter of them with the gas running
+out at a random opcode. evm2's EEST runner passes its 28,647 fixtures
+with the cfg and without.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ crates/evm2/src/interpreter/dispatch/mod.rs   | 460 +++++++++++++++++-
+ crates/evm2/src/interpreter/dispatch/tco.rs   |  91 +++-
+ .../evm2/src/interpreter/dispatch/tco/fast.rs | 409 ++++++++++++++++
+ crates/evm2/src/interpreter/memory.rs         |  38 ++
+ crates/evm2/src/interpreter/stack.rs          |  65 +++
+ 5 files changed, 1046 insertions(+), 17 deletions(-)
+ create mode 100644 crates/evm2/src/interpreter/dispatch/tco/fast.rs
+
+diff --git a/crates/evm2/src/interpreter/dispatch/mod.rs b/crates/evm2/src/interpreter/dispatch/mod.rs
+index 921e3db9..d7cc1200 100644
+--- a/crates/evm2/src/interpreter/dispatch/mod.rs
++++ b/crates/evm2/src/interpreter/dispatch/mod.rs
+@@ -72,7 +72,10 @@ where
+     macro_rules! assign_instruction_table_entries {
+         ($($op:literal,)*) => {
+             $(
+-                if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
++                if (instruction_changed(vt, previous_opcode_config, $op)
++                    || fused_with_changed(vt, previous_opcode_config, $op))
++                    && !vt.is_unknown_opcode($op)
++                {
+                     table[$op] = imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>;
+                 }
+             )*
+@@ -216,6 +219,30 @@ const fn instruction_changed<T: EvmTypesHost>(
+     opcode_config.revision(op) != previous_opcode_config.revision(op)
+ }
+ 
++/// Whether the handler of `op` also runs other opcodes, one of which changed. On riscv64 the
++/// tail-call dispatch has fast paths in which a jump runs the `JUMPDEST` it lands on and `PUSH2`
++/// the jump after it; those handlers carry the static gas and the meaning of the opcodes they
++/// run, so they are rebuilt when one of them changes.
++const fn fused_with_changed<T: EvmTypesHost>(
++    opcode_config: &OpcodeConfig<T>,
++    previous_opcode_config: Option<&OpcodeConfig<T>>,
++    op: u8,
++) -> bool {
++    if !cfg!(any(target_arch = "riscv64", evm2_as_on_riscv64)) {
++        return false;
++    }
++    let landing = instruction_changed(opcode_config, previous_opcode_config, op::JUMPDEST);
++    match op {
++        op::JUMP | op::JUMPI => landing,
++        op::PUSH2 => {
++            landing
++                || instruction_changed(opcode_config, previous_opcode_config, op::JUMP)
++                || instruction_changed(opcode_config, previous_opcode_config, op::JUMPI)
++        }
++        _ => false,
++    }
++}
++
+ trait InspectMode<T: EvmTypesHost> {
+     /// Whether the dispatch calls the inspector's step hooks: from the handlers on the tail-call
+     /// backend, and from the loop on the others, where a hook must not run while a handler holds
+@@ -262,3 +289,434 @@ impl<T: EvmTypesHost, const ALL: bool> InspectMode<T> for DynInspector<ALL> {
+         state.inspect_step_end(pc, stack_len);
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    //! Programs over the opcodes around a jump and over words in memory, against models that run
++    //! them one opcode at a time. The models are the same for every build, so they hold the fast
++    //! paths of the tail-call dispatch (riscv64, or a host built with `--cfg evm2_as_on_riscv64`)
++    //! to what the instructions do.
++
++    use crate::{
++        interpreter::{InstrStop, Word, op},
++        test_utils::{RunConfig, run},
++    };
++    use alloc::{format, vec, vec::Vec};
++
++    const STACK_LIMIT: usize = 1024;
++
++    /// How a run stopped and with how many words on the stack and, when it stopped at a `STOP`,
++    /// the gas left and the words.
++    #[derive(Debug, PartialEq, Eq)]
++    struct Outcome {
++        stop: InstrStop,
++        stack_len: usize,
++        at_stop: Option<(u64, Vec<u64>)>,
++    }
++
++    /// What became of a `PUSH2` that a `JUMP` or `JUMPI` follows, by the case the fused step
++    /// tells apart.
++    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
++    enum Pair {
++        FullStack,
++        NoCondition,
++        NoGasForTheJump,
++        NotTaken,
++        BadTarget,
++        TakenWithGasForTheJumpdest,
++        TakenWithoutGasForTheJumpdest,
++    }
++
++    const PAIRS: [Pair; 7] = [
++        Pair::FullStack,
++        Pair::NoCondition,
++        Pair::NoGasForTheJump,
++        Pair::NotTaken,
++        Pair::BadTarget,
++        Pair::TakenWithGasForTheJumpdest,
++        Pair::TakenWithoutGasForTheJumpdest,
++    ];
++
++    /// Runs `code` one opcode at a time: the static gas first, then the stack, then the effect.
++    /// `pairs` counts the `PUSH2` + jump pairs it executes, by case.
++    fn model(code: &[u8], gas_limit: u64, pairs: &mut [usize; 7]) -> Outcome {
++        let at = |pc: usize| code.get(pc).copied().unwrap_or(op::STOP);
++        let mut dests = vec![false; code.len()];
++        let mut i = 0;
++        while i < code.len() {
++            match code[i] {
++                op::JUMPDEST => dests[i] = true,
++                push @ op::PUSH1..=op::PUSH32 => i += (push - op::PUSH1 + 1) as usize,
++                _ => {}
++            }
++            i += 1;
++        }
++        let is_dest = |target: u64| dests.get(target as usize).copied().unwrap_or(false);
++        let fail = |stop, stack_len| Outcome { stop, stack_len, at_stop: None };
++
++        let (mut pc, mut gas, mut stack) = (0usize, gas_limit, Vec::<u64>::new());
++        loop {
++            let opcode = at(pc);
++            let (cost, pops, pushes) = match opcode {
++                op::STOP => {
++                    let stack_len = stack.len();
++                    return Outcome {
++                        stop: InstrStop::Stop,
++                        stack_len,
++                        at_stop: Some((gas, stack)),
++                    };
++                }
++                op::POP => (2, 1, 0),
++                op::JUMP => (8, 1, 0),
++                op::JUMPI => (10, 2, 0),
++                op::JUMPDEST => (1, 0, 0),
++                op::PUSH0 => (2, 0, 1),
++                op::PUSH1 | op::PUSH2 => (3, 0, 1),
++                op::DUP1 => (3, 1, 2),
++                _ => unreachable!("the programs have no {opcode:#x}"),
++            };
++            let immediate = |n: usize| (1..=n).fold(0u64, |v, k| v << 8 | at(pc + k) as u64);
++
++            // The case of a pair, from the state before its `PUSH2`.
++            if opcode == op::PUSH2 && gas >= cost && matches!(at(pc + 3), op::JUMP | op::JUMPI) {
++                let jumpi = at(pc + 3) == op::JUMPI;
++                let jump_cost = if jumpi { 10 } else { 8 };
++                let left = gas - cost;
++                let case = if stack.len() == STACK_LIMIT {
++                    Pair::FullStack
++                } else if jumpi && stack.is_empty() {
++                    Pair::NoCondition
++                } else if left < jump_cost {
++                    Pair::NoGasForTheJump
++                } else if jumpi && *stack.last().unwrap() == 0 {
++                    Pair::NotTaken
++                } else if !is_dest(immediate(2)) {
++                    Pair::BadTarget
++                } else if left - jump_cost >= 1 {
++                    Pair::TakenWithGasForTheJumpdest
++                } else {
++                    Pair::TakenWithoutGasForTheJumpdest
++                };
++                pairs[PAIRS.iter().position(|p| *p == case).unwrap()] += 1;
++            }
++
++            // A failed opcode leaves the stack as it found it; a jump has popped its operands
++            // when it finds its target is none.
++            if gas < cost {
++                return fail(InstrStop::OutOfGas, stack.len());
++            }
++            gas -= cost;
++            if stack.len() < pops {
++                return fail(InstrStop::StackUnderflow, stack.len());
++            }
++            if stack.len() - pops + pushes > STACK_LIMIT {
++                return fail(InstrStop::StackOverflow, stack.len());
++            }
++            match opcode {
++                op::POP => {
++                    stack.pop();
++                    pc += 1;
++                }
++                op::JUMPDEST => pc += 1,
++                op::PUSH0 => {
++                    stack.push(0);
++                    pc += 1;
++                }
++                op::PUSH1 => {
++                    stack.push(immediate(1));
++                    pc += 2;
++                }
++                op::PUSH2 => {
++                    stack.push(immediate(2));
++                    pc += 3;
++                }
++                op::DUP1 => {
++                    stack.push(*stack.last().unwrap());
++                    pc += 1;
++                }
++                _ => {
++                    let target = stack.pop().unwrap();
++                    if opcode == op::JUMPI && stack.pop().unwrap() == 0 {
++                        pc += 1;
++                    } else if is_dest(target) {
++                        pc = target as usize;
++                    } else {
++                        return fail(InstrStop::InvalidJump, stack.len());
++                    }
++                }
++            }
++        }
++    }
++
++    /// Runs `code` on the interpreter and on the model, and compares. Returns everything the
++    /// interpreter leaves behind, as text: a build that fuses and one that does not must leave
++    /// the same, also where the model does not look (the gas and the stack of a failed run).
++    fn check(code: &[u8], gas_limit: u64, pairs: &mut [usize; 7]) -> alloc::string::String {
++        let expected = model(code, gas_limit, pairs);
++        let interp = run(RunConfig::new(code).gas_limit(gas_limit));
++        let stack: Vec<Word> = interp.stack().to_vec();
++        let at_stop = (interp.err == InstrStop::Stop).then(|| {
++            (interp.gas_remaining(), stack.iter().map(|w| w.to::<u64>()).collect::<Vec<_>>())
++        });
++        assert_eq!(
++            Outcome { stop: interp.err, stack_len: interp.stack_len, at_stop },
++            expected,
++            "gas limit {gas_limit}, code {}",
++            alloy_primitives::hex::encode(code)
++        );
++        format!("{:?} {} {} {:?}", interp.err, interp.gas_remaining(), interp.stack_len, stack)
++    }
++
++    /// `depth` words on the stack first, and the gas that takes.
++    fn with_depth(depth: usize, body: &[u8]) -> (Vec<u8>, u64) {
++        let mut code = vec![op::PUSH0; depth];
++        code.extend_from_slice(body);
++        (code, 2 * depth as u64)
++    }
++
++    /// The offset of a body's byte in the code [`with_depth`] gives, as a `PUSH2` operand.
++    fn target(depth: usize, offset: usize) -> [u8; 2] {
++        ((depth + offset) as u16).to_be_bytes()
++    }
++
++    /// Every case of a pair, at every depth where the stack decides and every gas limit up to
++    /// past the last opcode.
++    #[test]
++    fn push2_and_the_jump_after_it_at_every_gas_limit_and_depth() {
++        let mut pairs = [0usize; 7];
++        for depth in [0, 1, 2, STACK_LIMIT - 2, STACK_LIMIT - 1, STACK_LIMIT] {
++            let t = |offset: usize| target(depth, offset);
++            let bodies: Vec<Vec<u8>> = vec![
++                // jump to a JUMPDEST, right after and further on
++                vec![op::PUSH2, t(4)[0], t(4)[1], op::JUMP, op::JUMPDEST, op::STOP],
++                vec![op::PUSH2, t(6)[0], t(6)[1], op::JUMP, op::STOP, op::STOP, op::JUMPDEST],
++                // a JUMPDEST followed by more
++                vec![op::PUSH2, t(4)[0], t(4)[1], op::JUMP, op::JUMPDEST, op::PUSH0, op::POP],
++                // to something that is no JUMPDEST, to the data of a push, past the end
++                vec![op::PUSH2, t(5)[0], t(5)[1], op::JUMP, op::JUMPDEST, op::STOP],
++                vec![op::PUSH2, t(5)[0], t(5)[1], op::JUMP, op::PUSH1, op::JUMPDEST, op::STOP],
++                vec![op::PUSH2, 0xff, 0xff, op::JUMP, op::JUMPDEST],
++                // JUMPI on whatever is on top (nothing, or a zero), and on a one
++                vec![op::PUSH2, t(4)[0], t(4)[1], op::JUMPI, op::JUMPDEST, op::STOP],
++                vec![op::PUSH2, t(5)[0], t(5)[1], op::JUMPI, op::STOP, op::JUMPDEST, op::PUSH0],
++                vec![op::POP, op::PUSH1, 1, op::PUSH2, t(7)[0], t(7)[1], op::JUMPI, op::JUMPDEST],
++                vec![op::POP, op::PUSH1, 1, op::PUSH2, t(8)[0], t(8)[1], op::JUMPI, op::JUMPDEST],
++                vec![op::POP, op::PUSH1, 0, op::PUSH2, t(8)[0], t(8)[1], op::JUMPI, op::PUSH0],
++                // a loop, until the gas is gone
++                vec![op::JUMPDEST, op::PUSH2, t(0)[0], t(0)[1], op::JUMP],
++                vec![op::JUMPDEST, op::PUSH1, 1, op::PUSH2, t(0)[0], t(0)[1], op::JUMPI],
++                // PUSH2 with the jump or its own operand in the padding
++                vec![op::PUSH2, 0, 0],
++                vec![op::PUSH2, 0],
++                vec![op::PUSH2],
++                vec![op::JUMPDEST, op::PUSH2, 0, 0, op::JUMP],
++            ];
++            for body in bodies {
++                let (code, floor) = with_depth(depth, &body);
++                for gas in 0..=40 {
++                    check(&code, floor + gas, &mut pairs);
++                }
++                // and with too little for the words under it
++                check(&code, floor.saturating_sub(1), &mut pairs);
++            }
++        }
++        for (case, count) in PAIRS.iter().zip(pairs) {
++            assert!(count > 0, "no program reached {case:?}");
++        }
++    }
++
++    /// Two `JUMPDEST`s at offsets that are each other with the bytes swapped, and a different
++    /// word pushed after each: a jump lands where its operand says high byte first.
++    #[test]
++    fn a_jump_reads_its_target_high_byte_first() {
++        let mut pairs = [0usize; 7];
++        for jumpi in [false, true] {
++            for (operand, lands_on) in [([0x01, 0x02], 1), ([0x02, 0x01], 2)] {
++                let mut code = vec![op::STOP; 0x0201 + 4];
++                let head: &[u8] = if jumpi {
++                    &[op::PUSH1, 1, op::PUSH2, operand[0], operand[1], op::JUMPI]
++                } else {
++                    &[op::PUSH2, operand[0], operand[1], op::JUMP]
++                };
++                code[..head.len()].copy_from_slice(head);
++                code[0x0102..0x0102 + 3].copy_from_slice(&[op::JUMPDEST, op::PUSH1, 1]);
++                code[0x0201..0x0201 + 3].copy_from_slice(&[op::JUMPDEST, op::PUSH1, 2]);
++                for gas in 0..=30 {
++                    check(&code, gas, &mut pairs);
++                }
++                let interp = run(RunConfig::new(code).gas_limit(30));
++                assert_eq!(interp.err, InstrStop::Stop);
++                assert_eq!(interp.stack(), [Word::from(lands_on)]);
++            }
++        }
++    }
++
++    /// xorshift64: deterministic, so a failure reproduces.
++    struct Rng(u64);
++
++    impl Rng {
++        fn next(&mut self) -> u64 {
++            self.0 ^= self.0 << 13;
++            self.0 ^= self.0 >> 7;
++            self.0 ^= self.0 << 17;
++            self.0
++        }
++
++        fn below(&mut self, n: u64) -> u64 {
++            self.next() % n
++        }
++    }
++
++    /// Random programs over the same opcodes. Prints a digest of everything the interpreter left
++    /// behind over all of them (`--nocapture`), which a build that fuses and a build that does
++    /// not must agree on.
++    #[test]
++    fn random_programs_around_jumps_run_as_one_opcode_at_a_time() {
++        let mut rng = Rng(0x6a09_e667_f3bc_c908);
++        let mut pairs = [0usize; 7];
++        let mut digest = 0xcbf2_9ce4_8422_2325u64;
++        let programs = 200_000;
++        for _ in 0..programs {
++            let depth = match rng.below(16) {
++                0 => STACK_LIMIT,
++                1 => STACK_LIMIT - 1,
++                2 => STACK_LIMIT - 2,
++                _ => rng.below(3) as usize,
++            };
++            let len = 1 + rng.below(40) as usize;
++            let mut body = Vec::with_capacity(len + 4);
++            while body.len() < len {
++                // an operand that is mostly an offset of this body, at times anything
++                let near = |rng: &mut Rng| match rng.below(12) {
++                    0 => rng.next() as u16,
++                    _ => (depth as u64 + rng.below(len as u64 + 2)) as u16,
++                };
++                match rng.below(20) {
++                    0..=4 => {
++                        let [hi, lo] = near(&mut rng).to_be_bytes();
++                        let jump = if rng.below(2) == 0 { op::JUMP } else { op::JUMPI };
++                        body.extend([op::PUSH2, hi, lo, jump]);
++                    }
++                    5..=8 => body.push(op::JUMPDEST),
++                    9..=10 => body.extend([op::PUSH1, rng.below(3) as u8]),
++                    11 => body.extend([op::PUSH1, near(&mut rng) as u8]),
++                    12 => {
++                        let [hi, lo] = near(&mut rng).to_be_bytes();
++                        body.extend([op::PUSH2, hi, lo]);
++                    }
++                    13 => body.push(op::PUSH0),
++                    14 => body.push(op::DUP1),
++                    15..=16 => body.push(op::POP),
++                    17 => body.push(op::JUMP),
++                    18 => body.push(op::JUMPI),
++                    _ => body.push(op::STOP),
++                }
++            }
++            // at times cut inside the last instruction
++            body.truncate(len + rng.below(4) as usize);
++            let (code, floor) = with_depth(depth, &body);
++            let gas = match rng.below(8) {
++                0 => floor.saturating_sub(rng.below(4)),
++                1..=4 => floor + rng.below(60),
++                _ => floor + rng.below(400),
++            };
++            for byte in check(&code, gas, &mut pairs).bytes() {
++                digest = (digest ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
++            }
++        }
++        for (case, count) in PAIRS.iter().zip(pairs) {
++            assert!(count > 100, "only {count} programs reached {case:?}");
++        }
++        std::println!("jump programs: {programs}, pairs by case {pairs:?}, digest {digest:016x}");
++    }
++
++    /// Words stored and loaded at offsets of every alignment, inside the memory and past its
++    /// end, against a memory kept as bytes; then the same with the gas running out at a random
++    /// opcode, for which of the two kinds of gas it is.
++    #[test]
++    fn words_in_memory_are_stored_and_loaded_as_their_bytes() {
++        let mut rng = Rng(0x243f_6a88_85a3_08d3);
++        let cost = |words: u64| 3 * words + words * words / 512;
++        let (mut stops, mut failures, mut inside, mut aligned) = (0, 0, 0, 0);
++        for round in 0..20_000 {
++            let mut code = Vec::new();
++            // What each opcode needs of the gas: its static gas, then the gas for the memory.
++            let mut needs: Vec<(u64, u64)> = Vec::new();
++            let (mut memory, mut stack) = (Vec::<u8>::new(), Vec::<Word>::new());
++            for _ in 0..1 + rng.below(10) {
++                let offset = match rng.below(8) {
++                    0 => rng.below(300),
++                    1 => 32 * rng.below(8) + 4,
++                    2 => 32 * rng.below(8) + 8 * rng.below(4),
++                    _ => 32 * rng.below(8),
++                } as usize;
++                let kind = rng.below(8);
++                let size = if kind == 7 { 1 } else { 32 };
++                if kind < 7 && offset + size <= memory.len() {
++                    inside += 1;
++                    aligned += usize::from(offset % 8 == 0);
++                }
++                let (old, new) = (memory.len() as u64 / 32, (offset + size).div_ceil(32) as u64);
++                let grown = if new > old { cost(new) - cost(old) } else { 0 };
++                memory.resize(old.max(new) as usize * 32, 0);
++                let [high, low] = (offset as u16).to_be_bytes();
++                match kind {
++                    0..=3 => {
++                        // nothing but zeros, eight bytes, an address, a full word
++                        let mut bytes = [0u8; 32];
++                        let from = [32, 24, 12, 0][rng.below(4) as usize];
++                        bytes[from..].fill_with(|| rng.next() as u8);
++                        code.push(op::PUSH32);
++                        code.extend(bytes);
++                        code.extend([op::PUSH2, high, low, op::MSTORE]);
++                        needs.extend([(3, 0), (3, 0), (3, grown)]);
++                        memory[offset..offset + 32].copy_from_slice(&bytes);
++                    }
++                    4..=6 => {
++                        code.extend([op::PUSH2, high, low, op::MLOAD]);
++                        needs.extend([(3, 0), (3, grown)]);
++                        stack.push(Word::from_be_slice(&memory[offset..offset + 32]));
++                    }
++                    _ => {
++                        let byte = rng.next() as u8;
++                        code.extend([op::PUSH1, byte, op::PUSH2, high, low, op::MSTORE8]);
++                        needs.extend([(3, 0), (3, 0), (3, grown)]);
++                        memory[offset] = byte;
++                    }
++                }
++            }
++            code.push(op::MSIZE);
++            needs.push((2, 0));
++            stack.push(Word::from(memory.len() as u64));
++
++            let total: u64 = needs.iter().map(|(fixed, grown)| fixed + grown).sum();
++            let limit = if round % 4 == 0 { rng.below(total) } else { total + rng.below(50) };
++            let interp = run(RunConfig::new(&code[..]).gas_limit(limit));
++            let code = alloy_primitives::hex::encode(&code);
++            if limit >= total {
++                assert_eq!(interp.err, InstrStop::Stop, "gas limit {limit}, code {code}");
++                assert_eq!(interp.gas_remaining(), limit - total, "gas limit {limit}, code {code}");
++                assert_eq!(interp.stack().to_vec(), stack, "gas limit {limit}, code {code}");
++                stops += 1;
++            } else {
++                let mut left = limit;
++                let expected = needs.iter().find_map(|(fixed, grown)| {
++                    if left < *fixed {
++                        return Some(InstrStop::OutOfGas);
++                    }
++                    left -= fixed;
++                    if left < *grown {
++                        return Some(InstrStop::MemoryOOG);
++                    }
++                    left -= grown;
++                    None
++                });
++                assert_eq!(Some(interp.err), expected, "gas limit {limit}, code {code}");
++                failures += 1;
++            }
++        }
++        // Both ends of every run, and words inside the memory at multiples of 8 and elsewhere.
++        assert!(stops > 10_000 && failures > 3_000, "{stops} {failures}");
++        assert!(aligned > 10_000 && inside - aligned > 3_000, "{inside} {aligned}");
++    }
++}
+diff --git a/crates/evm2/src/interpreter/dispatch/tco.rs b/crates/evm2/src/interpreter/dispatch/tco.rs
+index 69d6e19a..95e24ddd 100644
+--- a/crates/evm2/src/interpreter/dispatch/tco.rs
++++ b/crates/evm2/src/interpreter/dispatch/tco.rs
+@@ -9,6 +9,9 @@ use crate::{
+ };
+ use core::hint::cold_path;
+ 
++#[cfg(any(target_arch = "riscv64", evm2_as_on_riscv64))]
++mod fast;
++
+ /// Tail instruction function pointer.
+ type TailInstrFn<T> = extern_table!(
+     fn(
+@@ -45,22 +48,14 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
+     state.result().unwrap_err()
+ }
+ 
+-extern_table! {
+-    // Without alignment, each handler's offset inside its 64-byte line depends on unrelated code
+-    // size. Aligned handlers run faster and vary less across layouts.
+-    #[cfg_attr(target_arch = "x86_64", rustc_align(64))]
+-    pub(super) fn dispatch<
+-        T: EvmTypesHost,
+-        C: EvmConfig<T>,
+-        M: InspectMode<T>,
+-        const OP: u8,
+-    >(
+-        mut pc: Pc,
+-        mut stack: RawStack<'_>,
+-        mut remaining_gas: RemainingGas,
+-        state: &mut InterpreterState<'_, '_, T>,
+-        instructions: *const (),
+-    ) {
++/// One instruction and the tail call to the next: the body of a handler.
++macro_rules! step {
++    ($pc:ident, $stack:ident, $remaining_gas:ident, $state:ident, $instructions:ident) => {{
++        let mut pc = $pc;
++        let mut stack = $stack;
++        let mut remaining_gas = $remaining_gas;
++        let state = $state;
++        let instructions = $instructions;
+         let instruction = C::OPCODE_CONFIG.instruction(OP);
+         let instr: InstructionImplFn<T> = instruction.instr;
+         let dynamic_gas = instruction.flags.contains(InstructionFlags::DYNAMIC_GAS);
+@@ -132,6 +127,70 @@ extern_table! {
+         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
+         let instr = instructions_t[pc.op() as usize];
+         tail_return!(instr(pc, stack, remaining_gas, state, instructions));
++    }};
++}
++
++extern_table! {
++    // Without alignment, each handler's offset inside its 64-byte line depends on unrelated code
++    // size. Aligned handlers run faster and vary less across layouts.
++    #[cfg_attr(target_arch = "x86_64", rustc_align(64))]
++    pub(super) fn dispatch<
++        T: EvmTypesHost,
++        C: EvmConfig<T>,
++        M: InspectMode<T>,
++        const OP: u8,
++    >(
++        pc: Pc,
++        stack: RawStack<'_>,
++        remaining_gas: RemainingGas,
++        state: &mut InterpreterState<'_, '_, T>,
++        instructions: *const (),
++    ) {
++        // On riscv64 the common case of a few opcodes has a path of its own, with no call in it.
++        // Where it does not apply it has changed nothing, and the instruction runs in a handler
++        // of its own, so that this one keeps no register across a call. See `fast`.
++        #[cfg(any(target_arch = "riscv64", evm2_as_on_riscv64))]
++        {
++            if const { !M::INSPECT && fast::has::<T, C>(OP) } {
++                let (mut pc, mut stack, mut remaining_gas) = (pc, stack, remaining_gas);
++                if let Some(next) =
++                    fast::run::<T, C, OP>(&mut pc, &mut stack, &mut remaining_gas, state)
++                {
++                    // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
++                    let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
++                    let instr = instructions_t[next as usize];
++                    tail_return!(instr(pc, stack, remaining_gas, state, instructions));
++                }
++                tail_return!(dispatch_generic::<T, C, M, OP>(
++                    pc,
++                    stack,
++                    remaining_gas,
++                    state,
++                    instructions
++                ));
++            }
++        }
++        step!(pc, stack, remaining_gas, state, instructions)
++    }
++}
++
++extern_table! {
++    /// [`dispatch`] behind its fast path: the instruction as any other is run.
++    #[cfg(any(target_arch = "riscv64", evm2_as_on_riscv64))]
++    #[inline(never)]
++    fn dispatch_generic<
++        T: EvmTypesHost,
++        C: EvmConfig<T>,
++        M: InspectMode<T>,
++        const OP: u8,
++    >(
++        pc: Pc,
++        stack: RawStack<'_>,
++        remaining_gas: RemainingGas,
++        state: &mut InterpreterState<'_, '_, T>,
++        instructions: *const (),
++    ) {
++        step!(pc, stack, remaining_gas, state, instructions)
+     }
+ }
+ 
+diff --git a/crates/evm2/src/interpreter/dispatch/tco/fast.rs b/crates/evm2/src/interpreter/dispatch/tco/fast.rs
+new file mode 100644
+index 00000000..431b3a59
+--- /dev/null
++++ b/crates/evm2/src/interpreter/dispatch/tco/fast.rs
+@@ -0,0 +1,409 @@
++//! Fast paths of the tail-call dispatch on riscv64.
++//!
++//! On riscv64 a handler that calls anything, on a cold path as well, saves the registers it keeps
++//! across the call when it is entered and restores them when it leaves: 22 instructions in
++//! `MSTORE`, around its own work. An instruction too large to be inlined into its handler is
++//! called from it, and that costs the same again.
++//!
++//! A fast path is the common case of an opcode, written without a call. [`dispatch`] tries it
++//! first. Where its conditions do not hold it has changed nothing, and the handler leaves with a
++//! tail call to [`dispatch_generic`], which runs the instruction as any other is run, with its
++//! checks and its failures.
++//!
++//! [`dispatch`]: super::dispatch
++//! [`dispatch_generic`]: super::dispatch_generic
++
++use crate::{
++    EvmConfig, EvmTypesHost,
++    interpreter::{InterpreterState, Pc, RawStack, Word, gas::RemainingGas, op},
++};
++
++/// Whether `C` has each of `opcodes` as its base spec has it. The static gas is always read from
++/// `C`.
++const fn as_in_base<T: EvmTypesHost, C: EvmConfig<T>>(opcodes: &[u8]) -> bool {
++    let config = C::OPCODE_CONFIG;
++    let base = crate::evm::config::SelectorOpcodeConfig::<
++        T,
++        crate::BaseEvmConfigSelector,
++        { u32::MAX },
++    >::OPCODE_CONFIG[C::BASE_SPEC_ID as usize];
++    let mut i = 0;
++    while i < opcodes.len() {
++        if config.is_unknown_opcode(opcodes[i]) || config.is_overridden(base, opcodes[i]) {
++            return false;
++        }
++        i += 1;
++    }
++    true
++}
++
++/// Whether the handler of `opcode` starts with a fast path: for the six opcodes below, in a
++/// config that has them, and what their fast paths run of other opcodes, as its base spec has.
++pub(super) const fn has<T: EvmTypesHost, C: EvmConfig<T>>(opcode: u8) -> bool {
++    match opcode {
++        op::MLOAD | op::MSTORE | op::CALLDATALOAD | op::PUSH2 => as_in_base::<T, C>(&[opcode]),
++        // A jump that is taken runs the `JUMPDEST` it lands on.
++        op::JUMP | op::JUMPI => as_in_base::<T, C>(&[opcode, op::JUMPDEST]),
++        _ => false,
++    }
++}
++
++/// Whether `PUSH2` runs a `JUMP` or `JUMPI` that follows it.
++const fn fuses_jumps<T: EvmTypesHost, C: EvmConfig<T>>() -> bool {
++    as_in_base::<T, C>(&[op::PUSH2, op::JUMP, op::JUMPI, op::JUMPDEST])
++}
++
++/// Runs the instruction at `pc` on its fast path, and returns the opcode the pc is then at, for
++/// the handler to pass control to. `None` when the fast path does not apply; nothing has changed
++/// then.
++///
++/// `OP` must be an opcode for which [`has`] holds.
++#[inline(always)]
++pub(super) fn run<T: EvmTypesHost, C: EvmConfig<T>, const OP: u8>(
++    pc: &mut Pc,
++    stack: &mut RawStack<'_>,
++    gas: &mut RemainingGas,
++    state: &mut InterpreterState<'_, '_, T>,
++) -> Option<u8> {
++    match OP {
++        op::MLOAD => mload::<T, C>(pc, stack, gas, state),
++        op::MSTORE => mstore::<T, C>(pc, stack, gas, state),
++        op::CALLDATALOAD => calldataload::<T, C>(pc, stack, gas, state),
++        op::JUMP => jump::<T, C>(pc, stack, gas, state),
++        op::JUMPI => jumpi::<T, C>(pc, stack, gas, state),
++        op::PUSH2 => push2::<T, C>(pc, stack, gas, state),
++        _ => None,
++    }
++}
++
++/// What `cost` leaves of the gas, or `None` where the gas does not cover it.
++///
++/// The counter is below 2^63 in this dispatch (`run` asserts it), so the sign of the difference
++/// tells, as in `RemainingGas::spend_static`.
++#[inline(always)]
++const fn left_after(gas: RemainingGas, cost: u64) -> Option<u64> {
++    let left = gas.get().wrapping_sub(cost);
++    if (left as i64) < 0 { None } else { Some(left) }
++}
++
++/// The address of the word at `offset` of the memory, and what is left of the gas after `cost`
++/// and after what growing the memory to hold the word costs.
++///
++/// For a word at a multiple of 8 that the memory holds or can be grown to hold without a call:
++/// in the room its buffer has ([`Memory::grow_in_place`]), with the gas for it. The memory is
++/// then grown and charged for as `Memory::resize_evm` does it. `None` for anything else, with
++/// nothing changed.
++///
++/// [`Memory::grow_in_place`]: crate::interpreter::Memory::grow_in_place
++#[inline(always)]
++fn word_in_memory<T: EvmTypesHost>(
++    state: &mut InterpreterState<'_, '_, T>,
++    offset: &Word,
++    gas: RemainingGas,
++    cost: u64,
++) -> Option<(*mut u8, u64)> {
++    let [offset, o1, o2, o3] = *offset.as_limbs();
++    if (o1 | o2 | o3) != 0 || !offset.is_multiple_of(8) {
++        return None;
++    }
++    let base = state.memory().as_mut_ptr();
++    if !(base as usize).is_multiple_of(8) {
++        return None;
++    }
++    let charged = *state.gas_mut().memory();
++    let size = charged.words_num as u64 * 32;
++    let left = if size >= 32 && offset <= size - 32 {
++        left_after(gas, cost)?
++    } else {
++        let words = offset.checked_add(32)?.div_ceil(32) as usize;
++        // SAFETY: Reading the gas parameters makes no host call.
++        let total = unsafe { state.gas_params_detached() }.memory_cost(words);
++        let grown = total.checked_sub(charged.expansion_cost)?;
++        // Far above any gas there is, and far below where `left_after` could be wrong.
++        if grown > u32::MAX as u64 {
++            return None;
++        }
++        let left = left_after(gas, cost + grown)?;
++        if !state.memory().grow_in_place(words) {
++            return None;
++        }
++        let _ = state.gas_mut().memory_mut().set_words_num(words, total);
++        left
++    };
++    // SAFETY: The memory is as long as the words charged for, the word ends within them, and
++    // growing in place does not move the buffer.
++    Some((unsafe { base.add(offset as usize) }, left))
++}
++
++/// `MLOAD` of a word at a multiple of 8 in the memory, grown in place if it has to be.
++#[inline(always)]
++fn mload<T: EvmTypesHost, C: EvmConfig<T>>(
++    pc: &mut Pc,
++    stack: &mut RawStack<'_>,
++    gas: &mut RemainingGas,
++    state: &mut InterpreterState<'_, '_, T>,
++) -> Option<u8> {
++    if stack.is_empty() {
++        return None;
++    }
++    // SAFETY: The stack is not empty, and no handler has it borrowed here.
++    let top = unsafe { stack.below_top_unchecked(0) };
++    let cost = C::OPCODE_CONFIG.static_gas(op::MLOAD) as u64;
++    // SAFETY: `top` is the word on top.
++    let Some((p, left)) = word_in_memory(state, unsafe { &*top }, *gas, cost) else {
++        return None;
++    };
++    // SAFETY: 32 bytes of the memory at a multiple of 8; `top` is the word on top; the byte after
++    // an `MLOAD` is in the code or in its padding.
++    unsafe {
++        top.write(crate::utils::read_be_word_aligned(p.cast()));
++        pc.advance_unchecked(1);
++    }
++    gas.set(left);
++    Some(pc.op())
++}
++
++/// `MSTORE` of a word at a multiple of 8 in the memory, grown in place if it has to be.
++#[inline(always)]
++fn mstore<T: EvmTypesHost, C: EvmConfig<T>>(
++    pc: &mut Pc,
++    stack: &mut RawStack<'_>,
++    gas: &mut RemainingGas,
++    state: &mut InterpreterState<'_, '_, T>,
++) -> Option<u8> {
++    if !stack.has(2) {
++        return None;
++    }
++    // SAFETY: There are two words on the stack, and no handler has it borrowed here.
++    let (offset, value) =
++        unsafe { (&*stack.below_top_unchecked(0), &*stack.below_top_unchecked(1)) };
++    let cost = C::OPCODE_CONFIG.static_gas(op::MSTORE) as u64;
++    let Some((p, left)) = word_in_memory(state, offset, *gas, cost) else {
++        return None;
++    };
++    // SAFETY: 32 bytes of the memory at a multiple of 8; two words on the stack; the byte after
++    // an `MSTORE` is in the code or in its padding.
++    unsafe {
++        crate::utils::write_be_word_aligned(p.cast(), value);
++        stack.drop_unchecked(2);
++        pc.advance_unchecked(1);
++    }
++    gas.set(left);
++    Some(pc.op())
++}
++
++/// `CALLDATALOAD` of a word that lies within the call data, at a multiple of 4.
++#[inline(always)]
++fn calldataload<T: EvmTypesHost, C: EvmConfig<T>>(
++    pc: &mut Pc,
++    stack: &mut RawStack<'_>,
++    gas: &mut RemainingGas,
++    state: &mut InterpreterState<'_, '_, T>,
++) -> Option<u8> {
++    let Some(left) = left_after(*gas, C::OPCODE_CONFIG.static_gas(op::CALLDATALOAD) as u64) else {
++        return None;
++    };
++    if stack.is_empty() {
++        return None;
++    }
++    // SAFETY: The stack is not empty, and no handler has it borrowed here.
++    let top = unsafe { stack.below_top_unchecked(0) };
++    // SAFETY: `top` is the word on top.
++    let [offset, o1, o2, o3] = unsafe { *(*top).as_limbs() };
++    let input = state.input();
++    let len = input.len() as u64;
++    if (o1 | o2 | o3) != 0 || len < 32 || offset > len - 32 {
++        return None;
++    }
++    // SAFETY: The word ends within the call data.
++    let p = unsafe { input.as_ptr().add(offset as usize) };
++    // SAFETY: 32 bytes of the call data, at a multiple of 8 or of 4.
++    let word = if (p as usize).is_multiple_of(8) {
++        unsafe { crate::utils::read_be_word_aligned(p.cast()) }
++    } else if (p as usize).is_multiple_of(4) {
++        unsafe { crate::utils::read_be_word_halves(p.cast()) }
++    } else {
++        return None;
++    };
++    // SAFETY: `top` is the word on top; the byte after a `CALLDATALOAD` is in the code or in its
++    // padding.
++    unsafe {
++        top.write(word);
++        pc.advance_unchecked(1);
++    }
++    gas.set(left);
++    Some(pc.op())
++}
++
++/// The offset in the code that the word `target` names, when it is a `JUMPDEST`.
++#[inline(always)]
++fn jumpdest<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>, target: &Word) -> Option<usize> {
++    let [target, t1, t2, t3] = *target.as_limbs();
++    if (t1 | t2 | t3) != 0 {
++        return None;
++    }
++    if state.bytecode().is_valid_jumpdest(target as usize) { Some(target as usize) } else { None }
++}
++
++/// `JUMP` to a `JUMPDEST`, with gas for both: the pc is left after the `JUMPDEST`, which has
++/// nothing to do but be paid for.
++#[inline(always)]
++fn jump<T: EvmTypesHost, C: EvmConfig<T>>(
++    pc: &mut Pc,
++    stack: &mut RawStack<'_>,
++    gas: &mut RemainingGas,
++    state: &mut InterpreterState<'_, '_, T>,
++) -> Option<u8> {
++    let config = C::OPCODE_CONFIG;
++    let cost = config.static_gas(op::JUMP) as u64 + config.static_gas(op::JUMPDEST) as u64;
++    let Some(left) = left_after(*gas, cost) else {
++        return None;
++    };
++    if stack.is_empty() {
++        return None;
++    }
++    // SAFETY: The stack is not empty, and no handler has it borrowed here.
++    let Some(target) = jumpdest(state, unsafe { &*stack.below_top_unchecked(0) }) else {
++        return None;
++    };
++    // SAFETY: The stack is not empty; the byte after a `JUMPDEST` is in the code or its padding.
++    unsafe {
++        stack.drop_unchecked(1);
++        pc.set_unchecked(state.bytecode(), target + 1);
++    }
++    gas.set(left);
++    Some(pc.op())
++}
++
++/// `JUMPI`: not taken, or taken as [`jump`] is.
++#[inline(always)]
++fn jumpi<T: EvmTypesHost, C: EvmConfig<T>>(
++    pc: &mut Pc,
++    stack: &mut RawStack<'_>,
++    gas: &mut RemainingGas,
++    state: &mut InterpreterState<'_, '_, T>,
++) -> Option<u8> {
++    let config = C::OPCODE_CONFIG;
++    let cost = config.static_gas(op::JUMPI) as u64;
++    if !stack.has(2) {
++        return None;
++    }
++    // SAFETY: There are two words on the stack, and no handler has it borrowed here.
++    let (target, condition) =
++        unsafe { (&*stack.below_top_unchecked(0), &*stack.below_top_unchecked(1)) };
++    if condition.is_zero() {
++        let Some(left) = left_after(*gas, cost) else {
++            return None;
++        };
++        // SAFETY: Two words on the stack; the byte after a `JUMPI` is in the code or its padding.
++        unsafe {
++            stack.drop_unchecked(2);
++            pc.advance_unchecked(1);
++        }
++        gas.set(left);
++        return Some(pc.op());
++    }
++    let Some(left) = left_after(*gas, cost + config.static_gas(op::JUMPDEST) as u64) else {
++        return None;
++    };
++    let Some(target) = jumpdest(state, target) else {
++        return None;
++    };
++    // SAFETY: Two words on the stack; the byte after a `JUMPDEST` is in the code or its padding.
++    unsafe {
++        stack.drop_unchecked(2);
++        pc.set_unchecked(state.bytecode(), target + 1);
++    }
++    gas.set(left);
++    Some(pc.op())
++}
++
++/// `PUSH2`, and with it the `JUMP` or `JUMPI` that follows, which is how solc reaches a label.
++///
++/// As three handlers the pair is a word written to the stack and read back, the upper limbs of
++/// the target tested for zero and three dispatches, the third for the `JUMPDEST`. Here the
++/// target is the operand. The fused step is taken with gas for all of it and a target that is a
++/// `JUMPDEST`; otherwise the `PUSH2` runs alone, and the handler of the jump finds what there is
++/// to report, with the pc, the stack and the gas it always had.
++///
++/// The one difference from the separate handlers is the slot above the top, where they leave
++/// the target and the fused step leaves what was there. Nothing reads a slot above the top.
++#[inline(always)]
++fn push2<T: EvmTypesHost, C: EvmConfig<T>>(
++    pc: &mut Pc,
++    stack: &mut RawStack<'_>,
++    gas: &mut RemainingGas,
++    state: &mut InterpreterState<'_, '_, T>,
++) -> Option<u8> {
++    let config = C::OPCODE_CONFIG;
++    let push = config.static_gas(op::PUSH2) as u64;
++    if stack.is_full() {
++        return None;
++    }
++    // SAFETY: A legacy code ends with 33 bytes of zero padding, so the three bytes after a
++    // `PUSH2` opcode are in the allocation wherever the opcode is.
++    let (operand, next) = unsafe {
++        let p = pc.as_ptr();
++        ((*p.add(1) as usize) << 8 | *p.add(2) as usize, *p.add(3))
++    };
++    // `JUMP` and `JUMPI` are 0x56 and 0x57: one comparison for both.
++    if const { fuses_jumps::<T, C>() } && next & !1 == op::JUMP {
++        let landing = config.static_gas(op::JUMPDEST) as u64;
++        if next == op::JUMP {
++            let cost = push + config.static_gas(op::JUMP) as u64 + landing;
++            let Some(left) = left_after(*gas, cost) else {
++                return None;
++            };
++            if !state.bytecode().is_valid_jumpdest(operand) {
++                return None;
++            }
++            // SAFETY: The byte after a `JUMPDEST` is in the code or in its padding.
++            unsafe { pc.set_unchecked(state.bytecode(), operand + 1) };
++            gas.set(left);
++            return Some(pc.op());
++        }
++        let cost = push + config.static_gas(op::JUMPI) as u64;
++        if stack.is_empty() {
++            return None;
++        }
++        // SAFETY: The stack is not empty, and no handler has it borrowed here.
++        if unsafe { &*stack.below_top_unchecked(0) }.is_zero() {
++            let Some(left) = left_after(*gas, cost) else {
++                return None;
++            };
++            // SAFETY: The stack is not empty; `PUSH2`, its operand and the `JUMPI` are in the
++            // code, and padding follows it.
++            unsafe {
++                stack.drop_unchecked(1);
++                pc.advance_unchecked(4);
++            }
++            gas.set(left);
++            return Some(pc.op());
++        }
++        let Some(left) = left_after(*gas, cost + landing) else {
++            return None;
++        };
++        if !state.bytecode().is_valid_jumpdest(operand) {
++            return None;
++        }
++        // SAFETY: The stack is not empty; the byte after a `JUMPDEST` is in the code or its
++        // padding.
++        unsafe {
++            stack.drop_unchecked(1);
++            pc.set_unchecked(state.bytecode(), operand + 1);
++        }
++        gas.set(left);
++        return Some(pc.op());
++    }
++    let Some(left) = left_after(*gas, push) else {
++        return None;
++    };
++    // SAFETY: The stack is not full; the three bytes of a `PUSH2` are in the code or its padding.
++    unsafe {
++        stack.push_u64_unchecked(operand as u64);
++        pc.advance_unchecked(3);
++    }
++    gas.set(left);
++    // The opcode after the operand, which was read before the push.
++    Some(next)
++}
+diff --git a/crates/evm2/src/interpreter/memory.rs b/crates/evm2/src/interpreter/memory.rs
+index 01c8e1c4..ed0f2f72 100644
+--- a/crates/evm2/src/interpreter/memory.rs
++++ b/crates/evm2/src/interpreter/memory.rs
+@@ -140,6 +140,44 @@ impl Memory {
+         Ok(())
+     }
+ 
++    /// Grows the memory to `words` words, the new ones zero, where that takes no allocation: the
++    /// buffer has the room and starts at a multiple of 8, and the limit allows the size. Says
++    /// whether it did. There is no call in it, which is what the fast paths of the tail-call
++    /// dispatch on riscv64 need.
++    #[cfg(all(tco, any(target_arch = "riscv64", evm2_as_on_riscv64)))]
++    #[inline(always)]
++    pub(crate) fn grow_in_place(&mut self, words: usize) -> bool {
++        let old_size = self.data.len();
++        let Some(new_size) = words.checked_mul(32) else {
++            return false;
++        };
++        let base = self.data.as_mut_ptr();
++        if new_size > self.data.capacity()
++            || new_size <= old_size
++            || !old_size.is_multiple_of(32)
++            || !(base as usize).is_multiple_of(8)
++            || self.limit_reached(words)
++        {
++            return false;
++        }
++        // SAFETY: `old_size..new_size` is within the capacity, starts at a multiple of 8 and is
++        // a multiple of 32 bytes long; its bytes are written before the length covers them.
++        unsafe {
++            let mut p = base.add(old_size).cast::<u64>();
++            let end = base.add(new_size).cast::<u64>();
++            while p < end {
++                // Volatile, so that the loop stays one: as a `memset` it would be a call.
++                p.write_volatile(0);
++                p.add(1).write_volatile(0);
++                p.add(2).write_volatile(0);
++                p.add(3).write_volatile(0);
++                p = p.add(4);
++            }
++            self.data.set_len(new_size);
++        }
++        true
++    }
++
+     /// Returns whether `new_words` exceeds the memory limit.
+     #[inline]
+     pub const fn limit_reached(&self, new_words: usize) -> bool {
+diff --git a/crates/evm2/src/interpreter/stack.rs b/crates/evm2/src/interpreter/stack.rs
+index afcf7c36..f6fb90d4 100644
+--- a/crates/evm2/src/interpreter/stack.rs
++++ b/crates/evm2/src/interpreter/stack.rs
+@@ -255,6 +255,71 @@ impl<'a> RawStack<'a> {
+     }
+ }
+ 
++/// What the fast paths of the tail-call dispatch on riscv64 ask of the stack.
++#[cfg(all(tco, any(target_arch = "riscv64", evm2_as_on_riscv64)))]
++impl RawStack<'_> {
++    /// Whether a push would overflow.
++    #[inline(always)]
++    pub(crate) const fn is_full(self) -> bool {
++        self.len == Stack::CAPACITY * RAW_LEN_SCALE
++    }
++
++    /// Whether there is no word to pop.
++    #[inline(always)]
++    pub(crate) const fn is_empty(self) -> bool {
++        self.len == 0
++    }
++
++    /// Whether there are `words` words to pop.
++    #[inline(always)]
++    pub(crate) const fn has(self, words: usize) -> bool {
++        self.len >= words * RAW_LEN_SCALE
++    }
++
++    /// The slot above the top.
++    #[inline(always)]
++    const fn end(self) -> *mut Word {
++        // The stored length in bytes: itself where it is kept in bytes, so there is no shift.
++        let bytes = self.len * (size_of::<Word>() / RAW_LEN_SCALE);
++        // SAFETY: At most the capacity of the backing.
++        unsafe { self.stack.cast::<Word>().byte_add(bytes) }
++    }
++
++    /// The word `depth` below the one on top.
++    ///
++    /// # Safety
++    ///
++    /// The stack has more than `depth` words. The word may be read and written while no
++    /// [`Stack`] borrowed from this stack is live.
++    #[inline(always)]
++    pub(crate) const unsafe fn below_top_unchecked(self, depth: usize) -> *mut Word {
++        // SAFETY: The first `len` words are in the backing, and the caller has `len > depth`.
++        unsafe { self.end().sub(depth + 1) }
++    }
++
++    /// Pops `words` words without reading them.
++    ///
++    /// # Safety
++    ///
++    /// The stack has that many.
++    #[inline(always)]
++    pub(crate) const unsafe fn drop_unchecked(&mut self, words: usize) {
++        self.len -= words * RAW_LEN_SCALE;
++    }
++
++    /// Pushes `value`.
++    ///
++    /// # Safety
++    ///
++    /// The stack is not full, and no [`Stack`] borrowed from it is live.
++    #[inline(always)]
++    pub(crate) const unsafe fn push_u64_unchecked(&mut self, value: u64) {
++        // SAFETY: The slot above the top is in the backing while the stack is not full.
++        unsafe { self.end().write(Word::from_limbs([value, 0, 0, 0])) };
++        self.len += RAW_LEN_SCALE;
++    }
++}
++
+ impl<'a> StackMut<'a> {
+     pub(crate) const CAPACITY: usize = STACK_LIMIT;
+ 
+-- 
+2.43.0
+

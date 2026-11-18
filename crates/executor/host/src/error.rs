@@ -1,7 +1,7 @@
+use alloy_primitives::B256;
 use alloy_rpc_types::ConversionError;
 use alloy_transport::TransportError;
 use reth_errors::BlockExecutionError;
-use revm_primitives::B256;
 use rsp_mpt::FromProofError;
 use rsp_rpc_db::RpcDbError;
 
@@ -19,6 +19,8 @@ pub enum Error {
     PostExecutionCheck(#[from] reth_errors::ConsensusError),
     #[error("Local Execution Failed {0}")]
     ExecutionFailed(#[from] BlockExecutionError),
+    #[error("Local Execution Failed {0}")]
+    Client(#[from] rsp_client_executor::error::ClientError),
     #[error("Failed to construct a valid state trie from RPC data {0}")]
     FromProof(#[from] FromProofError),
     #[error("RPC didnt have expected block height {0}")]

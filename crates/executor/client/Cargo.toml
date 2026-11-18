@@ -25,6 +25,9 @@ rsp-primitives.workspace = true
 # arena mpt (only used when the `arena` feature is enabled)
 bumpalo = { workspace = true, optional = true }
 
+# the preimage of the config digest, and the frame of the flat witness
+bincode = "1.3.3"
+
 # reth
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
@@ -32,19 +35,25 @@ reth-ethereum-consensus.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-execution-types.workspace = true
 reth-primitives-traits.workspace = true
-reth-trie.workspace = true
+reth-trie-common.workspace = true
 reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-errors.workspace = true
 reth-chainspec.workspace = true
 
-# revm
-revm.workspace = true
-revm-primitives.workspace = true
+# evm2
+evm2.workspace = true
+
+# precompile cryptography, see `src/custom.rs`
+bls12_381.workspace = true
+bn.workspace = true
+k256.workspace = true
 kzg-rs.workspace = true
+p256.workspace = true
+sha2.workspace = true
 
 # alloy
-alloy-evm.workspace = true
+alloy-eip7928.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-network.workspace = true
@@ -59,3 +68,8 @@ native-keccak = ["alloy-primitives/native-keccak"]
 # `EthereumState` MPT. Switches the witness codec, the guest stdin reading, and the trie backend
 # together (host + guest must agree). The arena MPT is not yet audited — opt-in only.
 arena = ["dep:bumpalo"]
+# Select the flat-RLP witness of our `pico-rv64` branch (`rsp_mpt::FlatTries`): every trie as its
+# nodes' RLP in pre-order, read in place, with the post-state root computed from the node blobs
+# and the block's changes. Like `arena` it switches the witness codec, the guest's stdin reading
+# and the trie backend together, and excludes `arena`.
+flat = []

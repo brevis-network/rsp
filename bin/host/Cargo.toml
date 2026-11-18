@@ -32,8 +32,8 @@ alloy-provider.workspace = true
 # reth 
 reth-primitives-traits.workspace = true
 
-# revm
-revm-bytecode.workspace = true
+# evm2
+evm2.workspace = true
 
 # sp1
 sp1-sdk.workspace = true

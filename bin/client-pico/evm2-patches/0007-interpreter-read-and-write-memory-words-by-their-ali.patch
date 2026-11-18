@@ -1,0 +1,476 @@
+From 7f2fe7429726f40efa8aeddc6e3644f9ef7bed38 Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 02:38:39 +0000
+Subject: [PATCH 7/8] interpreter: read and write memory words by their
+ alignment on riscv64
+
+MLOAD, MSTORE and CALLDATALOAD move a 32-byte big-endian word between
+memory and the stack. riscv64im has neither misaligned loads nor a
+byte swap, so byte by byte that is 32 loads or stores, each with its
+shift.
+
+At an address that is a multiple of 8 a word is four loads or stores
+and the reversal of each limb. At a multiple of 4 it is eight, and
+with the half from the lower address in the upper half of the limb,
+only the bytes of each half are left to reverse. A limb that is zero
+is not reversed. Other addresses take the path they took.
+
+The reversal is the three stages of masks and shifts, 13 instructions,
+in assembly: written in Rust, LLVM recognises the stages and puts its
+own lowering of a byte swap in their place, an or-tree of the shifted
+bytes (21 to 23 instructions, as measured in our revm fork, where this
+comes from). The masks are loaded from memory.
+
+For a word of EVM memory to lie at a multiple of 8, the buffer has to
+start at one. RSP's guest allocator aligns every block so.
+
+Instructions a block in a Pico guest of RSP, before and after:
+  13 mainnet blocks   157.522 M -> 155.667 M  (-1.18 %)
+  3 Sepolia blocks    432.535 M -> 430.330 M  (-0.51 %)
+  45 Sepolia blocks   539.710 M -> 536.225 M  (-0.65 %)
+The guests commit the same values on all 61 blocks. The gain is held
+back by MSTORE, whose instruction is no longer inlined into its
+handler; the next commit takes that up.
+
+Tests: a word read and written at 16 consecutive addresses, for 252
+words of every shape the paths tell apart, against from_be_bytes and
+to_be_bytes, with the bytes beside it checked; the two stages of the
+reversal against swap_bytes; CALLDATALOAD's padding past the end of
+the data. On a host these run the same paths with the stages in Rust.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../evm2/src/interpreter/instructions/env.rs  |   4 +-
+ .../src/interpreter/instructions/memory.rs    |   2 +-
+ crates/evm2/src/interpreter/memory.rs         |  18 +-
+ crates/evm2/src/utils.rs                      | 325 +++++++++++++++++-
+ 4 files changed, 342 insertions(+), 7 deletions(-)
+
+diff --git a/crates/evm2/src/interpreter/instructions/env.rs b/crates/evm2/src/interpreter/instructions/env.rs
+index 5344721d..4ba00273 100644
+--- a/crates/evm2/src/interpreter/instructions/env.rs
++++ b/crates/evm2/src/interpreter/instructions/env.rs
+@@ -2,7 +2,7 @@ use crate::{
+     EvmTypesHost,
+     evm::AccountLoad,
+     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
+-    utils::{WordExt, read_word_padded},
++    utils::WordExt,
+     version::GasParams,
+ };
+ use evm2_macros::instruction;
+@@ -72,7 +72,7 @@ pub fn callvalue(cx: _) -> out {
+ #[instruction]
+ pub fn calldataload(cx: _, [offset]: [Word]) -> out {
+     let offset = offset.to_usize_saturated();
+-    *out = crate::utils::word_from_be_bytes(&read_word_padded(cx.state.input(), offset).0);
++    *out = crate::utils::read_be_word_padded(cx.state.input(), offset);
+ }
+ 
+ #[instruction]
+diff --git a/crates/evm2/src/interpreter/instructions/memory.rs b/crates/evm2/src/interpreter/instructions/memory.rs
+index 379bdbe1..c2366181 100644
+--- a/crates/evm2/src/interpreter/instructions/memory.rs
++++ b/crates/evm2/src/interpreter/instructions/memory.rs
+@@ -12,7 +12,7 @@ pub fn mload(cx: _, [offset]: [Word]) -> Result<out> {
+ pub fn mstore(cx: _, [offset, value]: [Word]) -> Result {
+     let offset = offset.to_usize()?;
+     cx.state.resize_memory(cx.gas, offset, 32)?;
+-    cx.state.memory().set(offset, &value.to_be_bytes::<32>());
++    cx.state.memory().set_word(offset, value);
+ }
+ 
+ #[instruction(dynamic_gas)]
+diff --git a/crates/evm2/src/interpreter/memory.rs b/crates/evm2/src/interpreter/memory.rs
+index 55d5ecaa..01c8e1c4 100644
+--- a/crates/evm2/src/interpreter/memory.rs
++++ b/crates/evm2/src/interpreter/memory.rs
+@@ -173,12 +173,26 @@ impl Memory {
+     #[inline]
+     #[cfg_attr(debug_assertions, track_caller)]
+     pub fn get_word(&self, offset: usize) -> Word {
+-        match self.slice_range(offset..offset + 32).first_chunk() {
+-            Some(bytes) => crate::utils::word_from_be_bytes(bytes),
++        match self.slice_range(offset..offset + 32).first_chunk::<32>() {
++            // SAFETY: a chunk is 32 readable bytes.
++            Some(bytes) => unsafe { crate::utils::read_be_word(bytes.as_ptr()) },
+             None => debug_unreachable!("a 32-byte range is 32 bytes long"),
+         }
+     }
+ 
++    /// Writes a word to memory.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the range is out of bounds.
++    #[inline]
++    #[cfg_attr(debug_assertions, track_caller)]
++    pub fn set_word(&mut self, offset: usize, value: &Word) {
++        let bytes = self.slice_range_mut(offset..offset + 32);
++        // SAFETY: the range is 32 writable bytes.
++        unsafe { crate::utils::write_be_word(bytes.as_mut_ptr(), value) };
++    }
++
+     /// Writes bytes into memory.
+     ///
+     /// # Panics
+diff --git a/crates/evm2/src/utils.rs b/crates/evm2/src/utils.rs
+index 036605ba..209384f4 100644
+--- a/crates/evm2/src/utils.rs
++++ b/crates/evm2/src/utils.rs
+@@ -46,7 +46,7 @@ pub(crate) fn word_from_be_bytes(b: &[u8; 32]) -> Word {
+     }
+ }
+ 
+-#[cfg(any(test, target_arch = "riscv64"))]
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
+ #[inline(always)]
+ const fn limb_from_be_bytes_bytewise(b: &[u8; 8]) -> u64 {
+     (b[0] as u64) << 56
+@@ -59,7 +59,7 @@ const fn limb_from_be_bytes_bytewise(b: &[u8; 8]) -> u64 {
+         | b[7] as u64
+ }
+ 
+-#[cfg(any(test, target_arch = "riscv64"))]
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
+ #[inline(always)]
+ fn word_from_be_bytes_bytewise(b: &[u8; 32]) -> Word {
+     let (limbs, _) = b.as_chunks::<8>();
+@@ -71,6 +71,234 @@ fn word_from_be_bytes_bytewise(b: &[u8; 32]) -> Word {
+     ])
+ }
+ 
++/// Reads the big-endian word in the 32 bytes at `p`.
++///
++/// # Safety
++///
++/// `p` must be valid for a read of 32 bytes.
++#[inline(always)]
++pub(crate) unsafe fn read_be_word(p: *const u8) -> Word {
++    core::cfg_select! {
++        any(target_arch = "riscv64", evm2_as_on_riscv64) => unsafe { read_be_word_by_alignment(p) },
++        _ => Word::from_be_bytes(unsafe { p.cast::<[u8; 32]>().read() }),
++    }
++}
++
++/// Writes `word` big-endian to the 32 bytes at `p`.
++///
++/// # Safety
++///
++/// `p` must be valid for a write of 32 bytes.
++#[inline(always)]
++pub(crate) unsafe fn write_be_word(p: *mut u8, word: &Word) {
++    core::cfg_select! {
++        any(target_arch = "riscv64", evm2_as_on_riscv64) => unsafe { write_be_word_by_alignment(p, word) },
++        _ => unsafe { p.cast::<[u8; 32]>().write(word.to_be_bytes::<32>()) },
++    }
++}
++
++/// Reads the big-endian word at `offset` of `data`, with zeros for the bytes past its end.
++#[inline]
++pub(crate) fn read_be_word_padded(data: &[u8], offset: usize) -> Word {
++    match data.get(offset..).and_then(|rest| rest.first_chunk::<32>()) {
++        // SAFETY: a chunk is 32 readable bytes.
++        Some(chunk) => unsafe { read_be_word(chunk.as_ptr()) },
++        None => word_from_be_bytes(&read_word_padded(data, offset).0),
++    }
++}
++
++/// The masks of the two stages of [`reverse_halves`].
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++static BYTES_MASK: u64 = 0x00ff_00ff_00ff_00ff;
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++static PAIRS_MASK: u64 = 0x0000_ffff_0000_ffff;
++
++/// The two masks, loaded from memory.
++///
++/// The volatile read hides their values from LLVM, which then loads them where it would build
++/// each constant in a register, and cannot fold the stages back into its own byte swap.
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++#[inline(always)]
++fn reversal_masks() -> (u64, u64) {
++    // SAFETY: both are initialised statics.
++    unsafe { (core::ptr::read_volatile(&BYTES_MASK), core::ptr::read_volatile(&PAIRS_MASK)) }
++}
++
++/// Reverses the bytes of each 32-bit half of `x`, given [`reversal_masks`]: adjacent bytes are
++/// swapped, then adjacent pairs of bytes. The halves stay where they are.
++///
++/// Ten instructions, in assembly because LLVM recognises the stages in Rust and replaces them
++/// with its own lowering of a byte swap, which on riscv64 without Zbb is an or-tree of the
++/// shifted bytes: 21 to 23 instructions for a `u64`, as measured in the revm fork this is taken
++/// from.
++#[cfg(all(target_arch = "riscv64", not(target_feature = "zbb")))]
++#[inline(always)]
++fn reverse_halves(x: u64, bytes: u64, pairs: u64) -> u64 {
++    let y: u64;
++    // SAFETY: arithmetic on registers; no memory, no stack.
++    unsafe {
++        core::arch::asm!(
++            "srli {t0}, {x}, 8",
++            "and  {t0}, {t0}, {bytes}",
++            "and  {t1}, {x}, {bytes}",
++            "slli {t1}, {t1}, 8",
++            "or   {y}, {t0}, {t1}",
++            "srli {t0}, {y}, 16",
++            "and  {t0}, {t0}, {pairs}",
++            "and  {t1}, {y}, {pairs}",
++            "slli {t1}, {t1}, 16",
++            "or   {y}, {t0}, {t1}",
++            x = in(reg) x,
++            bytes = in(reg) bytes,
++            pairs = in(reg) pairs,
++            t0 = out(reg) _,
++            t1 = out(reg) _,
++            y = out(reg) y,
++            options(pure, nomem, nostack, preserves_flags),
++        );
++    }
++    y
++}
++
++/// [`reverse_halves`] where the assembly does not apply: the same two stages, which is what the
++/// tests of a host run.
++#[cfg(all(
++    any(test, target_arch = "riscv64", evm2_as_on_riscv64),
++    not(all(target_arch = "riscv64", not(target_feature = "zbb")))
++))]
++#[inline(always)]
++const fn reverse_halves(x: u64, bytes: u64, pairs: u64) -> u64 {
++    let y = ((x >> 8) & bytes) | ((x & bytes) << 8);
++    ((y >> 16) & pairs) | ((y & pairs) << 16)
++}
++
++/// Reverses the bytes of `x`: [`reverse_halves`], and the halves exchanged.
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++#[inline(always)]
++fn reverse_bytes(x: u64, bytes: u64, pairs: u64) -> u64 {
++    reverse_halves(x, bytes, pairs).rotate_left(32)
++}
++
++/// Reads the big-endian word in the four `u64`s at `p`. A limb that is zero is not reversed.
++///
++/// # Safety
++///
++/// `p` must be valid for a read of four `u64`s.
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++#[inline(always)]
++pub(crate) unsafe fn read_be_word_aligned(p: *const u64) -> Word {
++    let (bytes, pairs) = reversal_masks();
++    // SAFETY: four readable `u64`s.
++    let limb = |i: usize| match unsafe { p.add(i).read() } {
++        0 => 0,
++        x => reverse_bytes(x, bytes, pairs),
++    };
++    Word::from_limbs([limb(3), limb(2), limb(1), limb(0)])
++}
++
++/// Writes `word` big-endian to the four `u64`s at `p`. A limb that is zero is not reversed.
++///
++/// # Safety
++///
++/// `p` must be valid for a write of four `u64`s.
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++#[inline(always)]
++pub(crate) unsafe fn write_be_word_aligned(p: *mut u64, word: &Word) {
++    let (bytes, pairs) = reversal_masks();
++    let [l0, l1, l2, l3] = *word.as_limbs();
++    let put = |i: usize, limb: u64| {
++        let x = if limb == 0 { 0 } else { reverse_bytes(limb, bytes, pairs) };
++        // SAFETY: four writable `u64`s.
++        unsafe { p.add(i).write(x) }
++    };
++    put(0, l3);
++    put(1, l2);
++    put(2, l1);
++    put(3, l0);
++}
++
++/// Reads the big-endian word in the eight `u32`s at `p`. With the half from the lower address
++/// put in the upper half of the limb, only the bytes of each half are left to reverse.
++///
++/// # Safety
++///
++/// `p` must be valid for a read of eight `u32`s.
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++#[inline(always)]
++pub(crate) unsafe fn read_be_word_halves(p: *const u32) -> Word {
++    let (bytes, pairs) = reversal_masks();
++    let limb = |i: usize| {
++        // SAFETY: eight readable `u32`s.
++        let (upper, lower) = unsafe { (p.add(2 * i).read(), p.add(2 * i + 1).read()) };
++        match u64::from(upper) << 32 | u64::from(lower) {
++            0 => 0,
++            x => reverse_halves(x, bytes, pairs),
++        }
++    };
++    Word::from_limbs([limb(3), limb(2), limb(1), limb(0)])
++}
++
++/// [`read_be_word`] for a target with neither misaligned loads nor a byte swap, riscv64im.
++///
++/// Byte by byte a word is 32 loads, each with its shift. At a multiple of 8 it is four loads and
++/// the reversal of each limb. At a multiple of 4 it is eight loads, and with the half from the
++/// lower address put in the upper half of the limb, only the bytes of each half are left to
++/// reverse. A limb that is zero is not reversed.
++///
++/// # Safety
++///
++/// `p` must be valid for a read of 32 bytes.
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++#[inline(always)]
++unsafe fn read_be_word_by_alignment(p: *const u8) -> Word {
++    let address = p as usize;
++    if address.is_multiple_of(8) {
++        // SAFETY: 32 readable bytes at a multiple of 8.
++        unsafe { read_be_word_aligned(p.cast()) }
++    } else if address.is_multiple_of(4) {
++        // SAFETY: 32 readable bytes at a multiple of 4.
++        unsafe { read_be_word_halves(p.cast()) }
++    } else {
++        // SAFETY: 32 readable bytes.
++        word_from_be_bytes_bytewise(unsafe { &*p.cast::<[u8; 32]>() })
++    }
++}
++
++/// [`write_be_word`] for riscv64im: the mirror of [`read_be_word_by_alignment`].
++///
++/// # Safety
++///
++/// `p` must be valid for a write of 32 bytes.
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++#[inline(always)]
++unsafe fn write_be_word_by_alignment(p: *mut u8, word: &Word) {
++    let address = p as usize;
++    if address.is_multiple_of(8) {
++        // SAFETY: 32 writable bytes at a multiple of 8.
++        unsafe { write_be_word_aligned(p.cast(), word) }
++    } else if address.is_multiple_of(4) {
++        let (bytes, pairs) = reversal_masks();
++        let [l0, l1, l2, l3] = *word.as_limbs();
++        let p = p.cast::<u32>();
++        let put = |i: usize, limb: u64| {
++            let x = if limb == 0 { 0 } else { reverse_halves(limb, bytes, pairs) };
++            // SAFETY: 32 writable bytes at a multiple of 4. The upper half goes to the lower
++            // address.
++            unsafe {
++                p.add(2 * i).write((x >> 32) as u32);
++                p.add(2 * i + 1).write(x as u32);
++            }
++        };
++        put(0, l3);
++        put(1, l2);
++        put(2, l1);
++        put(3, l0);
++    } else {
++        // SAFETY: 32 writable bytes.
++        unsafe { p.cast::<[u8; 32]>().write(word.to_be_bytes::<32>()) }
++    }
++}
++
+ /// Extension methods for stack words.
+ ///
+ /// This trait is sealed and only implemented for [`Word`].
+@@ -413,6 +641,99 @@ mod tests {
+     use super::*;
+     use core::assert_matches;
+ 
++    /// 64 bytes that start at a multiple of 8.
++    #[repr(align(8))]
++    struct Aligned([u8; 64]);
++
++    /// Words of every shape the paths by alignment tell apart: each limb zero or not, small
++    /// values, an address, all ones, and bytes that are all different.
++    fn words() -> Vec<[u8; 32]> {
++        let mut words = vec![[0; 32], [0xff; 32], core::array::from_fn(|i| i as u8 + 1)];
++        for zero_limbs in 0u8..16 {
++            words.push(core::array::from_fn(|i| {
++                if zero_limbs >> (i / 8) & 1 == 1 { 0 } else { (i as u8).wrapping_mul(37) ^ 0x80 }
++            }));
++        }
++        for len in 1..=32 {
++            words.push(core::array::from_fn(|i| if i >= 32 - len { 0xa0 + i as u8 } else { 0 }));
++        }
++        // An address: twelve zero bytes and twenty that are not.
++        words.push(core::array::from_fn(|i| if i < 12 { 0 } else { 0xc0 + i as u8 }));
++        let mut state = 0x9e37_79b9_7f4a_7c15u64;
++        for _ in 0..200 {
++            words.push(core::array::from_fn(|_| {
++                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                (state >> 56) as u8
++            }));
++        }
++        words
++    }
++
++    #[test]
++    fn a_word_is_read_the_same_at_every_alignment() {
++        for bytes in words() {
++            let expected = Word::from_be_bytes(bytes);
++            for shift in 0..16 {
++                let mut buffer = Aligned([0xa5; 64]);
++                buffer.0[shift..shift + 32].copy_from_slice(&bytes);
++                let p = buffer.0[shift..].as_ptr();
++                assert_eq!(p as usize % 8, shift % 8);
++                assert_eq!(unsafe { read_be_word_by_alignment(p) }, expected, "shift {shift}");
++                assert_eq!(unsafe { read_be_word(p) }, expected, "shift {shift}");
++            }
++        }
++    }
++
++    #[test]
++    fn a_word_is_written_the_same_at_every_alignment_and_nothing_beside_it() {
++        for bytes in words() {
++            let word = Word::from_be_bytes(bytes);
++            for shift in 0..16 {
++                for write in [0, 1] {
++                    let mut buffer = Aligned([0x5a; 64]);
++                    let p = buffer.0[shift..].as_mut_ptr();
++                    if write == 0 {
++                        unsafe { write_be_word_by_alignment(p, &word) };
++                    } else {
++                        unsafe { write_be_word(p, &word) };
++                    }
++                    assert_eq!(buffer.0[shift..shift + 32], bytes, "shift {shift}");
++                    let beside = buffer.0[..shift].iter().chain(&buffer.0[shift + 32..]);
++                    assert!(beside.copied().all(|byte| byte == 0x5a), "shift {shift}");
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn the_two_stages_reverse_the_bytes_of_each_half() {
++        let (bytes, pairs) = reversal_masks();
++        assert_eq!((bytes, pairs), (0x00ff_00ff_00ff_00ff, 0x0000_ffff_0000_ffff));
++        let mut x = 0x0123_4567_89ab_cdefu64;
++        for _ in 0..1000 {
++            let halves = u64::from(((x >> 32) as u32).swap_bytes()) << 32
++                | u64::from((x as u32).swap_bytes());
++            assert_eq!(reverse_halves(x, bytes, pairs), halves);
++            assert_eq!(reverse_bytes(x, bytes, pairs), x.swap_bytes());
++            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++        }
++        for x in [0, 1, u64::MAX, 0xff, 0xff00_0000_0000_0000] {
++            assert_eq!(reverse_bytes(x, bytes, pairs), x.swap_bytes());
++        }
++    }
++
++    #[test]
++    fn a_word_past_the_end_of_the_data_is_padded_with_zeros() {
++        let data: Vec<u8> = (1..=70).collect();
++        for len in [0, 1, 31, 32, 33, 63, 64, 70] {
++            let data = &data[..len];
++            for offset in (0..80).chain([usize::MAX - 31, usize::MAX]) {
++                let expected = Word::from_be_bytes(read_word_padded(data, offset).0);
++                assert_eq!(read_be_word_padded(data, offset), expected, "{len} {offset}");
++            }
++        }
++    }
++
+     #[test]
+     fn bytewise_big_endian_matches_from_be_bytes() {
+         let patterns: [[u8; 32]; 4] = [
+-- 
+2.43.0
+

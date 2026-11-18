@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
+use alloy_primitives::{address, Address};
 use alloy_provider::{network::Ethereum, Network, RootProvider};
 use reth_chainspec::ChainSpec;
-use reth_evm::ConfigureEvm;
-use revm_primitives::{address, Address};
 use rsp_client_executor::{
-    executor::{ClientExecutor, EthClientExecutor},
+    executor::{ClientExecutor, EthClientExecutor, ExecutorFactoryAccess},
     io::ClientExecutorInput,
     BlockValidator, FromInput, IntoInput, IntoPrimitives,
 };
@@ -23,6 +22,7 @@ async fn test_e2e_ethereum() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "Clique chains need a custom beneficiary, which the evm2 port does not support yet"]
 async fn test_e2e_linea() {
     run_eth_e2e(
         &Genesis::Linea,
@@ -76,7 +76,7 @@ async fn run_e2e<C, CS, N>(
     genesis: &Genesis,
     custom_beneficiary: Option<Address>,
 ) where
-    C: ConfigureEvm,
+    C: ExecutorFactoryAccess,
     C::Primitives: FromInput
         + IntoPrimitives<N>
         + IntoInput

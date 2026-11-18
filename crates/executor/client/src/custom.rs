@@ -1,160 +1,21 @@
-//! A cunstom EVM configuration for annotated precompiles.
+//! The cryptography behind the EVM's precompiles, on the libraries Pico accelerates.
 //!
-//! Originally from: https://github.com/paradigmxyz/alphanet/blob/main/crates/node/src/evm.rs.
+//! evm2's own backends are k256 0.14, p256 0.14 and sha2 0.11 from RustCrypto, and arkworks for
+//! the pairing curves. Pico's patched crates, whose field and curve arithmetic run as syscalls in
+//! the guest, are k256 0.13, p256 0.13, sha2 0.10, substrate-bn and bls12_381, so
+//! [`CustomCrypto`] sends each of those precompiles there; left to evm2 they would run in
+//! software. Outside the guest the same code runs as plain Rust.
 //!
-//! The [CustomEvmConfig] type implements the [ConfigureEvm] and [ConfigureEvmEnv] traits,
-//! configuring the custom CustomEvmConfig precompiles and instructions.
+//! The KZG point evaluation is on kzg-rs. MODEXP of at most 256 bits runs on the UINT256_MUL
+//! precompile, in the guest only; see [`crate::modexp`].
 
-use alloy_evm::EthEvm;
+use alloy_primitives::keccak256;
+use evm2::precompiles::{Crypto, PrecompileHalt};
+use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use kzg_rs::{Bytes32, Bytes48, KzgProof, KzgSettings};
-use reth_evm::{eth::EthEvmBuilder, precompiles::PrecompilesMap, Database, EvmEnv, EvmFactory};
-use revm::{
-    bytecode::opcode::OpCode,
-    context::{
-        result::{EVMError, HaltReason},
-        BlockEnv, CfgEnv, TxEnv,
-    },
-    interpreter::{
-        interpreter_types::{Jumps, LoopControl},
-        Interpreter, InterpreterTypes,
-    },
-    precompile::{Crypto, PrecompileHalt, PrecompileSpecId, Precompiles},
-    Context, Inspector,
-};
-use revm_primitives::{hardfork::SpecId, Address};
-use std::fmt::Debug;
+use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone)]
-pub struct CustomEvmFactory {
-    // Some chains uses Clique consensus, which is not implemented in Reth.
-    // The main difference for execution is the block beneficiary: Reth will
-    // credit the block reward to the beneficiary address, whereas in Clique,
-    // the reward is credited to the signer.
-    custom_beneficiary: Option<Address>,
-}
-
-impl CustomEvmFactory {
-    pub fn new(custom_beneficiary: Option<Address>) -> Self {
-        Self { custom_beneficiary }
-    }
-}
-
-impl EvmFactory for CustomEvmFactory {
-    type Evm<DB: Database, I: revm::Inspector<Self::Context<DB>>> = EthEvm<DB, I, PrecompilesMap>;
-
-    type Context<DB: Database> = Context<BlockEnv, TxEnv, CfgEnv, DB>;
-
-    type BlockEnv = BlockEnv;
-
-    type Tx = TxEnv;
-
-    type Error<DBError: std::error::Error + Send + Sync + 'static> = EVMError<DBError>;
-
-    type HaltReason = HaltReason;
-
-    type Spec = SpecId;
-
-    type Precompiles = PrecompilesMap;
-
-    fn create_evm<DB: Database>(
-        &self,
-        db: DB,
-        mut input: EvmEnv,
-    ) -> Self::Evm<DB, revm::inspector::NoOpInspector> {
-        if let Some(custom_beneficiary) = self.custom_beneficiary {
-            input.block_env.beneficiary = custom_beneficiary;
-        }
-
-        #[allow(unused_mut)]
-        let mut precompiles = PrecompilesMap::from_static(Precompiles::new(
-            PrecompileSpecId::from_spec_id(input.cfg_env.spec),
-        ));
-
-        #[cfg(target_os = "zkvm")]
-        precompiles.map_precompiles(|address, p| {
-            use alloy_evm::precompiles::Precompile;
-            use reth_evm::precompiles::PrecompileInput;
-            use revm::precompile::u64_to_address;
-            use std::collections::HashMap;
-
-            let addresses_to_names = HashMap::from([
-                (u64_to_address(1), "ecrecover"),
-                (u64_to_address(2), "sha256"),
-                (u64_to_address(3), "ripemd160"),
-                (u64_to_address(4), "identity"),
-                (u64_to_address(5), "modexp"),
-                (u64_to_address(6), "bn-add"),
-                (u64_to_address(7), "bn-mul"),
-                (u64_to_address(8), "bn-pair"),
-                (u64_to_address(9), "blake2f"),
-                (u64_to_address(10), "kzg-point-evaluation"),
-                (u64_to_address(11), "bls-g1add"),
-                (u64_to_address(12), "bls-g1msm"),
-                (u64_to_address(13), "bls-g2add"),
-                (u64_to_address(14), "bls-g2msm"),
-                (u64_to_address(15), "bls-pairing"),
-                (u64_to_address(16), "bls-map-fp-to-g1"),
-                (u64_to_address(17), "bls-map-fp2-to-g2"),
-            ]);
-
-            let name = addresses_to_names.get(address).cloned().unwrap_or("unknown");
-
-            let precompile = move |input: PrecompileInput<'_>| {
-                println!("cycle-tracker-report-start: precompile-{name}");
-                let result = p.call(input);
-                println!("cycle-tracker-report-end: precompile-{name}");
-
-                result
-            };
-            precompile.into()
-        });
-
-        EthEvmBuilder::new(db, input).precompiles(precompiles).build()
-    }
-
-    fn create_evm_with_inspector<DB: Database, I: revm::Inspector<Self::Context<DB>>>(
-        &self,
-        db: DB,
-        mut input: EvmEnv,
-        inspector: I,
-    ) -> Self::Evm<DB, I> {
-        if let Some(custom_beneficiary) = self.custom_beneficiary {
-            input.block_env.beneficiary = custom_beneficiary;
-        }
-
-        EthEvm::new(self.create_evm(db, input).into_inner().with_inspector(inspector), true)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OpCodeTrackingInspector {
-    current: String,
-}
-
-impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for OpCodeTrackingInspector {
-    #[inline]
-    fn step(&mut self, interp: &mut Interpreter<INTR>, context: &mut CTX) {
-        let _ = context;
-
-        if interp.bytecode.instruction_result().is_some() {
-            return;
-        }
-
-        self.current = OpCode::name_by_op(interp.bytecode.opcode()).to_lowercase();
-
-        #[cfg(target_os = "zkvm")]
-        println!("cycle-tracker-report-start: opcode-{}", self.current);
-    }
-
-    #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<INTR>, context: &mut CTX) {
-        let _ = interp;
-        let _ = context;
-
-        #[cfg(target_os = "zkvm")]
-        println!("cycle-tracker-report-end: opcode-{}", self.current);
-    }
-}
+use crate::eip2537::{self, G1Point, G1PointScalar, G2Point, G2PointScalar};
 
 #[derive(Debug)]
 pub struct CustomCrypto {
@@ -168,6 +29,23 @@ impl Default for CustomCrypto {
 }
 
 impl Crypto for CustomCrypto {
+    fn sha256(&self, input: &[u8]) -> [u8; 32] {
+        Sha256::digest(input).into()
+    }
+
+    fn secp256k1_ecrecover(
+        &self,
+        sig: &[u8; 64],
+        recid: u8,
+        msg: &[u8; 32],
+    ) -> Result<[u8; 32], PrecompileHalt> {
+        ecrecover(sig, recid, msg).ok_or(PrecompileHalt::Secp256k1RecoverFailed)
+    }
+
+    fn secp256r1_verify_signature(&self, msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> bool {
+        p256_verify(msg, sig, pk).is_some()
+    }
+
     fn verify_kzg_proof(
         &self,
         z: &[u8; 32],
@@ -175,18 +53,113 @@ impl Crypto for CustomCrypto {
         commitment: &[u8; 48],
         proof: &[u8; 48],
     ) -> Result<(), PrecompileHalt> {
-        if !KzgProof::verify_kzg_proof(
+        match KzgProof::verify_kzg_proof(
             &Bytes48(*commitment),
             &Bytes32(*z),
             &Bytes32(*y),
             &Bytes48(*proof),
             &self.kzg_settings,
-        )
-        .map_err(|err| PrecompileHalt::other(err.to_string()))?
-        {
-            return Err(PrecompileHalt::BlobVerifyKzgProofFailed);
+        ) {
+            Ok(true) => Ok(()),
+            // An input that does not decode fails the precompile the same way a bad proof does.
+            Ok(false) | Err(_) => Err(PrecompileHalt::BlobVerifyKzgProofFailed),
         }
-
-        Ok(())
     }
+
+    // EIP-196 and EIP-197, in the guest only; see `crate::bn254` for why.
+
+    #[cfg(target_os = "zkvm")]
+    fn bn254_g1_add(&self, p1: &[u8], p2: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
+        crate::bn254::g1_add(p1, p2)
+    }
+
+    #[cfg(target_os = "zkvm")]
+    fn bn254_g1_mul(&self, point: &[u8], scalar: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
+        crate::bn254::g1_mul(point, scalar)
+    }
+
+    #[cfg(target_os = "zkvm")]
+    fn bn254_pairing_check(&self, pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
+        crate::bn254::pairing_check(pairs)
+    }
+
+    // MODEXP of at most 256 bits, in the guest only; see `crate::modexp`.
+
+    #[cfg(target_os = "zkvm")]
+    fn modexp(&self, base: &[u8], exp: &[u8], modulus: &[u8]) -> Result<Vec<u8>, PrecompileHalt> {
+        match crate::modexp::on_uint256_mul(base, exp, modulus) {
+            Some(output) => Ok(output),
+            None => evm2::precompiles::DefaultCrypto::new().modexp(base, exp, modulus),
+        }
+    }
+
+    // EIP-2537; see `crate::eip2537`.
+
+    fn bls12_381_g1_add(&self, a: G1Point, b: G1Point) -> Result<[u8; 96], PrecompileHalt> {
+        eip2537::g1_add(a, b)
+    }
+
+    fn bls12_381_g1_msm(
+        &self,
+        pairs: &mut dyn Iterator<Item = Result<G1PointScalar, PrecompileHalt>>,
+    ) -> Result<[u8; 96], PrecompileHalt> {
+        eip2537::g1_msm(pairs)
+    }
+
+    fn bls12_381_g2_add(&self, a: G2Point, b: G2Point) -> Result<[u8; 192], PrecompileHalt> {
+        eip2537::g2_add(a, b)
+    }
+
+    fn bls12_381_g2_msm(
+        &self,
+        pairs: &mut dyn Iterator<Item = Result<G2PointScalar, PrecompileHalt>>,
+    ) -> Result<[u8; 192], PrecompileHalt> {
+        eip2537::g2_msm(pairs)
+    }
+
+    fn bls12_381_pairing_check(
+        &self,
+        pairs: &[(G1Point, G2Point)],
+    ) -> Result<bool, PrecompileHalt> {
+        eip2537::pairing_check(pairs)
+    }
+
+    fn bls12_381_fp_to_g1(&self, fp: &[u8; 48]) -> Result<[u8; 96], PrecompileHalt> {
+        eip2537::map_fp_to_g1(fp)
+    }
+
+    fn bls12_381_fp2_to_g2(&self, fp2: ([u8; 48], [u8; 48])) -> Result<[u8; 192], PrecompileHalt> {
+        eip2537::map_fp2_to_g2(fp2)
+    }
+}
+
+/// ECRECOVER: the signer's address, left-padded to 32 bytes, or `None` when the signature
+/// recovers no key. The steps of evm2's k256 backend, on k256 0.13.
+fn ecrecover(sig: &[u8; 64], mut recid: u8, msg: &[u8; 32]) -> Option<[u8; 32]> {
+    let mut sig = Signature::from_slice(sig).ok()?;
+    // k256 recovers from a low-s signature only; (r, n - s) with the other recovery id is the
+    // same signature.
+    if let Some(normalized) = sig.normalize_s() {
+        sig = normalized;
+        recid ^= 1;
+    }
+    let recid = RecoveryId::from_byte(recid)?;
+    let key = VerifyingKey::recover_from_prehash(msg, &sig, recid).ok()?;
+    let mut hash = keccak256(&key.to_encoded_point(false).as_bytes()[1..]);
+    hash[..12].fill(0);
+    Some(hash.0)
+}
+
+/// P256VERIFY: `Some` when `sig` (`r || s`) is a signature of the prehash `msg` under the public
+/// key `pk` (`x || y`). The steps of evm2's p256 backend, on p256 0.13.
+fn p256_verify(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> Option<()> {
+    use p256::{
+        ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey},
+        EncodedPoint,
+    };
+
+    let signature = Signature::from_slice(sig).ok()?;
+    let point = EncodedPoint::from_untagged_bytes(&(*pk).into());
+    let key = VerifyingKey::from_encoded_point(&point).ok()?;
+    key.verify_prehash(msg, &signature).ok()
 }

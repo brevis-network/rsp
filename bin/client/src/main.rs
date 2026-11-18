@@ -6,7 +6,6 @@ use rsp_client_executor::{
     io::{CommittedHeader, EthClientExecutorInput},
     utils::profile_report,
 };
-use std::sync::Arc;
 
 pub fn main() {
     // Read the input.
@@ -27,18 +26,14 @@ pub fn main() {
         {
             let header_bytes = sp1_zkvm::io::read_vec();
             let mut input: EthClientExecutorInput = bincode::deserialize(&header_bytes).unwrap();
-            input.parent_state = sp1_zkvm::io::read_vec();
+            input.parent_state = sp1_zkvm::io::read_vec().into();
             input
         }
     });
 
-    // Execute the block.
-    let executor = EthClientExecutor::eth(
-        Arc::new((&input.genesis).try_into().unwrap()),
-        input.custom_beneficiary,
-    );
-    let header = executor.execute(input).expect("failed to execute client");
+    // Execute the block under the chain configuration the input names.
+    let committed = EthClientExecutor::execute_committed(input).expect("failed to execute client");
 
-    // Commit the block header.
-    sp1_zkvm::io::commit::<CommittedHeader>(&header.into());
+    // Commit the derived header together with the digest of that configuration.
+    sp1_zkvm::io::commit::<CommittedHeader>(&committed);
 }

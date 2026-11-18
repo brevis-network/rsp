@@ -11,8 +11,12 @@ pub enum ClientError {
     MismatchedStateRoot,
     #[error("Mismatched storage root after executing the block")]
     MismatchedStorageRoot,
+    #[error("The block access list has {} items, the block gas limit allows {}", .0, .1)]
+    BlockAccessListTooLarge(u64, u64),
     #[error("unknown chain ID: {}", .0)]
     UnknownChainId(u64),
+    #[error("opcode tracking is not available on evm2")]
+    OpcodeTrackingUnsupported,
     #[error("Missing bytecode for account {}", .0)]
     MissingBytecode(Address),
     #[error("Missing trie for address {}", .0)]
@@ -31,4 +35,8 @@ pub enum ClientError {
     FailedToReadGenesisFile(#[from] std::io::Error),
     #[error("Failed to deserialize the genesis file: {}", .0)]
     FailedToDeserializeGenesisFile(#[from] serde_json::Error),
+    #[error("Failed to serialize the configuration: {}", .0)]
+    FailedToSerializeConfig(#[from] bincode::Error),
+    #[error("The genesis does not give a chain spec: {}", .0)]
+    InvalidGenesis(#[from] rsp_primitives::error::ChainSpecError),
 }

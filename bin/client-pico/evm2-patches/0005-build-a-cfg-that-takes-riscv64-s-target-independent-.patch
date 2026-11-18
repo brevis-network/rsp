@@ -1,0 +1,90 @@
+From 50e9cd96c331b6119f7b063597b4e1f2b4a4c24b Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Sat, 14 Nov 2026 06:03:18 +0000
+Subject: [PATCH] build: a cfg that takes riscv64's target-independent paths on
+ any host
+
+`--cfg evm2_as_on_riscv64` makes a build for any target charge an
+opcode's static gas by the sign of the difference, as riscv64 does, with
+the check of the counter that goes with it. A host's test suites (the
+unit tests, EEST) then run that code. Without the cfg nothing changes.
+
+One unit test starts a system call with a gas limit of u64::MAX, which
+that check refuses; it expects the panic where the check is compiled.
+---
+ crates/evm2/build.rs                        | 4 ++++
+ crates/evm2/src/evm/system.rs               | 6 ++++++
+ crates/evm2/src/interpreter/dispatch/tco.rs | 2 +-
+ crates/evm2/src/interpreter/gas.rs          | 4 ++--
+ 4 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/crates/evm2/build.rs b/crates/evm2/build.rs
+index fec262a3..d8897a7e 100644
+--- a/crates/evm2/build.rs
++++ b/crates/evm2/build.rs
+@@ -6,6 +6,10 @@ fn main() {
+     for cfg in ["cranelift", "dispatch_packed", "dispatch_unpacked", "tco"] {
+         println!("cargo:rustc-check-cfg=cfg({cfg})");
+     }
++    // Set by hand (`RUSTFLAGS="--cfg evm2_as_on_riscv64"`): takes, on any target, the paths that
++    // are otherwise riscv64's and do not depend on the target, so that the test suites of a host
++    // run them.
++    println!("cargo:rustc-check-cfg=cfg(evm2_as_on_riscv64)");
+     println!("cargo:rerun-if-changed=build.rs");
+ 
+     let clif = is_cranelift_backend();
+diff --git a/crates/evm2/src/evm/system.rs b/crates/evm2/src/evm/system.rs
+index 5167e5b3..6ceb881d 100644
+--- a/crates/evm2/src/evm/system.rs
++++ b/crates/evm2/src/evm/system.rs
+@@ -566,7 +566,13 @@ mod tests {
+         assert_eq!(result.execution_gas_spent(), regular_gas);
+     }
+ 
++    // On riscv64 a frame does not start with a counter above 2^63 - 1 (see the tail-call
++    // dispatch's `run`), and a host built to take riscv64's paths does not either.
+     #[test]
++    #[cfg_attr(
++        all(tco, any(target_arch = "riscv64", evm2_as_on_riscv64)),
++        should_panic(expected = "the gas counter is above 2^63 - 1")
++    )]
+     fn system_call_total_covers_state_gas_with_unbounded_gas_limit() {
+         let contract = Address::repeat_byte(0x42);
+         let code = Bytecode::new_legacy(Bytes::from_static(&[
+diff --git a/crates/evm2/src/interpreter/dispatch/tco.rs b/crates/evm2/src/interpreter/dispatch/tco.rs
+index d78e93b5..69d6e19a 100644
+--- a/crates/evm2/src/interpreter/dispatch/tco.rs
++++ b/crates/evm2/src/interpreter/dispatch/tco.rs
+@@ -35,7 +35,7 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
+     // On riscv64 an opcode's static charge tests the sign of the counter
+     // (`RemainingGas::spend_static`), which is the comparison it stands for below 2^63. No
+     // block has gas above that (EIP-1985), so a frame that would start with it does not run.
+-    #[cfg(target_arch = "riscv64")]
++    #[cfg(any(target_arch = "riscv64", evm2_as_on_riscv64))]
+     assert!(interpreter.gas.remaining() <= i64::MAX as u64, "the gas counter is above 2^63 - 1");
+     let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
+     let (state, pc, stack) = run_state(interpreter);
+diff --git a/crates/evm2/src/interpreter/gas.rs b/crates/evm2/src/interpreter/gas.rs
+index 277d56af..57d17c9c 100644
+--- a/crates/evm2/src/interpreter/gas.rs
++++ b/crates/evm2/src/interpreter/gas.rs
+@@ -538,14 +538,14 @@ impl RemainingGas {
+     #[inline(always)]
+     pub(crate) const fn spend_static(&mut self, cost: u64) -> Result {
+         core::cfg_select! {
+-            target_arch = "riscv64" => self.spend_by_sign(cost),
++            any(target_arch = "riscv64", evm2_as_on_riscv64) => self.spend_by_sign(cost),
+             _ => self.spend(cost),
+         }
+     }
+ 
+     /// [`Self::spend`] by the sign of the difference: the same result and the same counter
+     /// after it, for a counter and a cost that are both below 2^63.
+-    #[cfg(any(test, target_arch = "riscv64"))]
++    #[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
+     #[inline(always)]
+     const fn spend_by_sign(&mut self, cost: u64) -> Result {
+         if cost == 0 {
+-- 
+2.43.0
+

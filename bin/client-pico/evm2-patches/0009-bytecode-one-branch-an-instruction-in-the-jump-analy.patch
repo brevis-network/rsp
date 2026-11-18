@@ -1,0 +1,216 @@
+From abc37c419151fd8398eef8cabb84e144796a1d79 Mon Sep 17 00:00:00 2001
+From: claude-checkpoint <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 04:06:42 +0000
+Subject: [PATCH 9/9] bytecode: one branch an instruction in the jump analysis
+ on riscv64
+
+The scalar loop asks three things of every instruction of the code,
+each with a branch: is it a JUMPDEST, is it a PUSH, is the code over.
+On riscv64 that is five or six instructions of the machine, three of
+them branches, and a zkVM proves a comparison for every branch. The
+analysis of a block's codes is then the stretch of a guest's run with
+the largest share of them. In a Pico guest of RSP that analyses the
+codes as it reads them, the 2^23 instructions of a block with the most
+comparisons and branches have 4.2 M to 4.6 M of them on 12 of 13
+mainnet blocks, and all of those stretches are the analysis.
+
+riscv64 now passes all but the last 231 bytes of a code in a loop of
+its own. It takes the length of an instruction from a table, in which
+JUMPDEST is the one entry to stop for, and looks for the end of the
+code once in eight instructions: a branch and an eighth for an
+instruction of the code, in as many instructions of the machine as
+before. The scalar loop finishes the code from where it stops, as it
+does after the SIMD kernels of the other targets.
+
+On the 13 blocks the stretch with the most comparisons and branches
+then has 1.4 M to 2.3 M of them, and on none of them is it the
+analysis.
+
+Instructions a block in that guest, before and after:
+  13 mainnet blocks   147.226 M -> 147.181 M  (-0.03 %)
+  3 Sepolia blocks    424.147 M -> 424.097 M  (-0.01 %)
+  45 Sepolia blocks   526.220 M -> 526.198 M  (-0.00 %)
+The guests commit the same values on all 61 blocks.
+
+riscv64 only, and hosts built with --cfg evm2_as_on_riscv64, whose own
+kernels then go unused.
+
+Tests, for every build: the loop followed by the scalar loop against
+the reference analysis, on the codes the SIMD kernels are checked
+with; its table against the opcode definitions; where it stops, for
+codes of every length up to 700 bytes. With the cfg the EEST fixtures
+run it.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ crates/evm2/src/bytecode/analysis.rs         |   8 ++
+ crates/evm2/src/bytecode/analysis/riscv64.rs | 119 +++++++++++++++++++
+ 2 files changed, 127 insertions(+)
+ create mode 100644 crates/evm2/src/bytecode/analysis/riscv64.rs
+
+diff --git a/crates/evm2/src/bytecode/analysis.rs b/crates/evm2/src/bytecode/analysis.rs
+index e31f9b11..585319a6 100644
+--- a/crates/evm2/src/bytecode/analysis.rs
++++ b/crates/evm2/src/bytecode/analysis.rs
+@@ -1,5 +1,8 @@
+ //! Legacy bytecode padding and jump destination analysis.
+ 
++// With `--cfg evm2_as_on_riscv64` a host takes riscv64's loop and leaves its own kernels unused.
++#![cfg_attr(evm2_as_on_riscv64, allow(dead_code))]
++
+ use super::JumpTable;
+ use crate::interpreter::op;
+ use alloc::vec::Vec;
+@@ -7,6 +10,8 @@ use alloy_primitives::Bytes;
+ 
+ #[cfg(target_arch = "aarch64")]
+ mod aarch64;
++#[cfg(any(test, target_arch = "riscv64", evm2_as_on_riscv64))]
++mod riscv64;
+ #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+ mod x86;
+ 
+@@ -58,12 +63,15 @@ fn analyze_scalar(code: &[u8], table: &mut [u8], pc: usize) {
+ }
+ 
+ /// Marks the jump destinations of full SIMD blocks and returns the offset of the next instruction.
++///
++/// riscv64 has no blocks: it passes all but the end of the code in a loop of its own.
+ #[inline]
+ fn analyze_simd(code: &[u8], table: &mut [u8]) -> usize {
+     if code.len() < 16 {
+         return 0;
+     }
+     core::cfg_select! {
++        any(target_arch = "riscv64", evm2_as_on_riscv64) => riscv64::analyze(code, table),
+         any(target_arch = "x86", target_arch = "x86_64") => x86::analyze(code, table),
+         target_arch = "aarch64" => aarch64::analyze(code, table),
+         _ => {
+diff --git a/crates/evm2/src/bytecode/analysis/riscv64.rs b/crates/evm2/src/bytecode/analysis/riscv64.rs
+new file mode 100644
+index 00000000..ae881b05
+--- /dev/null
++++ b/crates/evm2/src/bytecode/analysis/riscv64.rs
+@@ -0,0 +1,119 @@
++//! Jump destination analysis for riscv64, where the analysis is proved as well as run.
++//!
++//! The scalar loop asks three things of every instruction of the code, each with a branch: is it
++//! a `JUMPDEST`, is it a `PUSH`, is the code over. On riscv64 that is five or six instructions
++//! of the machine, three of them branches, and a zkVM proves a comparison for every branch. The
++//! analysis of a block's codes is then the stretch of a guest's run with the largest share of
++//! them.
++//!
++//! This loop takes the length of an instruction from a table, in which `JUMPDEST` is the one
++//! entry to stop for, and looks for the end of the code once in eight instructions. That is a
++//! branch and an eighth for an instruction of the code, in as many instructions of the machine
++//! as before.
++
++use crate::interpreter::op;
++
++/// The length of the instruction that starts with each byte: one, or two to 33 for `PUSH1` to
++/// `PUSH32`. Zero for `JUMPDEST`, which is one byte long and is the instruction to stop at.
++static LENGTHS: [u8; 256] = {
++    let mut lengths = [1; 256];
++    let mut push = op::PUSH1;
++    while push <= op::PUSH32 {
++        lengths[push as usize] = push - op::PUSH1 + 2;
++        push += 1;
++    }
++    lengths[op::JUMPDEST as usize] = 0;
++    lengths
++};
++
++/// The instructions the loop passes between two looks at the end of the code.
++const UNROLLED: usize = 8;
++
++/// How far past the first of them the last of them can start: each is at most a `PUSH32`.
++const REACH: usize = (UNROLLED - 1) * 33;
++
++/// Marks the jump destinations of `code` up to the last [`REACH`] bytes, and returns the offset of
++/// the first instruction it did not pass.
++#[inline]
++pub(super) fn analyze(code: &[u8], table: &mut [u8]) -> usize {
++    let Some(bulk) = code.len().checked_sub(REACH) else {
++        return 0;
++    };
++    let start = code.as_ptr();
++    // SAFETY: `bulk` is at most the length of `code`.
++    let bulk_end = unsafe { start.add(bulk) };
++    let mut pc = start;
++    while pc < bulk_end {
++        for _ in 0..UNROLLED {
++            // SAFETY: The first instruction starts before `bulk_end`, so the ones after it start
++            // at most `REACH` bytes later, which is inside `code`. `table` has a bit for each
++            // byte of `code`.
++            pc = unsafe { pass(pc, start, table) };
++        }
++    }
++    // A PUSH can leave this past the end of the code, as it can the scalar loop.
++    pc.addr() - start.addr()
++}
++
++/// Passes the instruction at `pc`, marking it in `table` if it is a `JUMPDEST`.
++///
++/// # Safety
++///
++/// `pc` must be inside the code that starts at `start`, and `table` must have a bit for each byte
++/// of that code.
++#[inline(always)]
++unsafe fn pass(pc: *const u8, start: *const u8, table: &mut [u8]) -> *const u8 {
++    let length = LENGTHS[unsafe { *pc } as usize];
++    if length == 0 {
++        let offset = unsafe { pc.offset_from_unsigned(start) };
++        unsafe { *table.get_unchecked_mut(offset / 8) |= 1 << (offset % 8) };
++        return unsafe { pc.add(1) };
++    }
++    // A trailing PUSH can advance past the bytecode allocation.
++    pc.wrapping_add(length as usize)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{bytecode::analysis::tests::check_simd, interpreter::opcode::OpCode};
++
++    #[test]
++    fn test_lengths() {
++        for byte in 0..=u8::MAX {
++            let opcode = OpCode::new_or_unknown(byte);
++            let length = match byte {
++                op::JUMPDEST => 0,
++                _ if opcode.is_push() => 1 + opcode.immediate_size(),
++                _ => 1,
++            };
++            assert_eq!(LENGTHS[byte as usize], length, "{byte:#04x}");
++        }
++    }
++
++    #[test]
++    fn test_matches_reference() {
++        check_simd(analyze);
++    }
++
++    /// The loop stops where its next instructions could reach past the end, and at an
++    /// instruction.
++    #[test]
++    fn test_stops_before_the_end() {
++        for len in 0..700 {
++            for opcode in [op::ADD, op::JUMPDEST, op::PUSH1, op::PUSH31, op::PUSH32] {
++                let code = alloc::vec![opcode; len];
++                let mut table = alloc::vec![0; len.div_ceil(8)];
++                let pc = analyze(&code, &mut table);
++                let length =
++                    if opcode == op::JUMPDEST { 1 } else { LENGTHS[opcode as usize] as usize };
++                assert_eq!(pc % length, 0);
++                if len < REACH {
++                    assert_eq!(pc, 0);
++                } else {
++                    assert!(pc >= len - REACH && pc < len - REACH + UNROLLED * length);
++                }
++            }
++        }
++    }
++}
+-- 
+2.43.0
+

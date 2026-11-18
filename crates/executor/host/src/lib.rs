@@ -1,11 +1,12 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use alloy_chains::Chain;
+use alloy_primitives::Address;
 pub use error::Error as HostError;
 use reth_chainspec::ChainSpec;
 use reth_evm_ethereum::EthEvmConfig;
-use revm_primitives::Address;
-use rsp_client_executor::custom::CustomEvmFactory;
+use reth_primitives_traits::NodePrimitives;
+use rsp_client_executor::io::ClientExecutorInput;
 use rsp_primitives::genesis::Genesis;
 use sp1_sdk::SP1ProofMode;
 use std::{path::PathBuf, sync::Arc};
@@ -28,13 +29,35 @@ pub use hooks::ExecutionHooks;
 mod host_executor;
 pub use host_executor::{EthHostExecutor, HostExecutor};
 
+/// `custom_beneficiary` is for Clique chains, which this build does not support: it runs reth's
+/// stock Ethereum EVM configuration.
 pub fn create_eth_block_execution_strategy_factory(
     genesis: &Genesis,
     custom_beneficiary: Option<Address>,
-) -> EthEvmConfig<ChainSpec, CustomEvmFactory> {
+) -> EthEvmConfig<ChainSpec> {
+    assert!(custom_beneficiary.is_none(), "a custom beneficiary is not supported on evm2");
     let chain_spec: Arc<ChainSpec> = Arc::new(genesis.try_into().unwrap());
 
-    EthEvmConfig::new_with_evm_factory(chain_spec, CustomEvmFactory::new(custom_beneficiary))
+    EthEvmConfig::new(chain_spec)
+}
+
+/// The client input as the one buffer a Pico guest reads from stdin: the witness blob (of the
+/// `arena` and `flat` backends), the contract codes, and the bincode-serialized rest of the
+/// input. See [`rsp_client_executor::stdin`].
+pub fn single_buffer_stdin<P>(client_input: &ClientExecutorInput<P>) -> bincode::Result<Vec<u8>>
+where
+    P: NodePrimitives,
+    ClientExecutorInput<P>: serde::Serialize + Clone,
+{
+    #[cfg(any(feature = "arena", feature = "flat"))]
+    let witness: &[u8] = &client_input.parent_state;
+    #[cfg(not(any(feature = "arena", feature = "flat")))]
+    let witness: &[u8] = &[];
+    // The codes go in their own section, laid out for the guest to run them in place.
+    let codes = rsp_client_executor::codes::write(&client_input.bytecodes);
+    let mut rest = client_input.clone();
+    rest.bytecodes = Vec::new();
+    Ok(rsp_client_executor::stdin::join(&bincode::serialize(&rest)?, witness, &codes))
 }
 
 /// How the host fetches the state needed to execute a block.
