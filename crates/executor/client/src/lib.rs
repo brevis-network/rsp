@@ -4,6 +4,7 @@
 pub mod io;
 #[macro_use]
 pub mod utils;
+mod blake2f;
 pub mod custom;
 mod eip2537;
 pub mod error;
