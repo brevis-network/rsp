@@ -151,6 +151,12 @@ impl Crypto for CustomCrypto {
         Ok(())
     }
 
+    // EIP-152 on Pico's BLAKE2B_ROUNDS syscall instead of revm's software rounds; see
+    // `crate::blake2f`.
+    fn blake2_compress(&self, rounds: u32, h: &mut [u64; 8], m: [u64; 16], t: [u64; 2], f: bool) {
+        crate::blake2f::compress(rounds, h, &m, &t, f)
+    }
+
     // EIP-2537 on Pico's BLS12-381 syscalls instead of revm's arkworks default; see
     // `crate::eip2537`.
 
