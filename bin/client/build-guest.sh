@@ -24,7 +24,11 @@ US=$(printf '\037')
 # This is the *TailDuplicator* budget, not `-tail-dup-placement-threshold` /
 # `-tail-dup-placement-aggressive-threshold` / `-tail-dup-succ-size`: those do nothing here
 # (the dispatch block stays at one copy) and forcing duplication through them measured worse.
-export CARGO_ENCODED_RUSTFLAGS="-Cpasses=lower-atomic${US}-Clink-arg=-Ttext=0x00200800${US}-Clink-arg=--fatal-warnings${US}-Cpanic=abort${US}-Clink-arg=--wrap=memset${US}-Cllvm-args=-tail-dup-size=12"
+#
+# `+unaligned-scalar-mem`: Pico proves misaligned loads and stores, so the compiler may use one
+# word access where it would otherwise assemble the value a byte at a time. `cargo pico build`
+# passes it by default; it needs a prover whose CPU chunks take more than 2^10 misaligned rows.
+export CARGO_ENCODED_RUSTFLAGS="-Cpasses=lower-atomic${US}-Clink-arg=-Ttext=0x00200800${US}-Clink-arg=--fatal-warnings${US}-Cpanic=abort${US}-Clink-arg=--wrap=memset${US}-Cllvm-args=-tail-dup-size=12${US}-Ctarget-feature=+unaligned-scalar-mem"
 
 cargo +pico build --release \
     --target riscv64im-pico-zkvm-elf \
