@@ -2,14 +2,14 @@
 # Builds the guest ELF.
 #
 # Not `cargo pico build`: its `--rustflags` option is ignored (it sets
-# `CARGO_ENCODED_RUSTFLAGS` itself, unconditionally), so it cannot pass `--wrap=memset`. The
-# invocation it would have made is reproduced below with that appended; the other flags are
-# copied verbatim from its output and should be re-copied if it changes them.
+# `CARGO_ENCODED_RUSTFLAGS` itself, unconditionally), so it cannot pass `--wrap=memcpy` and
+# `--wrap=memset`. The invocation it would have made is reproduced below with them appended; the
+# other flags are copied verbatim from its output and should be re-copied if it changes them.
 #
-# `rsp-guest-mem`'s word-at-a-time `memset` is ~7 M retired instructions cheaper per mainnet
-# block than `compiler_builtins`'. Its `memcmp`/`bcmp` are picked up by defining the symbols,
-# but `memset` cannot be: `compiler_builtins` references it internally so its object is always
-# pulled from the archive, and linking that way fails with `duplicate symbol: memset`.
+# `rsp-guest-mem` defines `memcmp`/`bcmp`, which are picked up by defining the symbols, and
+# `__wrap_memcpy` / `__wrap_memset`, brevis-vm's assembly on Pico's MEMCPY / MEMSET ecalls.
+# `memcpy` and `memset` cannot be replaced by defining them (`duplicate symbol`; see the note in
+# `rsp-guest-mem`), so every call to them is wrapped instead.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -28,7 +28,7 @@ US=$(printf '\037')
 # `+unaligned-scalar-mem`: Pico proves misaligned loads and stores, so the compiler may use one
 # word access where it would otherwise assemble the value a byte at a time. `cargo pico build`
 # passes it by default; it needs a prover whose CPU chunks take more than 2^10 misaligned rows.
-export CARGO_ENCODED_RUSTFLAGS="-Cpasses=lower-atomic${US}-Clink-arg=-Ttext=0x00200800${US}-Clink-arg=--fatal-warnings${US}-Cpanic=abort${US}-Clink-arg=--wrap=memset${US}-Cllvm-args=-tail-dup-size=12${US}-Ctarget-feature=+unaligned-scalar-mem"
+export CARGO_ENCODED_RUSTFLAGS="-Cpasses=lower-atomic${US}-Clink-arg=-Ttext=0x00200800${US}-Clink-arg=--fatal-warnings${US}-Cpanic=abort${US}-Clink-arg=--wrap=memset${US}-Clink-arg=--wrap=memcpy${US}-Cllvm-args=-tail-dup-size=12${US}-Ctarget-feature=+unaligned-scalar-mem"
 
 cargo +pico build --release \
     --target riscv64im-pico-zkvm-elf \
@@ -68,10 +68,20 @@ if [ -x "$NM" ]; then
             ;;
     esac
 
-    # `memcpy` resolved to `pico-sdk`'s assembly and not to `compiler_builtins`'. Two
-    # implementations define it -- `pico-sdk` unconditionally through `global_asm!`, and
+    # `--wrap=memcpy` took: `rsp-guest-mem`'s `__wrap_memcpy` is in the table only if it did.
+    case "$SYMS" in
+        *__wrap_memcpy*) ;;
+        *)
+            echo "ERROR: __wrap_memcpy is not in the ELF, so --wrap=memcpy was dropped." >&2
+            exit 1
+            ;;
+    esac
+
+    # No `compiler_builtins` `memcpy`. Under `--wrap=memcpy` every call goes to `__wrap_memcpy`
+    # (checked above), so this is a backstop. It is from before the wrap, when two
+    # implementations defined `memcpy` -- `pico-sdk` unconditionally through `global_asm!`, and
     # `compiler_builtins` through `-Z build-std-features=compiler-builtins-mem` -- and which one
-    # the link keeps is not pinned by anything. A guest that keeps the wrong one carries an
+    # the link kept was not pinned by anything. A guest that kept the wrong one carried an
     # 8-byte thunk into `compiler_builtins::mem::memcpy` and no assembly `memcpy` at all.
     #
     # Not hypothetical, and not cheap: the ELF shipped as brevis-vm's `reth-elf` between
@@ -88,14 +98,14 @@ if [ -x "$NM" ]; then
     # switch to v0 or a demangling `nm` would otherwise turn this check off without a word.
     case "$SYMS" in
         *compiler_builtins*3mem*6memcpy* | *compiler_builtins::mem::memcpy*)
-            echo "ERROR: memcpy resolved to compiler_builtins, not to pico-sdk's assembly one." >&2
+            echo "ERROR: memcpy resolved to compiler_builtins, not to the assembly one." >&2
             echo "       The guest is correct but roughly 5 % slower. See the comment above." >&2
             exit 1
             ;;
         *) ;;
     esac
 else
-    # Fail closed. These two checks are the only thing standing between a silently 5 %-slower
+    # Fail closed. These checks are the only thing standing between a silently 5 %-slower
     # guest and a shipped artefact, and a warning buried in an hour of build output is not a
     # signal. If a toolchain layout change moves `llvm-nm`, that is worth stopping for.
     echo "ERROR: llvm-nm not found at $NM, so the symbol-table checks could not run." >&2
