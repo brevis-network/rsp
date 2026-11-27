@@ -1,6 +1,7 @@
 // brevis-vm's `sdk/sdk/src/memcpy.s`, as `__wrap_memcpy`: the guest links with `--wrap=memcpy` (see
 // `bin/client/build-guest.sh`). The `.attribute` lines are dropped; the object's ISA attributes are
-// the crate's.
+// the crate's. The function has a section of its own, not `.text`, so that `--gc-sections` drops it
+// when nothing calls it: `build-guest.sh` reads its presence in the ELF as the wrap having taken.
 //
 // memcpy for RV64IM, written for Pico.
 //
@@ -21,7 +22,7 @@
 // A load reads a whole aligned word only when the word holds a byte of the source. Such a word
 // cannot cross into another memory region, each of which starts at a multiple of 8.
 
-	.text
+	.section	.text.__wrap_memcpy,"ax",@progbits
 	.globl	__wrap_memcpy
 	.p2align	2
 	.type	__wrap_memcpy,@function

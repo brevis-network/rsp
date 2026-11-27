@@ -1,6 +1,7 @@
 // brevis-vm's `sdk/sdk/src/memset.s`, as `__wrap_memset`: the guest links with `--wrap=memset` (see
 // `bin/client/build-guest.sh`). The `.attribute` lines are dropped; the object's ISA attributes are
-// the crate's.
+// the crate's. The function has a section of its own, not `.text`, so that `--gc-sections` drops it
+// when nothing calls it: `build-guest.sh` reads its presence in the ELF as the wrap having taken.
 //
 // memset for RV64IM, written for Pico: every store is naturally aligned. A misaligned access runs,
 // but each one is proven on the MemoryUnaligned chip, which holds few rows per chunk.
@@ -11,10 +12,7 @@
 //   and the last 0 to 7 bytes with `sw` / `sh` / `sb`, which the 8-aligned destination keeps
 //   aligned.
 
-	.text
-	// No M instruction here, but keep the arch attribute: it is what enables M for the module-level
-	// asm this file joins, and it must name rv64 (LLVM 23 switches the assembler to RV32 on
-	// "rv32im" and then rejects the `ld` in `_start`).
+	.section	.text.__wrap_memset,"ax",@progbits
 	.globl	__wrap_memset
 	.p2align	2
 	.type	__wrap_memset,@function

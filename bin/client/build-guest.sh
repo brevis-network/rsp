@@ -57,8 +57,10 @@ if [ -x "$NM" ]; then
     #
     # This reads as a presence check on a symbol only because the link discards unreferenced
     # sections: `rustc +pico --target riscv64im-pico-zkvm-elf --print link-args` passes
-    # `--gc-sections`. Without it the check would be vacuous, since `__wrap_memset` and `memcmp`
-    # sit adjacent in one object and the former would ride in on the latter's references.
+    # `--gc-sections`, and `memcpy.s` / `memset.s` put each function in a section of its own.
+    # Without either the checks would be vacuous: `__wrap_memset`, `__wrap_memcpy` and `memcmp` sit
+    # in one object, and each would ride in on another's references. In plain `.text` the two
+    # wraps did: with `--wrap=memcpy` dropped, the guest still had `__wrap_memcpy` and passed.
     case "$SYMS" in
         *__wrap_memset*) ;;
         *)
