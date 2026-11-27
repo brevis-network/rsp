@@ -1,4 +1,5 @@
-//! Word-at-a-time `memcmp`/`bcmp`/`memset` for the pico guest.
+//! Word-at-a-time `memcmp`/`bcmp`, and `memcpy`/`memset` on Pico's MEMCPY / MEMSET ecalls, for
+//! the pico guest.
 //!
 //! `compiler_builtins`' `memcmp` is a byte-at-a-time loop — seven instructions per byte on
 //! `riscv64im-pico-zkvm-elf`. It matters more here than it looks: because the target has no
@@ -11,6 +12,13 @@
 //! The strong symbols defined here override `compiler_builtins`' weak definitions at link time.
 //! `#![no_builtins]` prevents LLVM from recognizing the comparison loop as a memcmp idiom and
 //! lowering it back into a `memcmp` libcall.
+//!
+//! `memcpy` and `memset` are brevis-vm's RV64 assembly ones (`memcpy.s`, `memset.s`), linked as
+//! `__wrap_memcpy` / `__wrap_memset` under `--wrap=memcpy` / `--wrap=memset`. A call of 16 bytes
+//! or more is one ecall per 2048 bytes, MEMCPY (`0x136`) or MEMSET (`0x137`), which Pico proves in
+//! the chunk that runs it on its `MemoryCopy` chip, a row per destination dword. Shorter calls
+//! stay in the assembly, where every load and store is naturally aligned. The guest needs a Pico
+//! prover that has the two ecalls.
 
 #![cfg_attr(not(test), no_std)]
 #![no_builtins]
@@ -121,90 +129,24 @@ pub unsafe fn compare_bytes(mut a: *const u8, mut b: *const u8, mut n: usize) ->
     0
 }
 
-/// Writes fewer than `WORD` copies of `c`, without a loop.
-///
-/// A `while i < n` byte loop costs five instructions per byte (store, pointer bump, branch,
-/// bound test); three size tests instead bring it down to about one.
-///
-/// # Safety
-///
-/// `n < WORD` and `dst` is valid for `n` writes.
-#[inline(always)]
-unsafe fn set_sub_word(mut dst: *mut u8, c: u8, n: usize) {
-    if n & 4 != 0 {
-        *dst = c;
-        *dst.add(1) = c;
-        *dst.add(2) = c;
-        *dst.add(3) = c;
-        dst = dst.add(4);
-    }
-    if n & 2 != 0 {
-        *dst = c;
-        *dst.add(1) = c;
-        dst = dst.add(2);
-    }
-    if n & 1 != 0 {
-        *dst = c;
-    }
-}
-
-/// Writes `n` copies of `c` at `dst`, a word at a time.
-///
-/// `compiler_builtins`' `memset` aligns to 4 bytes and stores with `sw`, behind ~40
-/// instructions of small-size dispatch; the guest's average call is ~78 bytes, so that
-/// prologue is most of the cost.
-///
-/// # Safety
-///
-/// `dst` must be valid for writes of `n` bytes. Nothing outside `dst..dst + n` is touched.
-#[inline(always)]
-pub unsafe fn set_bytes(dst: *mut u8, c: u8, n: usize) {
-    let mut d = dst;
-    let mut n = n;
-
-    if n < WORD {
-        set_sub_word(d, c, n);
-        return;
-    }
-
-    let v = (c as usize).wrapping_mul(usize::MAX / 0xff);
-
-    let head = (WORD - (d as usize % WORD)) % WORD;
-    if head != 0 {
-        set_sub_word(d, c, head);
-        d = d.add(head);
-        n -= head;
-    }
-
-    let words = n / WORD;
-    // The head fixup above is what makes these stores aligned, and on this target that is a
-    // correctness requirement, not a preference: `riscv64im-pico-zkvm-elf` has no misaligned
-    // scalar access. Nothing on the host notices if it goes away -- `ptr::write` is not
-    // covered by rustc's debug misaligned-pointer check (the *read* in `compare_bytes` is,
-    // which is why that one is caught), and x86/ARM perform the unaligned store anyway with
-    // identical results. Setting `head = 0` leaves every test in this crate green.
-    debug_assert!(d as usize % WORD == 0, "set_bytes word stores must be aligned");
-    let mut p = d.cast::<usize>();
-    let mut k = words;
-    while k >= 4 {
-        p.write(v);
-        p.add(1).write(v);
-        p.add(2).write(v);
-        p.add(3).write(v);
-        p = p.add(4);
-        k -= 4;
-    }
-    while k != 0 {
-        p.write(v);
-        p = p.add(1);
-        k -= 1;
-    }
-
-    set_sub_word(d.add(words * WORD), c, n - words * WORD);
-}
-
 #[cfg(target_os = "zkvm")]
 mod c_exports {
+    // `memcpy` and `memset` cannot be overridden by defining the symbols, even though
+    // `compiler_builtins` spells its `mem*` intrinsics with `linkage = "weak"`: linking the guest
+    // that way fails with `rust-lld: error: duplicate symbol: memset` (verified). Its `memset` is
+    // absorbed by `lto = "fat"` and re-emitted *strong* in a regular object, so the weak linkage
+    // is gone before the linker ever chooses; `memcmp` below survives only because
+    // `#![no_builtins]` excludes this crate from the LTO merge. The practical consequence: **if
+    // fat LTO is ever dropped, `memcmp` could start colliding the same way.** pico-sdk defines
+    // `memcpy` and `memset` too.
+    //
+    // So the guest is linked with `--wrap=memcpy` and `--wrap=memset` (see `build-guest.sh`),
+    // which redirect every call to the `__wrap_` symbols these files define. That makes the
+    // optimisation depend on the build invocation: a plain `cargo pico build` silently drops it,
+    // which is why `build-guest.sh` asserts the linked ELF defines both.
+    core::arch::global_asm!(include_str!("memcpy.s"));
+    core::arch::global_asm!(include_str!("memset.s"));
+
     #[no_mangle]
     unsafe extern "C" fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
         super::compare_bytes(a, b, n)
@@ -216,38 +158,11 @@ mod c_exports {
     unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
         super::compare_bytes(a, b, n)
     }
-
-    // Overriding `memset` by defining the symbol does *not* work, even though
-    // `compiler_builtins` spells its `mem*` intrinsics with `linkage = "weak"`: linking the
-    // guest that way fails with `rust-lld: error: duplicate symbol: memset` (verified).
-    //
-    // The reason is **not** archive laziness, which is what this note claimed for a while.
-    // `compiler_builtins`' `memset` is absorbed by `lto = "fat"` and re-emitted *strong* in a
-    // regular object, so the weak linkage is gone before the linker ever chooses; `memcmp`
-    // above survives only because `#![no_builtins]` excludes this crate from the LTO merge.
-    // The practical consequence: **if fat LTO is ever dropped, `memcmp` could start colliding
-    // the same way.**
-    //
-    // So the guest is linked with `--wrap=memset` instead (see `build-guest.sh`), which
-    // redirects every call here. That makes the optimisation depend on the build invocation: a
-    // plain `cargo pico build` silently drops it and costs ~7 M instructions with no error, which
-    // is why `build-guest.sh` asserts the linked ELF defines `__wrap_memset`.
-    //
-    // Only `memset` is replaced. A word-at-a-time `memcpy` was tried too and measured *worse*
-    // than `compiler_builtins`' (53.4 M vs 50.3 M retired instructions on block 24006677): 42 %
-    // of the guest's copies have a misaligned destination but are shorter than 32 bytes, and for
-    // those the straight-line byte blocks that `compiler_builtins` falls back to beat a
-    // destination-aligning prologue plus a shift loop.
-    #[no_mangle]
-    unsafe extern "C" fn __wrap_memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
-        super::set_bytes(dst, c as u8, n);
-        dst
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_bytes, set_bytes, word_diff};
+    use super::{compare_bytes, word_diff};
 
     fn reference(a: &[u8], b: &[u8]) -> i32 {
         for (x, y) in core::iter::zip(a, b) {
@@ -325,21 +240,6 @@ mod tests {
             "only {discriminating} cases distinguish the lowest differing byte from the \
              highest; the sweep cannot see the ladder's order"
         );
-    }
-
-    #[test]
-    fn set_bytes_matches_reference_across_alignments_and_lengths() {
-        let mut buf = [0u8; 512];
-        for d_off in 0..8 {
-            for len in 0..200 {
-                let at = 16 + d_off;
-                buf.fill(0xAA);
-                unsafe { set_bytes(buf.as_mut_ptr().add(at), 0x5C, len) };
-                assert!(buf[at..at + len].iter().all(|&b| b == 0x5C), "len={len}");
-                assert!(buf[..at].iter().all(|&b| b == 0xAA));
-                assert!(buf[at + len..].iter().all(|&b| b == 0xAA));
-            }
-        }
     }
 
     #[test]
